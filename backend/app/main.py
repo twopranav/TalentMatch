@@ -1,8 +1,10 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-
+from app import models  # noqa: F401
 from app.api.routes import health
 from app.core.config import settings
+from app.api.routes import health, auth, jobs, users
+...
 
 app = FastAPI(title=settings.APP_NAME, debug=settings.DEBUG)
 
@@ -15,10 +17,9 @@ app.add_middleware(
 )
 
 app.include_router(health.router, prefix="/api")
-
-# Phase 2 will add: app.include_router(auth.router, prefix="/api/auth")
-# Phase 2 will add: app.include_router(jobs.router, prefix="/api/jobs")
-
+app.include_router(auth.router, prefix="/api/auth", tags=["auth"])
+app.include_router(jobs.router, prefix="/api/jobs", tags=["jobs"])
+app.include_router(users.router, prefix="/api/users", tags=["users"])
 
 @app.get("/")
 def root() -> dict:

@@ -11,7 +11,7 @@ class Settings(BaseSettings):
     DEBUG: bool = True
 
     # Postgres
-    DATABASE_URL: str = "postgresql+psycopg2://postgres:postgres@localhost:5432/talentdb"
+    DATABASE_URL: str = "postgresql+psycopg://postgres:postgres@localhost:5432/talentdb"
 
     # Auth / JWT
     JWT_SECRET_KEY: str = "change-me-in-env"  # override in .env, never commit a real secret
