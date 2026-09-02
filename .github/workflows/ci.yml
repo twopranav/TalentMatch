@@ -28,12 +28,11 @@ jobs:
         with:
           python-version: "3.12"
       - name: Install dependencies
-        working-directory: backend
         run: pip install -r requirements.txt
       - name: Run migrations
         working-directory: backend
         env:
-          DATABASE_URL: postgresql+psycopg2://postgres:postgres@localhost:5432/talentdb_test
+          DATABASE_URL: postgresql+psycopg://postgres:postgres@localhost:5432/talentdb_test
         run: alembic upgrade head
       # - name: Run tests   (enable once Phase 9 adds a test suite)
       #   working-directory: backend
