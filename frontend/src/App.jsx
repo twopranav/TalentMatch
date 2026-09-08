@@ -1,22 +1,50 @@
-import { useEffect, useState } from 'react'
-import apiClient from './api/client'
+// frontend/src/App.jsx
+import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
+import { useAuth } from './context/AuthContext'
+import Login from './pages/Login'
+import Register from './pages/Register'
+import JobDashboard from './pages/JobDashboard'
+import UserManagement from './pages/UserManagement'
+import ProtectedRoute from './components/ProtectedRoute'
+import RequireRole from './components/RequireRole'
+
+function LoginRoute() {
+  const { isAuthenticated } = useAuth()
+  return isAuthenticated ? <Navigate to="/" replace /> : <Login />
+}
+
+function RegisterRoute() {
+  const { isAuthenticated } = useAuth()
+  return isAuthenticated ? <Navigate to="/" replace /> : <Register />
+}
 
 function App() {
-  const [status, setStatus] = useState('checking...')
-
-  useEffect(() => {
-    apiClient
-      .get('/health')
-      .then((res) => setStatus(res.data.status))
-      .catch(() => setStatus('backend unreachable'))
-  }, [])
-
   return (
-    <div style={{ fontFamily: 'sans-serif', padding: '2rem' }}>
-      <h1>Resume Filter Application</h1>
-      <p>Backend status: {status}</p>
-      {/* Phase 2 replaces this with routed pages: login, job dashboard, etc. */}
-    </div>
+    <BrowserRouter>
+      <Routes>
+        <Route path="/login" element={<LoginRoute />} />
+        <Route path="/register" element={<RegisterRoute />} />
+        <Route
+          path="/"
+          element={
+            <ProtectedRoute>
+              <JobDashboard />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/users"
+          element={
+            <ProtectedRoute>
+              <RequireRole roles={['recruiter', 'admin', 'superuser']}>
+                <UserManagement />
+              </RequireRole>
+            </ProtectedRoute>
+          }
+        />
+        <Route path="*" element={<Navigate to="/" replace />} />
+      </Routes>
+    </BrowserRouter>
   )
 }
 

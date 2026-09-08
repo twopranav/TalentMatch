@@ -1,7 +1,8 @@
+// frontend/src/components/jobs/JobList.jsx
 import Spinner from '../ui/Spinner'
 import JobCard from './JobCard'
 
-export default function JobList({ jobs, loading, error, onRetry }) {
+export default function JobList({ jobs, loading, error, onRetry, onSelectJob }) {
   if (loading) {
     return (
       <div className="flex justify-center py-16">
@@ -12,12 +13,9 @@ export default function JobList({ jobs, loading, error, onRetry }) {
 
   if (error) {
     return (
-      <div className="rounded-lg border border-red-200 bg-red-50 px-6 py-8 text-center">
-        <p className="text-sm text-red-700">{error}</p>
-        <button
-          onClick={onRetry}
-          className="mt-3 text-sm font-medium text-red-800 underline hover:no-underline"
-        >
+      <div className="rounded-lg border border-red-200 bg-red-50 px-6 py-8 text-center dark:border-red-900 dark:bg-red-950">
+        <p className="text-sm text-red-700 dark:text-red-300">{error}</p>
+        <button onClick={onRetry} className="mt-3 text-sm font-medium text-red-800 underline hover:no-underline dark:text-red-300">
           Try again
         </button>
       </div>
@@ -26,8 +24,8 @@ export default function JobList({ jobs, loading, error, onRetry }) {
 
   if (jobs.length === 0) {
     return (
-      <div className="rounded-lg border border-dashed border-slate-300 px-6 py-16 text-center">
-        <p className="text-sm text-slate-500">No jobs to show yet.</p>
+      <div className="rounded-lg border border-dashed border-slate-300 px-6 py-16 text-center dark:border-slate-700">
+        <p className="text-sm text-slate-500 dark:text-slate-400">No jobs to show yet.</p>
       </div>
     )
   }
@@ -35,7 +33,7 @@ export default function JobList({ jobs, loading, error, onRetry }) {
   return (
     <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
       {jobs.map((job) => (
-        <JobCard key={job.id} job={job} />
+        <JobCard key={job.id} job={job} onClick={onSelectJob} />
       ))}
     </div>
   )

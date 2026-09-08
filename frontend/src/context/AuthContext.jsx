@@ -1,3 +1,4 @@
+// frontend/src/context/AuthContext.jsx
 import { createContext, useContext, useState, useCallback } from 'react'
 import apiClient from '../api/client'
 import { decodeJwtPayload, isTokenExpired } from '../utils/jwt'
@@ -14,8 +15,6 @@ function readStoredUser() {
     return null
   }
 
-  // sub = user id, role = "recruiter" | "admin" | "user" — both set
-  // server-side in security.py's create_access_token extra_claims
   return { id: payload.sub, role: payload.role, token }
 }
 
@@ -23,9 +22,6 @@ export function AuthProvider({ children }) {
   const [user, setUser] = useState(readStoredUser)
 
   const login = useCallback(async (email, password) => {
-    // OAuth2PasswordRequestForm on the backend requires form-encoded
-    // data with the fields "username" and "password" — email goes in
-    // as "username", per auth.py's comment on that choice.
     const form = new URLSearchParams()
     form.append('username', email)
     form.append('password', password)
@@ -39,6 +35,15 @@ export function AuthProvider({ children }) {
     setUser({ id: payload.sub, role: payload.role, token: data.access_token })
   }, [])
 
+  // Registration never logs the account in automatically — the backend
+  // doesn't return a token here (only UserRead), and a requested-recruiter
+  // signup is still just a USER until an admin approves it. Send them to
+  // /login so the flow is explicit either way.
+  const register = useCallback(async (payload) => {
+    const { data } = await apiClient.post('/auth/register', payload)
+    return data
+  }, [])
+
   const logout = useCallback(() => {
     localStorage.removeItem('access_token')
     setUser(null)
@@ -48,6 +53,7 @@ export function AuthProvider({ children }) {
     user,
     isAuthenticated: !!user,
     login,
+    register,
     logout,
   }
 

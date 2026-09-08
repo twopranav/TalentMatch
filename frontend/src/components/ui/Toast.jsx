@@ -1,11 +1,12 @@
+// frontend/src/components/ui/Toast.jsx
 import { createContext, useCallback, useContext, useState } from 'react'
 
 const ToastContext = createContext(null)
 
 const VARIANT_STYLES = {
-  success: 'border-emerald-600 bg-emerald-50 text-emerald-900',
-  error: 'border-red-600 bg-red-50 text-red-900',
-  info: 'border-slate-600 bg-slate-50 text-slate-900',
+  success: 'border-emerald-600 bg-emerald-50 text-emerald-900 dark:bg-emerald-950 dark:text-emerald-200',
+  error: 'border-red-600 bg-red-50 text-red-900 dark:bg-red-950 dark:text-red-200',
+  info: 'border-slate-600 bg-slate-50 text-slate-900 dark:bg-slate-800 dark:text-slate-200',
 }
 
 export function ToastProvider({ children }) {

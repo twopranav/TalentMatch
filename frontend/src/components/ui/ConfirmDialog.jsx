@@ -1,3 +1,4 @@
+// frontend/src/components/ui/ConfirmDialog.jsx
 import Modal from './Modal'
 
 export default function ConfirmDialog({
@@ -24,7 +25,7 @@ export default function ConfirmDialog({
         <>
           <button
             onClick={onClose}
-            className="rounded px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-100"
+            className="rounded px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-slate-800"
           >
             {cancelLabel}
           </button>
@@ -33,7 +34,7 @@ export default function ConfirmDialog({
             className={`rounded px-4 py-2 text-sm font-medium text-white ${
               destructive
                 ? 'bg-red-600 hover:bg-red-700'
-                : 'bg-slate-800 hover:bg-slate-900'
+                : 'bg-slate-800 hover:bg-slate-900 dark:bg-slate-700 dark:hover:bg-slate-600'
             }`}
           >
             {confirmLabel}
@@ -41,7 +42,7 @@ export default function ConfirmDialog({
         </>
       }
     >
-      <p className="text-sm text-slate-600">{message}</p>
+      <p className="text-sm text-slate-600 dark:text-slate-300">{message}</p>
     </Modal>
   )
 }
