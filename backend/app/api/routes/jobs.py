@@ -1,6 +1,7 @@
 import uuid
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, status
 from sqlalchemy.orm import Session
+from app.core.audit import record_audit, snapshot
 from app.core.deps import get_current_user, require_recruiter_or_admin
 from app.core.jd_extract import extract_text_from_upload
 from app.db.session import get_db
@@ -19,6 +20,8 @@ def list_jobs(
     seniority: SeniorityLevel | None = Query(default=None),
     remote_type: RemoteType | None = Query(default=None),
     department: str | None = Query(default=None),
+    limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -40,12 +43,22 @@ def list_jobs(
     if department:
         query = query.filter(Job.department.ilike(f"%{department}%"))
 
-    return query.all()
+    return query.order_by(Job.created_at.desc()).offset(offset).limit(limit).all()
 
 @router.post("", response_model=JobRead, status_code=status.HTTP_201_CREATED)
 def create_job(payload: JobCreate, db: Session = Depends(get_db), current_user: User = Depends(require_recruiter_or_admin)):
-    job = Job(title=payload.title, description=payload.description, created_by=current_user)
+    # payload.model_dump() covers every JobCreate field (location, employment_type,
+    # department, seniority, remote_type, salary range, required_skills,
+    # experience/education requirements, closes_at) — every one of these has a
+    # matching column on Job, so this replaces the old title/description-only
+    # construction that silently dropped the rest of the form on creation.
+    job = Job(**payload.model_dump(), created_by=current_user)
     db.add(job)
+    db.flush()  # assigns job.id before we snapshot it for the audit row
+    record_audit(
+        db, actor=current_user, action="create", resource_type="job",
+        resource_id=job.id, after=snapshot(job, "job"),
+    )
     db.commit()
     db.refresh(job)
     return job
@@ -74,14 +87,44 @@ def _get_owned_job(job_id: uuid.UUID, db: Session, current_user: User) -> Job:
 def get_job(job_id: uuid.UUID, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     return _get_visible_job(job_id, db, current_user)
 
+_ALLOWED_STATUS_TRANSITIONS: dict[JobStatus, set[JobStatus]] = {
+    JobStatus.DRAFT: {JobStatus.PUBLISHED, JobStatus.CLOSED},
+    JobStatus.PUBLISHED: {JobStatus.CLOSED},
+    JobStatus.CLOSED: set(),  # closed is terminal — reopen by creating a new posting
+}
+
 @router.patch("/{job_id}", response_model=JobRead)
 def update_job(job_id: uuid.UUID, payload: JobUpdate, db: Session = Depends(get_db), current_user: User = Depends(require_recruiter_or_admin)):
     job = _get_owned_job(job_id, db, current_user)
+    before = snapshot(job, "job")
     updates = payload.model_dump(exclude_unset=True)
+
+    new_status = updates.get("status")
+    if new_status is not None and new_status != job.status:
+        allowed = _ALLOWED_STATUS_TRANSITIONS.get(job.status, set())
+        if new_status not in allowed:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Cannot move a job from '{job.status.value}' to '{new_status.value}'.",
+            )
+        if new_status == JobStatus.PUBLISHED:
+            title = updates.get("title", job.title)
+            description = updates.get("description", job.description)
+            if not title or not description:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="A job needs both a title and a description before it can be published.",
+                )
+
     if updates.get("status") == JobStatus.PUBLISHED and job.published_at is None:
         job.published_at = datetime.now(timezone.utc)
     for field, value in updates.items():
         setattr(job, field, value)
+    if updates:
+        record_audit(
+            db, actor=current_user, action="update", resource_type="job",
+            resource_id=job.id, before=before, after=snapshot(job, "job"),
+        )
     db.commit()
     db.refresh(job)
     return job
@@ -89,13 +132,51 @@ def update_job(job_id: uuid.UUID, payload: JobUpdate, db: Session = Depends(get_
 @router.delete("/{job_id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_job(job_id: uuid.UUID, db: Session = Depends(get_db), current_user: User = Depends(require_recruiter_or_admin)):
     job = _get_owned_job(job_id, db, current_user)
+    record_audit(
+        db, actor=current_user, action="delete", resource_type="job",
+        resource_id=job.id, before=snapshot(job, "job"),
+    )
     db.delete(job)
     db.commit()
+
+_ALLOWED_JD_CONTENT_TYPES = {
+    "application/pdf",
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",  # .docx
+}
+_MAX_JD_UPLOAD_BYTES = 10 * 1024 * 1024  # 10 MB
 
 @router.post("/{job_id}/jd", response_model=JobRead)
 async def upload_jd(job_id: uuid.UUID, file: UploadFile = File(...), db: Session = Depends(get_db), current_user: User = Depends(require_recruiter_or_admin)):
     job = _get_owned_job(job_id, db, current_user)
+
+    if file.content_type not in _ALLOWED_JD_CONTENT_TYPES:
+        raise HTTPException(
+            status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
+            detail="Job description must be a PDF or DOCX file.",
+        )
+
+    # Read once to enforce a size cap before handing the bytes to the parser —
+    # extract_text_from_upload has no size limit of its own, so an
+    # unbounded file was a straightforward DoS vector.
+    contents = await file.read()
+    if len(contents) > _MAX_JD_UPLOAD_BYTES:
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            detail="Job description file must be under 10 MB.",
+        )
+    await file.seek(0)
+
+    had_jd_before = job.jd_raw_text is not None
     job.jd_raw_text = await extract_text_from_upload(file)
+    # jd_raw_text itself is excluded from snapshots (see _SNAPSHOT_EXCLUDE) —
+    # it can be large and the file content isn't useful to diff in an audit
+    # trail. What matters here is recording that an upload happened.
+    record_audit(
+        db, actor=current_user, action="update", resource_type="job",
+        resource_id=job.id,
+        before={"jd_uploaded": had_jd_before},
+        after={"jd_uploaded": True, "jd_filename": file.filename},
+    )
     db.commit()
     db.refresh(job)
     return job

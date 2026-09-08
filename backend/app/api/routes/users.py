@@ -1,11 +1,13 @@
 import uuid
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import func
 from sqlalchemy.orm import Session
+from app.core.audit import record_audit, snapshot
 from app.core.deps import get_current_user, require_recruiter_or_admin, require_admin_or_superuser, require_superuser
 from app.db.session import get_db
+from app.models.job import Job
 from app.models.user import User, UserRole
-from app.schemas.user import UserRead, UserPublicRead, UserRoleUpdate, UserActiveUpdate
+from app.schemas.user import UserRead, UserPublicRead, UserRoleUpdate, UserActiveUpdate, UserProfileUpdate
 
 router = APIRouter()
 
@@ -13,9 +15,34 @@ router = APIRouter()
 def get_me(current_user: User = Depends(get_current_user)):
     return current_user
 
+@router.patch("/me", response_model=UserRead)
+def update_me(
+    payload: UserProfileUpdate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Self-service profile edit — any authenticated user can update their
+    own non-role, non-security fields. Role, is_active, email, and password
+    all have their own dedicated endpoints and are deliberately excluded
+    from UserProfileUpdate, so there's no privilege-escalation surface here."""
+    before = snapshot(current_user, "user")
+    updates = payload.model_dump(exclude_unset=True)
+    for field, value in updates.items():
+        setattr(current_user, field, value)
+    if updates:
+        record_audit(
+            db, actor=current_user, action="update", resource_type="user",
+            resource_id=current_user.id, before=before, after=snapshot(current_user, "user"),
+        )
+    db.commit()
+    db.refresh(current_user)
+    return current_user
+
 @router.get("")
 def list_users(
     pending: bool = False,
+    limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
     db: Session = Depends(get_db),
     current_user: User = Depends(require_recruiter_or_admin),
 ):
@@ -35,7 +62,7 @@ def list_users(
     query = db.query(User)
     if pending:
         query = query.filter(User.requested_role.isnot(None))
-    users = query.all()
+    users = query.order_by(User.created_at.desc()).offset(offset).limit(limit).all()
 
     if current_user.role in (UserRole.ADMIN, UserRole.SUPERUSER):
         return [UserRead.model_validate(u) for u in users]
@@ -49,6 +76,60 @@ def get_user(user_id: uuid.UUID, db: Session = Depends(get_db), current_user: Us
     if current_user.role in (UserRole.ADMIN, UserRole.SUPERUSER):
         return UserRead.model_validate(user)
     return UserPublicRead.model_validate(user)
+
+def _assert_can_edit_profile(current_user: User, target: User) -> None:
+    """Permission rule for PATCH /users/{user_id} (admin/superuser editing
+    someone else's profile fields — NOT role or active-status changes,
+    those have their own endpoints with their own rules).
+
+    - SUPERUSER: can edit anyone.
+    - ADMIN: can edit USER and RECRUITER accounts only — not other admins,
+      not the superuser. Symmetric with update_admin_status below, which is
+      superuser-only precisely because no admin should be able to touch
+      another admin's account.
+    - Anyone else calling this: caught earlier by the require_admin_or_superuser
+      dependency, so recruiters/users never reach this function. They edit
+      their own profile via PATCH /users/me instead.
+    """
+    if current_user.role == UserRole.SUPERUSER:
+        return
+    if current_user.role == UserRole.ADMIN and target.role in (UserRole.USER, UserRole.RECRUITER):
+        return
+    raise HTTPException(
+        status_code=status.HTTP_403_FORBIDDEN,
+        detail="Admins can only edit user and recruiter accounts, not other admins.",
+    )
+
+@router.patch("/{user_id}", response_model=UserRead)
+def update_user(
+    user_id: uuid.UUID,
+    payload: UserProfileUpdate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_admin_or_superuser),
+):
+    """Admin/superuser edit of another user's profile fields (name, phone,
+    company, title, skills, experience, location, desired_role). Reuses
+    UserProfileUpdate — the same schema /me uses — so this can never touch
+    role, is_active, email, or password; those stay on their dedicated
+    endpoints. See _assert_can_edit_profile for who can edit whom.
+    """
+    target = db.get(User, user_id)
+    if target is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+    _assert_can_edit_profile(current_user, target)
+
+    before = snapshot(target, "user")
+    updates = payload.model_dump(exclude_unset=True)
+    for field, value in updates.items():
+        setattr(target, field, value)
+    if updates:
+        record_audit(
+            db, actor=current_user, action="update", resource_type="user",
+            resource_id=target.id, before=before, after=snapshot(target, "user"),
+        )
+    db.commit()
+    db.refresh(target)
+    return target
 
 @router.patch("/{user_id}/active", response_model=UserRead)
 def update_user_active(
@@ -73,11 +154,16 @@ def update_user_active(
     if target.role == UserRole.SUPERUSER:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Cannot deactivate the superuser account.")
 
+    before = snapshot(target, "user")
     target.is_active = payload.is_active
     if payload.is_active and target.requested_role == UserRole.RECRUITER:
         target.role = UserRole.RECRUITER
         target.requested_role = None
 
+    record_audit(
+        db, actor=current_user, action="update", resource_type="user",
+        resource_id=target.id, before=before, after=snapshot(target, "user"),
+    )
     db.commit()
     db.refresh(target)
     return target
@@ -107,8 +193,14 @@ def reject_recruiter_request(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="This user has no pending recruiter request.",
         )
+    before = snapshot(target, "user")
     target.requested_role = None
     target.recruiter_rejected_at = func.now()
+    db.flush()  # so the snapshot below reflects the server-set recruiter_rejected_at
+    record_audit(
+        db, actor=current_user, action="update", resource_type="user",
+        resource_id=target.id, before=before, after=snapshot(target, "user"),
+    )
     db.commit()
     db.refresh(target)
     return target
@@ -137,11 +229,16 @@ def update_admin_status(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Cannot change the superuser's role here. Use /transfer-superuser.",
         )
+    before = snapshot(target, "user")
     target.role = payload.role
     if payload.role == UserRole.ADMIN:
         # a newly promoted admin should be usable immediately, not stuck
         # pending approval — they were already an approved user before promotion
         target.is_active = True
+    record_audit(
+        db, actor=current_user, action="update", resource_type="user",
+        resource_id=target.id, before=before, after=snapshot(target, "user"),
+    )
     db.commit()
     db.refresh(target)
     return target
@@ -161,6 +258,9 @@ def transfer_superuser(
     if target is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
 
+    before_current = snapshot(current_user, "user")
+    before_target = snapshot(target, "user")
+
     # demote first, then promote — never two SUPERUSER rows at once;
     # the DB's unique partial index is the backstop if this order
     # were ever reversed by a future bug
@@ -168,6 +268,17 @@ def transfer_superuser(
     db.flush()
     target.role = UserRole.SUPERUSER
     target.is_active = True
+    db.flush()
+
+    # two rows are mutated here, so two audit entries — one per affected user
+    record_audit(
+        db, actor=current_user, action="update", resource_type="user",
+        resource_id=current_user.id, before=before_current, after=snapshot(current_user, "user"),
+    )
+    record_audit(
+        db, actor=current_user, action="update", resource_type="user",
+        resource_id=target.id, before=before_target, after=snapshot(target, "user"),
+    )
     db.commit()
     db.refresh(target)
     return target
@@ -182,5 +293,24 @@ def delete_user(user_id: uuid.UUID, db: Session = Depends(get_db), current_user:
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Transfer superuser status to another account before deleting it.",
         )
+    # Job.created_by has cascade="all, delete-orphan" — deleting this user
+    # would silently delete every job they ever created, and each of THOSE
+    # deletions cascades to delete every application on that job. That's a
+    # lot of unrelated candidates' application history to lose because one
+    # recruiter's account got removed. Block it and make reassignment
+    # explicit instead of allowing an accidental mass-delete.
+    owned_job_count = db.query(func.count(Job.id)).filter(Job.created_by_id == target.id).scalar()
+    if owned_job_count:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                f"This user still owns {owned_job_count} job posting(s). "
+                "Reassign or close those jobs before deleting the account."
+            ),
+        )
+    record_audit(
+        db, actor=current_user, action="delete", resource_type="user",
+        resource_id=target.id, before=snapshot(target, "user"),
+    )
     db.delete(target)
     db.commit()

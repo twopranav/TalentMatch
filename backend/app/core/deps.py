@@ -1,7 +1,9 @@
+import uuid
 from fastapi import Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
 from sqlalchemy.orm import Session
 from app.core.security import decode_access_token
+from app.core.token_blacklist import is_token_blacklisted
 from app.db.session import get_db
 from app.models.user import User, UserRole
 
@@ -22,9 +24,36 @@ def get_current_user(
     user_id = payload.get("sub")
     if user_id is None:
         raise credentials_error
-    user = db.get(User, user_id)
+    # Tokens issued before this feature shipped have no "jti" and simply
+    # can't be checked — they fall through and stay valid until they expire
+    # naturally, same as before. Every token issued from now on has one.
+    jti = payload.get("jti")
+    if jti is not None and is_token_blacklisted(db, jti):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="This session has been logged out. Please log in again.",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    try:
+        # A malformed or tampered token can carry a "sub" that isn't a
+        # valid UUID at all. Without this, db.get() raises a raw DB/driver
+        # error that FastAPI turns into an unhandled 500 instead of a
+        # clean 401 — this normalizes it back into "invalid credentials".
+        user_uuid = uuid.UUID(str(user_id))
+    except (ValueError, TypeError):
+        raise credentials_error
+    user = db.get(User, user_uuid)
     if user is None:
         raise credentials_error
+    if not user.is_active:
+        # Re-checked on every request (not just at login) because JWTs are
+        # stateless: an admin deactivating this user via PATCH .../active
+        # must take effect on their very next call, not wait for their
+        # existing token to expire.
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="This account is inactive or pending approval.",
+        )
     return user
 
 def require_role(*allowed_roles: UserRole):

@@ -1,6 +1,7 @@
 import uuid
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session, joinedload
+from app.core.audit import record_audit, snapshot
 from app.core.deps import get_current_user, require_recruiter_or_admin
 from app.db.session import get_db
 from app.models.application import Application
@@ -36,17 +37,29 @@ def apply_to_job(
 
     application = Application(user_id=current_user.id, job_id=job.id)
     db.add(application)
+    db.flush()  # assigns application.id before we snapshot it for the audit row
+    record_audit(
+        db, actor=current_user, action="create", resource_type="application",
+        resource_id=application.id, after=snapshot(application, "application"),
+    )
     db.commit()
     db.refresh(application)
     return application
 
 @router.get("/me", response_model=list[ApplicationWithJob])
-def list_my_applications(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+def list_my_applications(
+    limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
     apps = (
         db.query(Application)
         .options(joinedload(Application.job))
         .filter(Application.user_id == current_user.id)
         .order_by(Application.applied_at.desc())
+        .offset(offset)
+        .limit(limit)
         .all()
     )
     return [
@@ -66,6 +79,8 @@ def _assert_can_view_job_applications(job: Job, current_user: User):
 @router.get("/job/{job_id}", response_model=list[ApplicationWithApplicant])
 def list_job_applications(
     job_id: uuid.UUID,
+    limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
     db: Session = Depends(get_db),
     current_user: User = Depends(require_recruiter_or_admin),
 ):
@@ -79,6 +94,8 @@ def list_job_applications(
         .options(joinedload(Application.user))
         .filter(Application.job_id == job_id)
         .order_by(Application.applied_at.desc())
+        .offset(offset)
+        .limit(limit)
         .all()
     )
     return [
@@ -101,7 +118,12 @@ def update_application_status(
     if application is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Application not found")
     _assert_can_view_job_applications(application.job, current_user)
+    before = snapshot(application, "application")
     application.status = payload.status
+    record_audit(
+        db, actor=current_user, action="update", resource_type="application",
+        resource_id=application.id, before=before, after=snapshot(application, "application"),
+    )
     db.commit()
     db.refresh(application)
     return application
@@ -115,5 +137,9 @@ def withdraw_application(
     application = db.get(Application, application_id)
     if application is None or application.user_id != current_user.id:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Application not found")
+    record_audit(
+        db, actor=current_user, action="delete", resource_type="application",
+        resource_id=application.id, before=snapshot(application, "application"),
+    )
     db.delete(application)
     db.commit()

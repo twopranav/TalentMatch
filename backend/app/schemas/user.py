@@ -1,7 +1,19 @@
+import re
 import uuid
 from datetime import datetime
 from pydantic import BaseModel, EmailStr, ConfigDict, field_validator
 from app.models.user import UserRole
+
+
+def _validate_password_strength(value: str) -> str:
+    if len(value) < 10:
+        raise ValueError("Password must be at least 10 characters long")
+    if not re.search(r"[A-Za-z]", value):
+        raise ValueError("Password must contain at least one letter")
+    if not re.search(r"[0-9]", value):
+        raise ValueError("Password must contain at least one number")
+    return value
+
 
 class UserCreate(BaseModel):
     email: EmailStr
@@ -19,6 +31,11 @@ class UserCreate(BaseModel):
         if value not in (UserRole.USER, UserRole.RECRUITER):
             raise ValueError("role must be 'user' or 'recruiter' at signup")
         return value
+
+    @field_validator("password")
+    @classmethod
+    def check_password_strength(cls, value: str) -> str:
+        return _validate_password_strength(value)
 
 class UserRead(BaseModel):
     id: uuid.UUID
@@ -67,3 +84,12 @@ class UserProfileUpdate(BaseModel):
 class UserActiveUpdate(BaseModel):
     # admin-only: the deactivate/reactivate action
     is_active: bool
+
+class ChangePassword(BaseModel):
+    current_password: str
+    new_password: str
+
+    @field_validator("new_password")
+    @classmethod
+    def check_password_strength(cls, value: str) -> str:
+        return _validate_password_strength(value)
