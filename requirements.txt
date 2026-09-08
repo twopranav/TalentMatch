@@ -8,6 +8,7 @@ pydantic-settings>=2.6
 python-jose[cryptography]>=3.3
 pwdlib[bcrypt]>=0.2.0
 python-multipart>=0.0.12
+azure-storage-blob>=12.24.0
 pypdf>=6.16.2
 python-docx>=1.2.0
 pytest>=8.3

@@ -1,8 +1,8 @@
 """
 Audit logging helper. Every route that creates/updates/deletes a job, user,
-or application calls record_audit() alongside its normal db.add/delete —
-see app/api/routes/jobs.py, users.py, applications.py, and the user-mutating
-endpoints in auth.py for the call sites.
+application, or resume calls record_audit() alongside its normal db.add/delete —
+see app/api/routes/jobs.py, users.py, applications.py, resumes.py, and the
+user-mutating endpoints in auth.py for the call sites.
 """
 import uuid
 from datetime import date, datetime
@@ -22,6 +22,7 @@ _SNAPSHOT_EXCLUDE: dict[str, set[str]] = {
     "job": {"jd_raw_text"},
     "user": {"hashed_password"},
     "application": set(),
+    "resume": set(),
 }
 
 

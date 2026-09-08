@@ -92,15 +92,22 @@ def make_user(db):
     make_user(role=UserRole.RECRUITER) -> (User, raw_password)
     make_user(requested_role=UserRole.RECRUITER) -> a plain USER with a
     pending recruiter request, for testing the approval/rejection flow.
-    is_active defaults to False, matching what registration actually
-    produces — pass is_active=True to skip straight to an approved account.
+    is_active defaults to False for role=USER, matching what self-registration
+    actually produces — pass is_active=True/False explicitly to override.
+    ADMIN/RECRUITER/SUPERUSER fixtures default to True instead: those roles
+    are never created via the pending-approval signup flow in the real app
+    (an admin is promoted, a recruiter is approved, a superuser is seeded),
+    so a test creating one directly is simulating an already-provisioned
+    account, not day-zero registration.
     """
     def _make(
         role: UserRole = UserRole.USER,
         email: str | None = None,
         requested_role: UserRole | None = None,
-        is_active: bool = False,
+        is_active: bool | None = None,
     ):
+        if is_active is None:
+            is_active = role != UserRole.USER
         email = email or f"{role.value}-{uuid.uuid4().hex[:8]}@test.com"
         password = "testpass123"
         user = User(
