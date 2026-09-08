@@ -1,6 +1,82 @@
 // frontend/src/components/jobs/JobList.jsx
+import { useState } from 'react'
 import Spinner from '../ui/Spinner'
-import JobCard from './JobCard'
+import { formatEnumLabel } from '../../utils/format'
+
+const STATUS_STYLES = {
+  draft: 'bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-300',
+  published: 'bg-emerald-100 text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-300',
+  closed: 'bg-slate-200 text-slate-500 dark:bg-slate-800 dark:text-slate-500',
+}
+
+const TOGGLE_BUTTON_CLASSES = (active) =>
+  `shrink-0 rounded border px-3 py-1.5 text-xs font-medium ${
+    active
+      ? 'border-slate-400 bg-slate-100 text-slate-800 dark:border-slate-500 dark:bg-slate-700 dark:text-slate-100'
+      : 'border-slate-200 bg-white text-slate-600 hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300 dark:hover:bg-slate-800'
+  }`
+
+function JobRow({ job, onOpenDetails }) {
+  const [expanded, setExpanded] = useState(null) // 'description' | 'jd' | null
+
+  const toggle = (section) => (e) => {
+    e.stopPropagation()
+    setExpanded((cur) => (cur === section ? null : section))
+  }
+
+  const subline = [job.location, formatEnumLabel(job.employment_type), formatEnumLabel(job.remote_type)]
+    .filter(Boolean)
+    .join(' · ')
+
+  return (
+    <div className="border-b border-slate-100 last:border-0 dark:border-slate-800">
+      <div className="flex items-center gap-3 px-4 py-3 hover:bg-slate-50 dark:hover:bg-slate-800/50">
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-2">
+            <span className="truncate font-medium text-slate-900 dark:text-slate-100">{job.title}</span>
+            <span className={`shrink-0 rounded-full px-2 py-0.5 text-xs font-medium ${STATUS_STYLES[job.status]}`}>
+              {formatEnumLabel(job.status)}
+            </span>
+          </div>
+          {subline && (
+            <div className="mt-0.5 truncate text-xs text-slate-400 dark:text-slate-500">{subline}</div>
+          )}
+        </div>
+
+        <button onClick={toggle('description')} className={TOGGLE_BUTTON_CLASSES(expanded === 'description')}>
+          Description
+        </button>
+
+        <button onClick={toggle('jd')} className={TOGGLE_BUTTON_CLASSES(expanded === 'jd')}>
+          JD
+        </button>
+
+        <button
+          onClick={() => onOpenDetails(job)}
+          className="shrink-0 rounded bg-slate-800 px-3 py-1.5 text-xs font-medium text-white hover:bg-slate-900 dark:bg-slate-700 dark:hover:bg-slate-600"
+        >
+          Metadata
+        </button>
+      </div>
+
+      {expanded === 'description' && (
+        <div className="border-t border-slate-100 bg-slate-50 px-4 py-3 text-sm text-slate-600 dark:border-slate-800 dark:bg-slate-800/40 dark:text-slate-300">
+          {job.description || 'No description provided.'}
+        </div>
+      )}
+
+      {expanded === 'jd' && (
+        <div className="border-t border-slate-100 bg-slate-50 px-4 py-3 text-sm text-slate-600 dark:border-slate-800 dark:bg-slate-800/40 dark:text-slate-300">
+          {job.jd_raw_text ? (
+            <p className="max-h-48 overflow-y-auto whitespace-pre-wrap">{job.jd_raw_text}</p>
+          ) : (
+            'No job description file uploaded yet.'
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
 
 export default function JobList({ jobs, loading, error, onRetry, onSelectJob }) {
   if (loading) {
@@ -31,9 +107,9 @@ export default function JobList({ jobs, loading, error, onRetry, onSelectJob }) 
   }
 
   return (
-    <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
+    <div className="overflow-hidden rounded-lg border border-slate-200 bg-white dark:border-slate-800 dark:bg-slate-900">
       {jobs.map((job) => (
-        <JobCard key={job.id} job={job} onClick={onSelectJob} />
+        <JobRow key={job.id} job={job} onOpenDetails={onSelectJob} />
       ))}
     </div>
   )

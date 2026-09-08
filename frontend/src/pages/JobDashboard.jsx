@@ -1,12 +1,13 @@
-// frontend/src/pages/JobDashboard.jsx
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 import { useAuth } from '../context/AuthContext'
 import { useJobs } from '../hooks/useJobs'
+import { useMyApplications } from '../hooks/useApplications'
 import JobList from '../components/jobs/JobList'
 import JobFilterBar from '../components/jobs/JobFilterBar'
 import JobFormDrawer from '../components/jobs/JobFormDrawer'
 import JDUploadModal from '../components/jobs/JDUploadModal'
 import JobDetailsModal from '../components/jobs/JobDetailsModal'
+import { formatEnumLabel } from '../utils/format'
 
 const STATUS_OPTIONS = ['all', 'draft', 'published', 'closed']
 
@@ -23,11 +24,19 @@ export default function JobDashboard() {
 
   const canManageJobs = user?.role === 'recruiter' || user?.role === 'admin' || user?.role === 'superuser'
   const canFilterByStatus = user?.role !== 'user'
+  const isApplicant = user?.role === 'user'
 
   const { jobs, loading, error, refetch } = useJobs({
     ...filters,
     status: filters.status === 'all' ? undefined : filters.status,
   })
+
+  const { applications: myApplications, refetch: refetchMyApplications } = useMyApplications(isApplicant)
+  const myApplicationsByJob = useMemo(() => {
+    const map = {}
+    for (const app of myApplications) map[app.job_id] = app
+    return map
+  }, [myApplications])
 
   const [selectedJob, setSelectedJob] = useState(null)
   const [formOpen, setFormOpen] = useState(false)
@@ -55,6 +64,10 @@ export default function JobDashboard() {
     refetch()
   }
 
+  const handleApplicationChanged = () => {
+    refetchMyApplications()
+  }
+
   return (
     <div className="mx-auto max-w-5xl px-6 py-8">
       <div className="mb-6 flex flex-wrap items-center justify-between gap-3">
@@ -67,13 +80,13 @@ export default function JobDashboard() {
                 <button
                   key={option}
                   onClick={() => setFilters((f) => ({ ...f, status: option }))}
-                  className={`rounded px-3 py-1.5 text-sm font-medium capitalize ${
+                  className={`rounded px-3 py-1.5 text-sm font-medium ${
                     filters.status === option
                       ? 'bg-slate-800 text-white dark:bg-slate-700'
                       : 'bg-slate-100 text-slate-600 hover:bg-slate-200 dark:bg-slate-800 dark:text-slate-300 dark:hover:bg-slate-700'
                   }`}
                 >
-                  {option}
+                  {formatEnumLabel(option)}
                 </button>
               ))}
             </div>
@@ -99,6 +112,8 @@ export default function JobDashboard() {
         onUploadJD={(job) => { setSelectedJob(null); setUploadJob(job) }}
         onChanged={handleChanged}
         onDeleted={refetch}
+        myApplication={selectedJob ? myApplicationsByJob[selectedJob.id] : null}
+        onApplicationChanged={handleApplicationChanged}
       />
 
       <JobFormDrawer open={formOpen} onClose={() => setFormOpen(false)} job={editingJob} onSaved={refetch} />

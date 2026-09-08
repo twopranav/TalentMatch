@@ -1,4 +1,4 @@
-// frontend/src/components/jobs/JobFormDrawer.jsx
+import { formatEnumLabel } from '../../utils/format'
 import { useEffect, useState } from 'react'
 import Modal from '../ui/Modal'
 import Spinner from '../ui/Spinner'
@@ -132,8 +132,8 @@ export default function JobFormDrawer({ open, onClose, job, onSaved }) {
             <label className={LABEL_CLASSES}>Employment type</label>
             <select value={form.employment_type} onChange={set('employment_type')} className={INPUT_CLASSES}>
               {EMPLOYMENT_TYPES.map((v) => (
-                <option key={v} value={v}>{v.replace('_', ' ')}</option>
-              ))}
+                <option key={v} value={v}>{formatEnumLabel(v)}</option>
+               ))}
             </select>
           </div>
           <div>
@@ -141,8 +141,8 @@ export default function JobFormDrawer({ open, onClose, job, onSaved }) {
             <select value={form.seniority} onChange={set('seniority')} className={INPUT_CLASSES}>
               <option value="">—</option>
               {SENIORITY_LEVELS.map((v) => (
-                <option key={v} value={v}>{v}</option>
-              ))}
+                <option key={v} value={v}>{formatEnumLabel(v)}</option>
+               ))}
             </select>
           </div>
           <div>
@@ -150,8 +150,8 @@ export default function JobFormDrawer({ open, onClose, job, onSaved }) {
             <select value={form.remote_type} onChange={set('remote_type')} className={INPUT_CLASSES}>
               <option value="">—</option>
               {REMOTE_TYPES.map((v) => (
-                <option key={v} value={v}>{v}</option>
-              ))}
+                <option key={v} value={v}>{formatEnumLabel(v)}</option>
+               ))}
             </select>
           </div>
         </div>

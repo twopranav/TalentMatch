@@ -1,12 +1,8 @@
-// frontend/src/components/jobs/JobFilterBar.jsx
+import { formatEnumLabel } from '../../utils/format'
+
 const EMPLOYMENT_TYPES = ['full_time', 'part_time', 'contract', 'internship']
 const SENIORITY_LEVELS = ['entry', 'mid', 'senior', 'lead', 'executive']
 const REMOTE_TYPES = ['onsite', 'remote', 'hybrid']
-
-function formatLabel(value) {
-  return value.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase())
-}
-
 const FIELD_CLASSES =
   'w-40 rounded border border-slate-300 px-2.5 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100 dark:focus:ring-slate-500'
 
@@ -65,8 +61,8 @@ export default function JobFilterBar({ filters, onChange }) {
         >
           <option value="">Any type</option>
           {EMPLOYMENT_TYPES.map((v) => (
-            <option key={v} value={v}>{formatLabel(v)}</option>
-          ))}
+            <option key={v} value={v}>{formatEnumLabel(v)}</option>
+           ))}
         </select>
       </div>
 
@@ -80,8 +76,8 @@ export default function JobFilterBar({ filters, onChange }) {
         >
           <option value="">Any level</option>
           {SENIORITY_LEVELS.map((v) => (
-            <option key={v} value={v}>{v}</option>
-          ))}
+            <option key={v} value={v}>{formatEnumLabel(v)}</option>
+           ))}
         </select>
       </div>
 
@@ -95,8 +91,8 @@ export default function JobFilterBar({ filters, onChange }) {
         >
           <option value="">Any</option>
           {REMOTE_TYPES.map((v) => (
-            <option key={v} value={v}>{v}</option>
-          ))}
+            <option key={v} value={v}>{formatEnumLabel(v)}</option>
+           ))}
         </select>
       </div>
 

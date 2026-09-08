@@ -1,13 +1,14 @@
 import uuid
 from datetime import datetime
 from enum import Enum as PyEnum
-from sqlalchemy import String, Boolean, Integer, Enum as SAEnum, func
+from sqlalchemy import String, Boolean, Integer, Enum as SAEnum, func, Index, text
 from sqlalchemy.dialects.postgresql import UUID, JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.db.session import Base
 from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from app.models.job import Job
+    from app.models.application import Application
 
 class UserRole(str, PyEnum):
     """SUPERUSER: exactly one- enforced by a DB unique partial index.
@@ -20,6 +21,19 @@ class UserRole(str, PyEnum):
 
 class User(Base):
     __tablename__ = "users"
+    __table_args__ = (
+        # Mirrors a DB-level partial unique index created directly in
+        # bf79dff49e59_superuser_admin_role_hierarchy.py (not via this
+        # model originally). Declaring it here stops `alembic revision
+        # --autogenerate` from seeing it as unmanaged drift and proposing
+        # to drop it on every future migration.
+        Index(
+            "one_superuser_only",
+            "role",
+            unique=True,
+            postgresql_where=text("role = 'SUPERUSER'::user_role"),
+        ),
+    )
     id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
     )
@@ -59,4 +73,5 @@ class User(Base):
     desired_role: Mapped[str | None] = mapped_column(String(255), nullable=True)
 
     created_at: Mapped[datetime] = mapped_column(server_default=func.now(), nullable=False)
+    applications: Mapped[list["Application"]] = relationship(back_populates="user", cascade="all, delete-orphan")   
     jobs: Mapped[list["Job"]] = relationship(back_populates="created_by", cascade="all, delete-orphan")

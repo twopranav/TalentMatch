@@ -8,6 +8,7 @@ from app.db.session import Base
 from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from app.models.user import User
+    from app.models.application import Application
 
 class JobStatus(str, PyEnum):
     DRAFT = "draft"
@@ -81,3 +82,4 @@ class Job(Base):
         server_default=func.now(), onupdate=func.now(), nullable=False
     )
     created_by: Mapped["User"] = relationship(back_populates="jobs")
+    applications: Mapped[list["Application"]] = relationship(back_populates="job", cascade="all, delete-orphan")

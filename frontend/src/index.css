@@ -1,2 +1,18 @@
 @import "tailwindcss";
 @custom-variant dark (&:where(.dark, .dark *));
+
+@theme {
+  /* Chrome's actual dark-gray palette — replaces Tailwind's slate,
+     which has a blue/purple undertone */
+  --color-slate-50: #f8f9fa;
+  --color-slate-100: #f1f3f4;
+  --color-slate-200: #e8eaed;
+  --color-slate-300: #dadce0;
+  --color-slate-400: #bdc1c6;
+  --color-slate-500: #9aa0a6;
+  --color-slate-600: #80868b;
+  --color-slate-700: #5f6368;
+  --color-slate-800: #3c4043;
+  --color-slate-900: #292a2d;
+  --color-slate-950: #202124;
+}

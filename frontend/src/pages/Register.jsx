@@ -13,6 +13,7 @@ export default function Register() {
   const [form, setForm] = useState({
     email: '',
     password: '',
+    confirmPassword: '',
     full_name: '',
     phone: '',
     wantsRecruiter: false,
@@ -24,8 +25,14 @@ export default function Register() {
     setForm((f) => ({ ...f, [field]: value }))
   }
 
+  // Live check — evaluated on every render, not just on submit, so the
+  // message appears the instant the second field diverges from the first.
+  const passwordsMismatch = form.confirmPassword.length > 0 && form.password !== form.confirmPassword
+  const canSubmit = form.password.length > 0 && form.confirmPassword.length > 0 && !passwordsMismatch
+
   const handleSubmit = async (e) => {
     e.preventDefault()
+    if (!canSubmit) return
     setSubmitting(true)
     try {
       await register({
@@ -92,6 +99,33 @@ export default function Register() {
           className="mb-4 w-full rounded border border-slate-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100 dark:focus:ring-slate-500"
         />
 
+        <label className="mb-1 block text-sm font-medium text-slate-700 dark:text-slate-300" htmlFor="confirm_password">
+          Confirm password
+        </label>
+        <input
+          id="confirm_password"
+          type="password"
+          required
+          minLength={8}
+          value={form.confirmPassword}
+          onChange={set('confirmPassword')}
+          aria-invalid={passwordsMismatch}
+          aria-describedby={passwordsMismatch ? 'confirm-password-error' : undefined}
+          className={`mb-1 w-full rounded border px-3 py-2 text-sm focus:outline-none focus:ring-2 dark:bg-slate-800 dark:text-slate-100 ${
+            passwordsMismatch
+              ? 'border-red-400 focus:ring-red-400 dark:border-red-500 dark:focus:ring-red-500'
+              : 'border-slate-300 focus:ring-slate-400 dark:border-slate-700 dark:focus:ring-slate-500'
+          }`}
+        />
+        {/* Reserve the line even when empty so the layout doesn't jump
+            as the message appears/disappears. */}
+        <p
+          id="confirm-password-error"
+          className={`mb-4 min-h-4 text-xs font-medium text-red-600 dark:text-red-400 ${passwordsMismatch ? '' : 'invisible'}`}
+        >
+          Passwords don't match
+        </p>
+
         <label className="mb-1 block text-sm font-medium text-slate-700 dark:text-slate-300" htmlFor="full_name">
           Full name
         </label>
@@ -126,7 +160,7 @@ export default function Register() {
 
         <button
           type="submit"
-          disabled={submitting}
+          disabled={submitting || !canSubmit}
           className="flex w-full items-center justify-center gap-2 rounded bg-slate-800 px-4 py-2 text-sm font-medium text-white hover:bg-slate-900 disabled:opacity-60 dark:bg-slate-700 dark:hover:bg-slate-600"
         >
           {submitting ? <Spinner size="sm" label="Creating account" /> : 'Create account'}

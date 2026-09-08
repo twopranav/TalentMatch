@@ -1,10 +1,12 @@
-// frontend/src/components/jobs/JobDetailsModal.jsx
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import Modal from '../ui/Modal'
 import ConfirmDialog from '../ui/ConfirmDialog'
+import Spinner from '../ui/Spinner'
 import { useAuth } from '../../context/AuthContext'
 import { useToast } from '../ui/Toast'
 import { updateJob, deleteJob } from '../../api/jobs'
+import { applyToJob, withdrawApplication, fetchJobApplications, updateApplicationStatus } from '../../api/applications'
+import { formatEnumLabel } from '../../utils/format'
 
 const STATUS_STYLES = {
   draft: 'bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-300',
@@ -12,28 +14,56 @@ const STATUS_STYLES = {
   closed: 'bg-slate-200 text-slate-500 dark:bg-slate-800 dark:text-slate-500',
 }
 
-function formatLabel(value) {
-  if (!value) return '—'
-  return String(value).replace(/_/g, ' ')
+const APPLICATION_STATUS_OPTIONS = ['applied', 'under_review', 'shortlisted', 'rejected', 'hired']
+
+const APPLICATION_STATUS_STYLES = {
+  applied: 'bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-300',
+  under_review: 'bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-300',
+  shortlisted: 'bg-blue-100 text-blue-800 dark:bg-blue-900/40 dark:text-blue-300',
+  rejected: 'bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300',
+  hired: 'bg-emerald-100 text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-300',
 }
 
-export default function JobDetailsModal({ open, onClose, job, onEdit, onUploadJD, onChanged, onDeleted }) {
+function formatLabel(value) {
+  return value ? formatEnumLabel(value) : '—'
+}
+
+export default function JobDetailsModal({ open, onClose, job, onEdit, onUploadJD, onChanged, onDeleted, myApplication, onApplicationChanged }) {
   const { user } = useAuth()
   const { showToast } = useToast()
   const [confirmDelete, setConfirmDelete] = useState(false)
   const [busy, setBusy] = useState(false)
+  const [applying, setApplying] = useState(false)
 
-  if (!job) return null
+  const [applicants, setApplicants] = useState([])
+  const [applicantsLoading, setApplicantsLoading] = useState(false)
+  const [applicantsError, setApplicantsError] = useState(null)
 
   const isPrivileged = user?.role === 'admin' || user?.role === 'superuser'
-  const isOwner = job.created_by_id === user?.id
+  const isOwner = Boolean(job) && job.created_by_id === user?.id
   const canManage = isPrivileged || isOwner
+  const isApplicant = user?.role === 'user'
+
+  useEffect(() => {
+    if (!open || !job || !canManage) {
+      setApplicants([])
+      return
+    }
+    setApplicantsLoading(true)
+    setApplicantsError(null)
+    fetchJobApplications(job.id)
+      .then(setApplicants)
+      .catch(() => setApplicantsError('Could not load applicants.'))
+      .finally(() => setApplicantsLoading(false))
+  }, [open, job, canManage])
+
+  if (!job) return null
 
   const setStatus = async (status) => {
     setBusy(true)
     try {
       const updated = await updateJob(job.id, { status })
-      showToast(`Job marked ${status}.`, 'success')
+      showToast(`Job marked ${formatEnumLabel(status).toLowerCase()}.`, 'success')
       onChanged(updated)
     } catch (err) {
       showToast('Could not update the job status.', 'error')
@@ -56,6 +86,44 @@ export default function JobDetailsModal({ open, onClose, job, onEdit, onUploadJD
     }
   }
 
+  const handleApply = async () => {
+    setApplying(true)
+    try {
+      await applyToJob(job.id)
+      showToast('Application submitted.', 'success')
+      onApplicationChanged?.()
+    } catch (err) {
+      showToast(err.response?.data?.detail || 'Could not submit your application.', 'error')
+    } finally {
+      setApplying(false)
+    }
+  }
+
+  const handleWithdraw = async () => {
+    if (!myApplication) return
+    setApplying(true)
+    try {
+      await withdrawApplication(myApplication.id)
+      showToast('Application withdrawn.', 'success')
+      onApplicationChanged?.()
+    } catch (err) {
+      showToast('Could not withdraw your application.', 'error')
+    } finally {
+      setApplying(false)
+    }
+  }
+
+  const handleApplicantStatusChange = async (applicationId, status) => {
+    setApplicants((prev) => prev.map((a) => (a.id === applicationId ? { ...a, status } : a)))
+    try {
+      await updateApplicationStatus(applicationId, status)
+      showToast('Applicant status updated.', 'success')
+    } catch (err) {
+      showToast('Could not update applicant status.', 'error')
+      fetchJobApplications(job.id).then(setApplicants).catch(() => {})
+    }
+  }
+
   return (
     <>
       <Modal
@@ -63,7 +131,7 @@ export default function JobDetailsModal({ open, onClose, job, onEdit, onUploadJD
         onClose={onClose}
         title={job.title}
         footer={
-          canManage && (
+          canManage ? (
             <>
               <button onClick={() => setConfirmDelete(true)} disabled={busy} className="rounded px-4 py-2 text-sm font-medium text-red-600 hover:bg-red-50 dark:text-red-400 dark:hover:bg-red-950">
                 Delete
@@ -85,13 +153,38 @@ export default function JobDetailsModal({ open, onClose, job, onEdit, onUploadJD
                 Edit
               </button>
             </>
-          )
+          ) : isApplicant && job.status === 'published' ? (
+            myApplication ? (
+              <button
+                onClick={handleWithdraw}
+                disabled={applying}
+                className="flex items-center gap-2 rounded px-4 py-2 text-sm font-medium text-red-600 hover:bg-red-50 disabled:opacity-50 dark:text-red-400 dark:hover:bg-red-950"
+              >
+                {applying ? <Spinner size="sm" label="Working" /> : 'Withdraw application'}
+              </button>
+            ) : (
+              <button
+                onClick={handleApply}
+                disabled={applying}
+                className="flex items-center gap-2 rounded bg-slate-800 px-4 py-2 text-sm font-medium text-white hover:bg-slate-900 disabled:opacity-60 dark:bg-slate-700 dark:hover:bg-slate-600"
+              >
+                {applying ? <Spinner size="sm" label="Working" /> : 'Apply'}
+              </button>
+            )
+          ) : null
         }
       >
         <div className="space-y-3 text-sm">
-          <span className={`inline-block rounded-full px-2.5 py-0.5 text-xs font-medium ${STATUS_STYLES[job.status]}`}>
-            {job.status}
-          </span>
+          <div className="flex flex-wrap items-center gap-2">
+            <span className={`inline-block rounded-full px-2.5 py-0.5 text-xs font-medium ${STATUS_STYLES[job.status]}`}>
+              {formatEnumLabel(job.status)}
+            </span>
+            {isApplicant && myApplication && (
+              <span className={`inline-block rounded-full px-2.5 py-0.5 text-xs font-medium ${APPLICATION_STATUS_STYLES[myApplication.status]}`}>
+                Your application: {formatEnumLabel(myApplication.status)}
+              </span>
+            )}
+          </div>
 
           {job.description && <p className="text-slate-600 dark:text-slate-300">{job.description}</p>}
 
@@ -118,6 +211,54 @@ export default function JobDetailsModal({ open, onClose, job, onEdit, onUploadJD
               <p className="mt-1 max-h-40 overflow-y-auto whitespace-pre-wrap rounded border border-slate-100 bg-slate-50 p-3 text-xs text-slate-600 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300">
                 {job.jd_raw_text}
               </p>
+            </div>
+          )}
+
+          {canManage && (
+            <div>
+              <dt className="mb-2 text-xs text-slate-400 dark:text-slate-500">Applicants ({applicants.length})</dt>
+              {applicantsLoading ? (
+                <div className="flex justify-center py-4"><Spinner size="sm" label="Loading applicants" /></div>
+              ) : applicantsError ? (
+                <p className="text-xs text-red-600 dark:text-red-400">{applicantsError}</p>
+              ) : applicants.length === 0 ? (
+                <p className="text-xs text-slate-400 dark:text-slate-500">No applications yet.</p>
+              ) : (
+                <div className="max-h-52 overflow-y-auto rounded border border-slate-100 dark:border-slate-700">
+                  <table className="w-full text-left text-xs">
+                    <thead className="bg-slate-50 text-slate-400 dark:bg-slate-800 dark:text-slate-500">
+                      <tr>
+                        <th className="px-3 py-2 font-medium">Applicant</th>
+                        <th className="px-3 py-2 font-medium">Applied</th>
+                        <th className="px-3 py-2 font-medium">Status</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {applicants.map((a) => (
+                        <tr key={a.id} className="border-t border-slate-100 dark:border-slate-800">
+                          <td className="px-3 py-2 text-slate-700 dark:text-slate-300">
+                            {a.applicant_name || a.applicant_email}
+                          </td>
+                          <td className="px-3 py-2 text-slate-500 dark:text-slate-400">
+                            {new Date(a.applied_at).toLocaleDateString()}
+                          </td>
+                          <td className="px-3 py-2">
+                            <select
+                              value={a.status}
+                              onChange={(e) => handleApplicantStatusChange(a.id, e.target.value)}
+                              className="rounded border border-slate-200 bg-white px-2 py-1 text-xs dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100"
+                            >
+                              {APPLICATION_STATUS_OPTIONS.map((s) => (
+                                <option key={s} value={s}>{formatEnumLabel(s)}</option>
+                              ))}
+                            </select>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
             </div>
           )}
         </div>
