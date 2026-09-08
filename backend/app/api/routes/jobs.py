@@ -115,6 +115,11 @@ def update_job(job_id: uuid.UUID, payload: JobUpdate, db: Session = Depends(get_
                     status_code=status.HTTP_400_BAD_REQUEST,
                     detail="A job needs both a title and a description before it can be published.",
                 )
+            if not job.jd_raw_text:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="A job needs a job description file uploaded before it can be published.",
+                )
 
     if updates.get("status") == JobStatus.PUBLISHED and job.published_at is None:
         job.published_at = datetime.now(timezone.utc)

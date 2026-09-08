@@ -7,6 +7,7 @@ import JobDashboard from './pages/JobDashboard'
 import UserManagement from './pages/UserManagement'
 import ProtectedRoute from './components/ProtectedRoute'
 import RequireRole from './components/RequireRole'
+import Profile from './pages/Profile'
 
 function LoginRoute() {
   const { isAuthenticated } = useAuth()
@@ -29,6 +30,14 @@ function App() {
           element={
             <ProtectedRoute>
               <JobDashboard />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/profile"
+          element={
+            <ProtectedRoute>
+              <Profile />
             </ProtectedRoute>
           }
         />

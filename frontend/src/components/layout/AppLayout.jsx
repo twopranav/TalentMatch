@@ -15,6 +15,7 @@ export default function AppLayout({ children }) {
             <span className="text-sm font-semibold text-slate-900 dark:text-slate-100">TalentMatch</span>
             <nav className="flex gap-4 text-sm text-slate-600 dark:text-slate-400">
               <Link to="/" className="hover:text-slate-900 dark:hover:text-slate-100">Jobs</Link>
+              <Link to="/profile" className="hover:text-slate-900 dark:hover:text-slate-100">Profile</Link>
               {canViewUsers && <Link to="/users" className="hover:text-slate-900 dark:hover:text-slate-100">Users</Link>}
             </nav>
           </div>
