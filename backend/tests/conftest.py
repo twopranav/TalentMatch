@@ -88,11 +88,28 @@ def client():
 
 @pytest.fixture()
 def make_user(db):
-    """make_user(role=UserRole.RECRUITER) -> (User, raw_password)"""
-    def _make(role: UserRole = UserRole.USER, email: str | None = None):
+    """
+    make_user(role=UserRole.RECRUITER) -> (User, raw_password)
+    make_user(requested_role=UserRole.RECRUITER) -> a plain USER with a
+    pending recruiter request, for testing the approval/rejection flow.
+    is_active defaults to False, matching what registration actually
+    produces — pass is_active=True to skip straight to an approved account.
+    """
+    def _make(
+        role: UserRole = UserRole.USER,
+        email: str | None = None,
+        requested_role: UserRole | None = None,
+        is_active: bool = False,
+    ):
         email = email or f"{role.value}-{uuid.uuid4().hex[:8]}@test.com"
         password = "testpass123"
-        user = User(email=email, hashed_password=hash_password(password), role=role)
+        user = User(
+            email=email,
+            hashed_password=hash_password(password),
+            role=role,
+            requested_role=requested_role,
+            is_active=is_active,
+        )
         db.add(user)
         db.commit()
         db.refresh(user)

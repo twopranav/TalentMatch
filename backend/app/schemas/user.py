@@ -1,6 +1,6 @@
 import uuid
 from datetime import datetime
-from pydantic import BaseModel, EmailStr, ConfigDict
+from pydantic import BaseModel, EmailStr, ConfigDict, field_validator
 from app.models.user import UserRole
 
 class UserCreate(BaseModel):
@@ -8,11 +8,24 @@ class UserCreate(BaseModel):
     password: str
     full_name: str | None = None
     phone: str | None = None
+    # What the signer-upper is asking to be. Defaults to USER so existing
+    # clients that don't send this field are unaffected. Validated below so
+    # nobody can request ADMIN/SUPERUSER through signup.
+    role: UserRole = UserRole.USER
+
+    @field_validator("role")
+    @classmethod
+    def restrict_signup_role(cls, value: UserRole) -> UserRole:
+        if value not in (UserRole.USER, UserRole.RECRUITER):
+            raise ValueError("role must be 'user' or 'recruiter' at signup")
+        return value
 
 class UserRead(BaseModel):
     id: uuid.UUID
     email: EmailStr
     role: UserRole
+    requested_role: UserRole | None
+    recruiter_rejected_at: datetime | None
     full_name: str | None
     phone: str | None
     is_active: bool

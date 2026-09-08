@@ -29,6 +29,19 @@ class User(Base):
         SAEnum(UserRole, name="user_role"), default=UserRole.USER, nullable=False
     )
 
+    # Set at signup when someone asks to be a recruiter. Stays populated
+    # until an admin approves (-> promotes `role` to RECRUITER and clears
+    # this) or explicitly rejects it (-> cleared, recruiter_rejected_at set).
+    # NEVER read this column for permission checks — only `role` grants
+    # access. This column only means "there's a pending request."
+    requested_role: Mapped[UserRole | None] = mapped_column(
+        SAEnum(UserRole, name="user_role"), nullable=True, default=None
+    )
+    # Set only by the explicit reject action below. Lets you tell "never
+    # asked to be a recruiter" apart from "asked, and was turned down" —
+    # both look identical (requested_role=None, role=USER) without this.
+    recruiter_rejected_at: Mapped[datetime | None] = mapped_column(nullable=True, default=None)
+
     # --- profile fields, all roles ---
     full_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
     phone: Mapped[str | None] = mapped_column(String(50), nullable=True)

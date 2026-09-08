@@ -1,5 +1,6 @@
 import uuid
 from fastapi import APIRouter, Depends, HTTPException, status
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 from app.core.deps import get_current_user, require_recruiter_or_admin, require_admin_or_superuser, require_superuser
 from app.db.session import get_db
@@ -13,8 +14,29 @@ def get_me(current_user: User = Depends(get_current_user)):
     return current_user
 
 @router.get("")
-def list_users(db: Session = Depends(get_db), current_user: User = Depends(require_recruiter_or_admin)):
-    users = db.query(User).all()
+def list_users(
+    pending: bool = False,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_recruiter_or_admin),
+):
+    """
+    pending=true filters to accounts with an unreviewed recruiter request
+    (requested_role is not null). Only admins/superusers may use this filter
+    — a recruiter listing users has no legitimate reason to see who else is
+    waiting on approval, so this is checked separately from the normal
+    admin-vs-recruiter schema trim below.
+    """
+    if pending and current_user.role not in (UserRole.ADMIN, UserRole.SUPERUSER):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only admins can view pending requests.",
+        )
+
+    query = db.query(User)
+    if pending:
+        query = query.filter(User.requested_role.isnot(None))
+    users = query.all()
+
     if current_user.role in (UserRole.ADMIN, UserRole.SUPERUSER):
         return [UserRead.model_validate(u) for u in users]
     return [UserPublicRead.model_validate(u) for u in users]
@@ -37,13 +59,56 @@ def update_user_active(
 ):
     """Approve (activate) or deactivate a recruiter/user account.
     Any admin or the superuser can do this — this is the routine,
-    frequent action, unlike role changes below."""
+    frequent action, unlike role changes below.
+
+    If the account signed up requesting RECRUITER (requested_role is set)
+    and this call activates it (is_active=True), that request is granted:
+    role becomes RECRUITER and requested_role is cleared. Deactivating, or
+    activating an account with no pending request, never touches role —
+    an unapproved recruiter signup simply stays a USER.
+    """
     target = db.get(User, user_id)
     if target is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
     if target.role == UserRole.SUPERUSER:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Cannot deactivate the superuser account.")
+
     target.is_active = payload.is_active
+    if payload.is_active and target.requested_role == UserRole.RECRUITER:
+        target.role = UserRole.RECRUITER
+        target.requested_role = None
+
+    db.commit()
+    db.refresh(target)
+    return target
+
+@router.post("/{user_id}/reject-recruiter-request", response_model=UserRead)
+def reject_recruiter_request(
+    user_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_admin_or_superuser),
+):
+    """
+    Explicitly decline a pending recruiter signup request. This is the
+    counterpart to the auto-promotion in update_user_active above: that one
+    fires on approval, this one fires on denial. Clears requested_role (so
+    it drops out of the pending filter) and stamps recruiter_rejected_at,
+    which is the only way to later tell "never asked" apart from "asked,
+    got turned down" — both otherwise look identical (requested_role=None,
+    role=USER). role and is_active are untouched: rejecting a recruiter
+    request does not deactivate or otherwise punish the underlying account,
+    it just closes out the request.
+    """
+    target = db.get(User, user_id)
+    if target is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+    if target.requested_role is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="This user has no pending recruiter request.",
+        )
+    target.requested_role = None
+    target.recruiter_rejected_at = func.now()
     db.commit()
     db.refresh(target)
     return target
