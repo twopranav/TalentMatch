@@ -18,8 +18,9 @@ class Settings(BaseSettings):
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 60
 
     # Azure Blob / ADLS
-    AZURE_STORAGE_CONNECTION_STRING: str = ""
-    AZURE_STORAGE_CONTAINER: str = "resumes"
+    STORAGE_BACKEND: str = "local"  # "local" or "azure"
+    AZURE_STORAGE_SAS_URL: str | None = None
+    LOCAL_STORAGE_ROOT: str = "./storage/resumes"
 
     # CORS
     CORS_ORIGINS: list[str] = ["http://localhost:5173"]

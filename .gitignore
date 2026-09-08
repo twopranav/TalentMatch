@@ -4,10 +4,14 @@ __pycache__/
 .venv/
 venv/
 *.egg-info/
+.pytest_cache/
 
 # Env
 .env
 *.env.local
+
+# Local resume storage
+storage/
 
 # Node
 node_modules/
