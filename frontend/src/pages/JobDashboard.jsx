@@ -8,11 +8,14 @@ import JobFormDrawer from '../components/jobs/JobFormDrawer'
 import JDUploadModal from '../components/jobs/JDUploadModal'
 import JobDetailsModal from '../components/jobs/JobDetailsModal'
 import { formatEnumLabel } from '../utils/format'
+import { applyToJob, withdrawApplication } from '../api/applications'
+import { useToast } from '../components/ui/Toast'
 
 const STATUS_OPTIONS = ['all', 'draft', 'published', 'closed']
 
 export default function JobDashboard() {
   const { user } = useAuth()
+  const { showToast } = useToast()
   const [filters, setFilters] = useState({
     status: 'all',
     location: '',
@@ -42,6 +45,7 @@ export default function JobDashboard() {
   const [formOpen, setFormOpen] = useState(false)
   const [editingJob, setEditingJob] = useState(null)
   const [uploadJob, setUploadJob] = useState(null)
+  const [applyingJobId, setApplyingJobId] = useState(null)
 
   const openCreate = () => {
     setEditingJob(null)
@@ -66,6 +70,32 @@ export default function JobDashboard() {
 
   const handleApplicationChanged = () => {
     refetchMyApplications()
+  }
+
+  const handleApply = async (job) => {
+    setApplyingJobId(job.id)
+    try {
+      await applyToJob(job.id)
+      showToast('Application submitted.', 'success')
+      refetchMyApplications()
+    } catch (err) {
+      showToast(err.response?.data?.detail || 'Could not submit your application.', 'error')
+    } finally {
+      setApplyingJobId(null)
+    }
+  }
+
+  const handleWithdraw = async (application) => {
+    setApplyingJobId(application.job_id)
+    try {
+      await withdrawApplication(application.id)
+      showToast('Application withdrawn.', 'success')
+      refetchMyApplications()
+    } catch (err) {
+      showToast('Could not withdraw your application.', 'error')
+    } finally {
+      setApplyingJobId(null)
+    }
   }
 
   return (
@@ -102,7 +132,18 @@ export default function JobDashboard() {
 
       <JobFilterBar filters={filters} onChange={setFilters} />
 
-      <JobList jobs={jobs} loading={loading} error={error} onRetry={refetch} onSelectJob={setSelectedJob} />
+      <JobList
+        jobs={jobs}
+        loading={loading}
+        error={error}
+        onRetry={refetch}
+        onSelectJob={setSelectedJob}
+        isApplicant={isApplicant}
+        myApplicationsByJob={myApplicationsByJob}
+        onApply={handleApply}
+        onWithdraw={handleWithdraw}
+        applyingJobId={applyingJobId}
+      />
 
       <JobDetailsModal
         open={Boolean(selectedJob)}

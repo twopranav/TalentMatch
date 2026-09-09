@@ -6,6 +6,7 @@ import ThemeToggle from '../ui/ThemeToggle'
 export default function AppLayout({ children }) {
   const { user, logout } = useAuth()
   const canViewUsers = ['recruiter', 'admin', 'superuser'].includes(user?.role)
+  const isApplicant = user?.role === 'user'
 
   return (
     <div className="min-h-screen bg-slate-50 dark:bg-slate-950">
@@ -16,6 +17,8 @@ export default function AppLayout({ children }) {
             <nav className="flex gap-4 text-sm text-slate-600 dark:text-slate-400">
               <Link to="/" className="hover:text-slate-900 dark:hover:text-slate-100">Jobs</Link>
               <Link to="/profile" className="hover:text-slate-900 dark:hover:text-slate-100">Profile</Link>
+              {isApplicant && <Link to="/applied-jobs" className="hover:text-slate-900 dark:hover:text-slate-100">Applied Jobs</Link>}
+              {canViewUsers && <Link to="/my-jobs" className="hover:text-slate-900 dark:hover:text-slate-100">My Jobs</Link>}
               {canViewUsers && <Link to="/users" className="hover:text-slate-900 dark:hover:text-slate-100">Users</Link>}
             </nav>
           </div>

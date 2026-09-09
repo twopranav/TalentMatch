@@ -1,4 +1,3 @@
-// frontend/src/App.jsx
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
 import { useAuth } from './context/AuthContext'
 import Login from './pages/Login'
@@ -8,6 +7,8 @@ import UserManagement from './pages/UserManagement'
 import ProtectedRoute from './components/ProtectedRoute'
 import RequireRole from './components/RequireRole'
 import Profile from './pages/Profile'
+import MyJobs from './pages/MyJobs'
+import AppliedJobs from './pages/AppliedJobs'
 
 function LoginRoute() {
   const { isAuthenticated } = useAuth()
@@ -24,7 +25,9 @@ function App() {
     <BrowserRouter>
       <Routes>
         <Route path="/login" element={<LoginRoute />} />
+
         <Route path="/register" element={<RegisterRoute />} />
+
         <Route
           path="/"
           element={
@@ -33,6 +36,7 @@ function App() {
             </ProtectedRoute>
           }
         />
+
         <Route
           path="/profile"
           element={
@@ -41,6 +45,29 @@ function App() {
             </ProtectedRoute>
           }
         />
+
+        <Route
+          path="/applied-jobs"
+          element={
+            <ProtectedRoute>
+              <RequireRole roles={['user']}>
+                <AppliedJobs />
+              </RequireRole>
+            </ProtectedRoute>
+          }
+        />
+
+        <Route
+          path="/my-jobs"
+          element={
+            <ProtectedRoute>
+              <RequireRole roles={['recruiter', 'admin', 'superuser']}>
+                <MyJobs />
+              </RequireRole>
+            </ProtectedRoute>
+          }
+        />
+
         <Route
           path="/users"
           element={
@@ -51,6 +78,7 @@ function App() {
             </ProtectedRoute>
           }
         />
+
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
     </BrowserRouter>

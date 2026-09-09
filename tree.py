@@ -1,14 +1,8 @@
-#!/usr/bin/env python3
 """
-Print a directory tree starting from a root path.
+Print the directory tree starting from root.
 
 Usage:
     python print_tree.py [root_path] [--all] [--max-depth N]
-
-Examples:
-    python print_tree.py .
-    python print_tree.py /path/to/project --max-depth 3
-    python print_tree.py . --all      # don't skip node_modules/.git/etc.
 """
 
 import argparse
@@ -29,11 +23,9 @@ def should_skip(name: str, ignore: set[str]) -> bool:
         return True
     return False
 
-
 def print_tree(root: str, ignore: set[str], max_depth: int | None, prefix: str = "", depth: int = 0):
     if max_depth is not None and depth > max_depth:
         return
-
     try:
         entries = sorted(
             os.listdir(root),
@@ -45,20 +37,16 @@ def print_tree(root: str, ignore: set[str], max_depth: int | None, prefix: str =
     except FileNotFoundError:
         print(f"Path not found: {root}")
         return
-
     entries = [e for e in entries if not should_skip(e, ignore)]
-
     for i, entry in enumerate(entries):
         path = os.path.join(root, entry)
         is_last = i == len(entries) - 1
         connector = "└── " if is_last else "├── "
         is_dir = os.path.isdir(path)
         print(prefix + connector + entry + ("/" if is_dir else ""))
-
         if is_dir:
             extension = "    " if is_last else "│   "
             print_tree(path, ignore, max_depth, prefix + extension, depth + 1)
-
 
 def main():
     parser = argparse.ArgumentParser(description="Print a directory tree.")
@@ -66,10 +54,8 @@ def main():
     parser.add_argument("--all", action="store_true", help="Don't skip common noise dirs (node_modules, .git, etc.)")
     parser.add_argument("--max-depth", type=int, default=None, help="Limit recursion depth")
     args = parser.parse_args()
-
     root = os.path.abspath(args.root)
     ignore = set() if args.all else DEFAULT_IGNORE
-
     print(root)
     print_tree(root, ignore, args.max_depth)
 

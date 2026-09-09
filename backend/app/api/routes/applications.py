@@ -55,7 +55,7 @@ def list_my_applications(
 ):
     apps = (
         db.query(Application)
-        .options(joinedload(Application.job))
+        .options(joinedload(Application.job).joinedload(Job.created_by))
         .filter(Application.user_id == current_user.id)
         .order_by(Application.applied_at.desc())
         .offset(offset)
@@ -67,6 +67,7 @@ def list_my_applications(
             id=a.id, user_id=a.user_id, job_id=a.job_id, status=a.status,
             applied_at=a.applied_at, updated_at=a.updated_at,
             job_title=a.job.title, job_status=a.job.status.value,
+            location=a.job.location, company=a.job.created_by.company,
         )
         for a in apps
     ]

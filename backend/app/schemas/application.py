@@ -23,6 +23,8 @@ class ApplicationRead(BaseModel):
 class ApplicationWithJob(ApplicationRead):
     job_title: str
     job_status: str
+    location: str | None
+    company : str | None
 
 # Recruiter/admin "who applied" view.
 class ApplicationWithApplicant(ApplicationRead):

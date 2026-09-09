@@ -16,7 +16,7 @@ const TOGGLE_BUTTON_CLASSES = (active) =>
       : 'border-slate-200 bg-white text-slate-600 hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300 dark:hover:bg-slate-800'
   }`
 
-function JobRow({ job, onOpenDetails }) {
+function JobRow({ job, onOpenDetails, isApplicant, myApplication, onApply, onWithdraw, applying }) {
   const [expanded, setExpanded] = useState(null) // 'description' | 'jd' | null
 
   const toggle = (section) => (e) => {
@@ -53,10 +53,30 @@ function JobRow({ job, onOpenDetails }) {
 
         <button
           onClick={() => onOpenDetails(job)}
-          className="shrink-0 rounded bg-slate-800 px-3 py-1.5 text-xs font-medium text-white hover:bg-slate-900 dark:bg-slate-700 dark:hover:bg-slate-600"
+          className={TOGGLE_BUTTON_CLASSES(false)}
         >
           Metadata
         </button>
+
+        {isApplicant && job.status === 'published' && (
+          myApplication ? (
+            <button
+              onClick={() => onWithdraw(myApplication)}
+              disabled={applying}
+              className="shrink-0 rounded px-3 py-1.5 text-xs font-medium text-red-600 hover:bg-red-50 disabled:opacity-50 dark:text-red-400 dark:hover:bg-red-950"
+            >
+              {applying ? 'Withdrawing…' : 'Withdraw'}
+            </button>
+          ) : (
+            <button
+              onClick={() => onApply(job)}
+              disabled={applying}
+              className="shrink-0 rounded bg-slate-800 px-3 py-1.5 text-xs font-medium text-white hover:bg-slate-900 disabled:opacity-60 dark:bg-slate-700 dark:hover:bg-slate-600"
+            >
+              {applying ? 'Applying…' : 'Apply'}
+            </button>
+          )
+        )}
       </div>
 
       {expanded === 'description' && (
@@ -78,7 +98,10 @@ function JobRow({ job, onOpenDetails }) {
   )
 }
 
-export default function JobList({ jobs, loading, error, onRetry, onSelectJob }) {
+export default function JobList({
+  jobs, loading, error, onRetry, onSelectJob,
+  isApplicant, myApplicationsByJob = {}, onApply, onWithdraw, applyingJobId,
+}) {
   if (loading) {
     return (
       <div className="flex justify-center py-16">
@@ -109,7 +132,16 @@ export default function JobList({ jobs, loading, error, onRetry, onSelectJob }) 
   return (
     <div className="overflow-hidden rounded-lg border border-slate-200 bg-white dark:border-slate-800 dark:bg-slate-900">
       {jobs.map((job) => (
-        <JobRow key={job.id} job={job} onOpenDetails={onSelectJob} />
+        <JobRow
+          key={job.id}
+          job={job}
+          onOpenDetails={onSelectJob}
+          isApplicant={isApplicant}
+          myApplication={myApplicationsByJob[job.id]}
+          onApply={onApply}
+          onWithdraw={onWithdraw}
+          applying={applyingJobId === job.id}
+        />
       ))}
     </div>
   )

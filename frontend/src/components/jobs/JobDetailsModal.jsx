@@ -1,11 +1,12 @@
-import { useEffect, useState } from 'react'
+import { useState } from 'react'
 import Modal from '../ui/Modal'
 import ConfirmDialog from '../ui/ConfirmDialog'
 import Spinner from '../ui/Spinner'
 import { useAuth } from '../../context/AuthContext'
 import { useToast } from '../ui/Toast'
 import { updateJob, deleteJob } from '../../api/jobs'
-import { applyToJob, withdrawApplication, fetchJobApplications, updateApplicationStatus } from '../../api/applications'
+import { applyToJob, withdrawApplication } from '../../api/applications'
+import ApplicantsPanel from './ApplicantsPanel'
 import { formatEnumLabel } from '../../utils/format'
 
 const STATUS_STYLES = {
@@ -13,8 +14,6 @@ const STATUS_STYLES = {
   published: 'bg-emerald-100 text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-300',
   closed: 'bg-slate-200 text-slate-500 dark:bg-slate-800 dark:text-slate-500',
 }
-
-const APPLICATION_STATUS_OPTIONS = ['applied', 'under_review', 'shortlisted', 'rejected', 'hired']
 
 const APPLICATION_STATUS_STYLES = {
   applied: 'bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-300',
@@ -35,27 +34,10 @@ export default function JobDetailsModal({ open, onClose, job, onEdit, onUploadJD
   const [busy, setBusy] = useState(false)
   const [applying, setApplying] = useState(false)
 
-  const [applicants, setApplicants] = useState([])
-  const [applicantsLoading, setApplicantsLoading] = useState(false)
-  const [applicantsError, setApplicantsError] = useState(null)
-
   const isPrivileged = user?.role === 'admin' || user?.role === 'superuser'
   const isOwner = Boolean(job) && job.created_by_id === user?.id
   const canManage = isPrivileged || isOwner
   const isApplicant = user?.role === 'user'
-
-  useEffect(() => {
-    if (!open || !job || !canManage) {
-      setApplicants([])
-      return
-    }
-    setApplicantsLoading(true)
-    setApplicantsError(null)
-    fetchJobApplications(job.id)
-      .then(setApplicants)
-      .catch(() => setApplicantsError('Could not load applicants.'))
-      .finally(() => setApplicantsLoading(false))
-  }, [open, job, canManage])
 
   if (!job) return null
 
@@ -110,17 +92,6 @@ export default function JobDetailsModal({ open, onClose, job, onEdit, onUploadJD
       showToast('Could not withdraw your application.', 'error')
     } finally {
       setApplying(false)
-    }
-  }
-
-  const handleApplicantStatusChange = async (applicationId, status) => {
-    setApplicants((prev) => prev.map((a) => (a.id === applicationId ? { ...a, status } : a)))
-    try {
-      await updateApplicationStatus(applicationId, status)
-      showToast('Applicant status updated.', 'success')
-    } catch (err) {
-      showToast('Could not update applicant status.', 'error')
-      fetchJobApplications(job.id).then(setApplicants).catch(() => {})
     }
   }
 
@@ -214,53 +185,7 @@ export default function JobDetailsModal({ open, onClose, job, onEdit, onUploadJD
             </div>
           )}
 
-          {canManage && (
-            <div>
-              <dt className="mb-2 text-xs text-slate-400 dark:text-slate-500">Applicants ({applicants.length})</dt>
-              {applicantsLoading ? (
-                <div className="flex justify-center py-4"><Spinner size="sm" label="Loading applicants" /></div>
-              ) : applicantsError ? (
-                <p className="text-xs text-red-600 dark:text-red-400">{applicantsError}</p>
-              ) : applicants.length === 0 ? (
-                <p className="text-xs text-slate-400 dark:text-slate-500">No applications yet.</p>
-              ) : (
-                <div className="max-h-52 overflow-y-auto rounded border border-slate-100 dark:border-slate-700">
-                  <table className="w-full text-left text-xs">
-                    <thead className="bg-slate-50 text-slate-400 dark:bg-slate-800 dark:text-slate-500">
-                      <tr>
-                        <th className="px-3 py-2 font-medium">Applicant</th>
-                        <th className="px-3 py-2 font-medium">Applied</th>
-                        <th className="px-3 py-2 font-medium">Status</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {applicants.map((a) => (
-                        <tr key={a.id} className="border-t border-slate-100 dark:border-slate-800">
-                          <td className="px-3 py-2 text-slate-700 dark:text-slate-300">
-                            {a.applicant_name || a.applicant_email}
-                          </td>
-                          <td className="px-3 py-2 text-slate-500 dark:text-slate-400">
-                            {new Date(a.applied_at).toLocaleDateString()}
-                          </td>
-                          <td className="px-3 py-2">
-                            <select
-                              value={a.status}
-                              onChange={(e) => handleApplicantStatusChange(a.id, e.target.value)}
-                              className="rounded border border-slate-200 bg-white px-2 py-1 text-xs dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100"
-                            >
-                              {APPLICATION_STATUS_OPTIONS.map((s) => (
-                                <option key={s} value={s}>{formatEnumLabel(s)}</option>
-                              ))}
-                            </select>
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              )}
-            </div>
-          )}
+          {canManage && <ApplicantsPanel job={job} active={open && canManage} />}
         </div>
       </Modal>
 
