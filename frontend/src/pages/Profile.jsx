@@ -3,8 +3,10 @@ import { useAuth } from '../context/AuthContext'
 import { fetchMe, updateMe, uploadAvatar } from '../api/users'
 import { useResumes } from '../hooks/useResumes'
 import ResumeUploadModal from '../components/resume/ResumeUploadModal'
+import ResumePreview from '../components/resume/ResumePreview'
 import Spinner from '../components/ui/Spinner'
 import { useToast } from '../components/ui/Toast'
+import { getErrorMessage } from '../utils/format'
 
 const LABEL_CLASSES = 'mb-1 block text-xs font-medium text-slate-500 dark:text-slate-400'
 const INPUT_CLASSES = 'w-full rounded border border-slate-200 bg-white px-3 py-2 text-sm text-slate-800 outline-none focus:border-slate-400 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100'
@@ -77,7 +79,7 @@ export default function Profile() {
       setForm(toFormState(updated))
       showToast('Profile updated.', 'success')
     } catch (err) {
-      showToast(err.response?.data?.detail || 'Could not update your profile.', 'error')
+      showToast(getErrorMessage(err, 'Could not update your profile.'), 'error')
     } finally {
       setSaving(false)
     }
@@ -94,7 +96,7 @@ export default function Profile() {
     } catch (err) {
       const message =
         err.response?.status === 415 || err.response?.status === 413
-          ? err.response?.data?.detail || 'That image could not be uploaded.'
+          ? getErrorMessage(err, 'That image could not be uploaded.')
           : 'Could not upload the photo. Please try again.'
       showToast(message, 'error')
     } finally {
@@ -163,6 +165,7 @@ export default function Profile() {
           <button onClick={() => setResumeModalOpen(true)} className="rounded bg-slate-800 px-4 py-2 text-sm font-medium text-white hover:bg-slate-900 dark:bg-slate-700 dark:hover:bg-slate-600">
             {currentResume ? 'Replace resume' : 'Upload resume'}
           </button>
+          {currentResume && <ResumePreview resume={currentResume} />}
           <ResumeUploadModal open={resumeModalOpen} onClose={() => setResumeModalOpen(false)} currentResume={currentResume} onUploaded={refetchResumes} />
         </section>
       )}

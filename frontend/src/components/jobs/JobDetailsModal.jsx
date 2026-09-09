@@ -6,8 +6,7 @@ import { useToast } from '../ui/Toast'
 import { updateJob, deleteJob } from '../../api/jobs'
 import ApplicantsPanel from './ApplicantsPanel'
 import { formatEnumLabel } from '../../utils/format'
-import Spinner from '../ui/Spinner'
-import { applyToJob, withdrawApplication } from '../../api/applications'
+
 
 const STATUS_STYLES = {
   draft: 'bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-300',
@@ -32,7 +31,6 @@ export default function JobDetailsModal({ open, onClose, job, onEdit, onUploadJD
   const { showToast } = useToast()
   const [confirmDelete, setConfirmDelete] = useState(false)
   const [busy, setBusy] = useState(false)
-  const [applying, setApplying] = useState(false)
 
   const isPrivileged = user?.role === 'admin' || user?.role === 'superuser'
   const isOwner = Boolean(job) && job.created_by_id === user?.id
@@ -68,33 +66,6 @@ export default function JobDetailsModal({ open, onClose, job, onEdit, onUploadJD
     }
   }
 
-  const handleApply = async () => {
-    setApplying(true)
-    try {
-      await applyToJob(job.id)
-      showToast('Application submitted.', 'success')
-      onApplicationChanged?.()
-    } catch (err) {
-      showToast(err.response?.data?.detail || 'Could not submit your application.', 'error')
-    } finally {
-      setApplying(false)
-    }
-  }
-
-  const handleWithdraw = async () => {
-    if (!myApplication) return
-    setApplying(true)
-    try {
-      await withdrawApplication(myApplication.id)
-      showToast('Application withdrawn.', 'success')
-      onApplicationChanged?.()
-    } catch (err) {
-      showToast('Could not withdraw your application.', 'error')
-    } finally {
-      setApplying(false)
-    }
-  }
-
   return (
     <>
       <Modal
@@ -124,25 +95,11 @@ export default function JobDetailsModal({ open, onClose, job, onEdit, onUploadJD
                 Edit
               </button>
             </>
-          ) : isApplicant && job.status === 'published' ? (
-            myApplication ? (
-              <button
-                onClick={handleWithdraw}
-                disabled={applying}
-                className="flex items-center gap-2 rounded px-4 py-2 text-sm font-medium text-red-600 hover:bg-red-50 disabled:opacity-50 dark:text-red-400 dark:hover:bg-red-950"
-              >
-                {applying ? <Spinner size="sm" label="Working" /> : 'Withdraw application'}
-              </button>
-            ) : (
-              <button
-                onClick={handleApply}
-                disabled={applying}
-                className="flex items-center gap-2 rounded bg-slate-800 px-4 py-2 text-sm font-medium text-white hover:bg-slate-900 disabled:opacity-60 dark:bg-slate-700 dark:hover:bg-slate-600"
-              >
-                {applying ? <Spinner size="sm" label="Working" /> : 'Apply'}
-              </button>
-            )
           ) : null
+          // Applicants already have Apply/Withdraw on the job row in JobList —
+          // this modal is opened from the "Metadata" button and is meant to be
+          // a read-only details view, so it doesn't duplicate those actions.
+          // The applicant's current status is still shown as a badge below.
         }
       >
         <div className="space-y-3 text-sm">

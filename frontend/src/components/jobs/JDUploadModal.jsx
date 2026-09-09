@@ -4,6 +4,7 @@ import Modal from '../ui/Modal'
 import Spinner from '../ui/Spinner'
 import { uploadJobDescription } from '../../api/jobs'
 import { useToast } from '../ui/Toast'
+import { getErrorMessage } from '../../utils/format'
 
 export default function JDUploadModal({ open, onClose, job, onUploaded }) {
   const [file, setFile] = useState(null)
@@ -25,7 +26,7 @@ export default function JDUploadModal({ open, onClose, job, onUploaded }) {
       // distinctly instead of the generic failure message.
       const message =
         err.response?.status === 400
-          ? err.response?.data?.detail || 'That file type is not supported.'
+          ? getErrorMessage(err, 'That file type is not supported.')
           : 'Could not upload the file. Please try again.'
       showToast(message, 'error')
     } finally {

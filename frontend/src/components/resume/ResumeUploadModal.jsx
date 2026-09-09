@@ -4,6 +4,7 @@ import Modal from '../ui/Modal'
 import Spinner from '../ui/Spinner'
 import { uploadResume } from '../../api/resumes'
 import { useToast } from '../ui/Toast'
+import { getErrorMessage } from '../../utils/format'
 
 export default function ResumeUploadModal({ open, onClose, currentResume, onUploaded }) {
   const [file, setFile] = useState(null)
@@ -25,7 +26,7 @@ export default function ResumeUploadModal({ open, onClose, currentResume, onUplo
       // surface both distinctly instead of the generic failure message.
       const message =
         err.response?.status === 415 || err.response?.status === 413
-          ? err.response?.data?.detail || 'That file could not be uploaded.'
+          ? getErrorMessage(err, 'That file could not be uploaded.')
           : 'Could not upload the file. Please try again.'
       showToast(message, 'error')
     } finally {

@@ -6,7 +6,7 @@ import JobFormDrawer from '../components/jobs/JobFormDrawer'
 import ApplicantsModal from '../components/jobs/ApplicantsModal'
 import Spinner from '../components/ui/Spinner'
 import { useToast } from '../components/ui/Toast'
-import { formatEnumLabel } from '../utils/format'
+import { formatEnumLabel, getErrorMessage } from '../utils/format'
 
 const STATUS_STYLES = {
   draft: 'bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-300',
@@ -43,7 +43,7 @@ export default function MyJobs() {
       showToast(`Job marked ${formatEnumLabel(status).toLowerCase()}.`, 'success')
       refetch()
     } catch (err) {
-      showToast(err.response?.data?.detail || 'Could not update the job status.', 'error')
+      showToast(getErrorMessage(err, 'Could not update the job status.'), 'error')
     } finally {
       setBusyJobId(null)
     }

@@ -72,18 +72,31 @@ export default function Register() {
   }
 
   return (
-    <div className="relative flex min-h-screen items-center justify-center overflow-y-auto bg-slate-50 px-4 py-8 dark:bg-slate-950">
+    <div
+      className="relative flex min-h-screen items-center justify-center overflow-y-auto bg-slate-900 bg-cover bg-center px-4 py-8"
+      style={{
+        backgroundImage:
+          "linear-gradient(to bottom right, rgba(15,23,42,0.65), rgba(15,23,42,0.75)), url('https://images.unsplash.com/photo-1542744173-8e7e53415bb0?auto=format&fit=crop&w=2000&q=80')",
+      }}
+    >
       <div className="absolute right-4 top-4">
         <ThemeToggle />
       </div>
 
-      <form
-        onSubmit={handleSubmit}
-        className="w-full max-w-sm rounded-lg border border-slate-200 bg-white p-8 shadow-sm dark:border-slate-800 dark:bg-slate-900"
-      >
-        <h1 className="mb-6 text-lg font-semibold text-slate-900 dark:text-slate-100">
-          Create your TalentMatch account
-        </h1>
+      <div className="flex w-full max-w-sm flex-col items-center">
+        <div className="animate-slide-down mb-6 select-none text-center">
+          <span className="text-3xl font-bold tracking-tight text-white drop-shadow-lg">
+            Talent<span className="text-slate-300">Match</span>
+          </span>
+        </div>
+
+        <form
+          onSubmit={handleSubmit}
+          className="animate-slide-down-delay w-full rounded-xl border border-white/40 bg-white/40 p-8 shadow-2xl backdrop-blur-xl dark:border-slate-700/50 dark:bg-slate-900/55"
+        >
+          <h1 className="mb-6 text-lg font-semibold text-slate-900 dark:text-slate-100">
+            Create account
+          </h1>
 
         <label className="mb-1 block text-sm font-medium text-slate-700 dark:text-slate-300" htmlFor="email">
           Email
@@ -94,7 +107,7 @@ export default function Register() {
           required
           value={form.email}
           onChange={set('email')}
-          className="mb-4 w-full rounded border border-slate-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100 dark:focus:ring-slate-500"
+          className="mb-4 w-full rounded-lg border border-slate-400/70 bg-white/80 px-3 py-2 text-sm shadow-sm focus:outline-none focus:ring-2 focus:ring-slate-400 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100 dark:focus:ring-slate-500"
         />
 
         <label className="mb-1 block text-sm font-medium text-slate-700 dark:text-slate-300" htmlFor="password">
@@ -109,10 +122,10 @@ export default function Register() {
           onChange={set('password')}
           aria-invalid={passwordTooWeak}
           aria-describedby="password-hint"
-          className={`mb-1 w-full rounded border px-3 py-2 text-sm focus:outline-none focus:ring-2 dark:bg-slate-800 dark:text-slate-100 ${
+          className={`mb-1 w-full rounded-lg border bg-white/80 px-3 py-2 text-sm shadow-sm focus:outline-none focus:ring-2 dark:bg-slate-800 dark:text-slate-100 ${
             passwordTooWeak
               ? 'border-red-400 focus:ring-red-400 dark:border-red-500 dark:focus:ring-red-500'
-              : 'border-slate-300 focus:ring-slate-400 dark:border-slate-700 dark:focus:ring-slate-500'
+              : 'border-slate-400/70 focus:ring-slate-400 dark:border-slate-700 dark:focus:ring-slate-500'
           }`}
         />
         <p
@@ -136,10 +149,10 @@ export default function Register() {
           onChange={set('confirmPassword')}
           aria-invalid={passwordsMismatch}
           aria-describedby={passwordsMismatch ? 'confirm-password-error' : undefined}
-          className={`mb-1 w-full rounded border px-3 py-2 text-sm focus:outline-none focus:ring-2 dark:bg-slate-800 dark:text-slate-100 ${
+          className={`mb-1 w-full rounded-lg border bg-white/80 px-3 py-2 text-sm shadow-sm focus:outline-none focus:ring-2 dark:bg-slate-800 dark:text-slate-100 ${
             passwordsMismatch
               ? 'border-red-400 focus:ring-red-400 dark:border-red-500 dark:focus:ring-red-500'
-              : 'border-slate-300 focus:ring-slate-400 dark:border-slate-700 dark:focus:ring-slate-500'
+              : 'border-slate-400/70 focus:ring-slate-400 dark:border-slate-700 dark:focus:ring-slate-500'
           }`}
         />
         {/* Reserve the line even when empty so the layout doesn't jump
@@ -159,7 +172,7 @@ export default function Register() {
           type="text"
           value={form.full_name}
           onChange={set('full_name')}
-          className="mb-4 w-full rounded border border-slate-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100 dark:focus:ring-slate-500"
+          className="mb-4 w-full rounded-lg border border-slate-400/70 bg-white/80 px-3 py-2 text-sm shadow-sm focus:outline-none focus:ring-2 focus:ring-slate-400 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100 dark:focus:ring-slate-500"
         />
 
         <label className="mb-1 block text-sm font-medium text-slate-700 dark:text-slate-300" htmlFor="phone">
@@ -170,7 +183,7 @@ export default function Register() {
           type="tel"
           value={form.phone}
           onChange={set('phone')}
-          className="mb-4 w-full rounded border border-slate-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100 dark:focus:ring-slate-500"
+          className="mb-4 w-full rounded-lg border border-slate-400/70 bg-white/80 px-3 py-2 text-sm shadow-sm focus:outline-none focus:ring-2 focus:ring-slate-400 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100 dark:focus:ring-slate-500"
         />
 
         <label className="mb-6 flex items-start gap-2 text-sm text-slate-600 dark:text-slate-300">
@@ -186,7 +199,7 @@ export default function Register() {
         <button
           type="submit"
           disabled={submitting || !canSubmit}
-          className="flex w-full items-center justify-center gap-2 rounded bg-slate-800 px-4 py-2 text-sm font-medium text-white hover:bg-slate-900 disabled:opacity-60 dark:bg-slate-700 dark:hover:bg-slate-600"
+          className="flex w-full items-center justify-center gap-2 rounded-lg bg-slate-800 shadow-md transition-colors px-4 py-2 text-sm font-medium text-white hover:bg-slate-900 disabled:opacity-60 dark:bg-slate-700 dark:hover:bg-slate-600"
         >
           {submitting ? <Spinner size="sm" label="Creating account" /> : 'Create account'}
         </button>
@@ -198,6 +211,7 @@ export default function Register() {
           </Link>
         </p>
       </form>
+      </div>
     </div>
   )
 } 

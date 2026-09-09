@@ -5,7 +5,11 @@ from app.models.application import ApplicationStatus
 
 class ApplicationCreate(BaseModel):
     job_id: uuid.UUID
-    resume_id: uuid.UUID | None
+    # Optional and effectively unused: the apply route always resolves the
+    # applicant's own active resume itself. Needs a default, otherwise a
+    # nullable field with no default is still *required* to pydantic v2,
+    # so any request that omits resume_id (as the frontend does) 422s.
+    resume_id: uuid.UUID | None = None
 
 class ApplicationStatusUpdate(BaseModel):
     status: ApplicationStatus

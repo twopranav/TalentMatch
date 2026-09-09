@@ -7,7 +7,7 @@ import JobFilterBar from '../components/jobs/JobFilterBar'
 import JobFormDrawer from '../components/jobs/JobFormDrawer'
 import JDUploadModal from '../components/jobs/JDUploadModal'
 import JobDetailsModal from '../components/jobs/JobDetailsModal'
-import { formatEnumLabel } from '../utils/format'
+import { formatEnumLabel, getErrorMessage } from '../utils/format'
 import { applyToJob, withdrawApplication } from '../api/applications'
 import { useToast } from '../components/ui/Toast'
 
@@ -79,7 +79,7 @@ export default function JobDashboard() {
       showToast('Application submitted.', 'success')
       refetchMyApplications()
     } catch (err) {
-      showToast(err.response?.data?.detail || 'Could not submit your application.', 'error')
+      showToast(getErrorMessage(err, 'Could not submit your application.'), 'error')
     } finally {
       setApplyingJobId(null)
     }

@@ -19,7 +19,15 @@ export function ToastProvider({ children }) {
   const showToast = useCallback(
     (message, variant = 'info', duration = 4000) => {
       const id = crypto.randomUUID()
-      setToasts((current) => [...current, { id, message, variant }])
+      // Guard against non-string messages (e.g. a raw FastAPI 422 `detail`
+      // array/object passed in by mistake). React can't render an object as
+      // a child, so this would otherwise crash the whole app to a white
+      // screen instead of just failing to show a toast.
+      const safeMessage =
+        typeof message === 'string'
+          ? message
+          : 'Something went wrong.'
+      setToasts((current) => [...current, { id, message: safeMessage, variant }])
       if (duration) {
         setTimeout(() => dismiss(id), duration)
       }

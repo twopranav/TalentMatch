@@ -30,9 +30,13 @@ export function deleteResume(resumeId) {
   return apiClient.delete(`/resumes/${resumeId}`)
 }
 
-export async function openResumeFile(resumeId) {
+export async function fetchResumeBlobUrl(resumeId) {
   const res = await apiClient.get(`/resumes/${resumeId}/file`, { responseType: 'blob' })
-  const url = window.URL.createObjectURL(res.data)
+  return window.URL.createObjectURL(res.data)
+}
+
+export async function openResumeFile(resumeId) {
+  const url = await fetchResumeBlobUrl(resumeId)
   window.open(url, '_blank', 'noopener,noreferrer')
   setTimeout(() => window.URL.revokeObjectURL(url), 30000)
 }

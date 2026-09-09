@@ -5,6 +5,7 @@ import { useToast } from '../components/ui/Toast'
 import Spinner from '../components/ui/Spinner'
 import ConfirmDialog from '../components/ui/ConfirmDialog'
 import { setUserActive, setUserRole, transferSuperuser, deleteUser, rejectRecruiterRequest } from '../api/users'
+import { getErrorMessage } from '../utils/format'
 
 const ROLE_STYLES = {
   superuser: 'bg-purple-100 text-purple-800 dark:bg-purple-900/40 dark:text-purple-300',
@@ -225,7 +226,7 @@ export default function UserManagement() {
       showToast(successMessage, 'success')
       afterSuccess ? afterSuccess() : refetch()
     } catch (err) {
-      showToast(err.response?.data?.detail || errorMessage, 'error')
+      showToast(getErrorMessage(err, errorMessage), 'error')
     } finally {
       setBusyId(null)
       setPendingAction(null)
