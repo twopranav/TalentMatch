@@ -1,13 +1,13 @@
 import { useState } from 'react'
 import Modal from '../ui/Modal'
 import ConfirmDialog from '../ui/ConfirmDialog'
-import Spinner from '../ui/Spinner'
 import { useAuth } from '../../context/AuthContext'
 import { useToast } from '../ui/Toast'
 import { updateJob, deleteJob } from '../../api/jobs'
-import { applyToJob, withdrawApplication } from '../../api/applications'
 import ApplicantsPanel from './ApplicantsPanel'
 import { formatEnumLabel } from '../../utils/format'
+import Spinner from '../ui/Spinner'
+import { applyToJob, withdrawApplication } from '../../api/applications'
 
 const STATUS_STYLES = {
   draft: 'bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-300',

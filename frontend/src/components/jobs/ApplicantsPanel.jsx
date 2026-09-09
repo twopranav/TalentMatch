@@ -3,6 +3,7 @@ import Spinner from '../ui/Spinner'
 import { useToast } from '../ui/Toast'
 import { fetchJobApplications, updateApplicationStatus } from '../../api/applications'
 import { formatEnumLabel } from '../../utils/format'
+import { openResumeFile } from '../../api/resumes'
 
 const APPLICATION_STATUS_OPTIONS = ['applied', 'under_review', 'shortlisted', 'rejected', 'hired']
 
@@ -26,6 +27,19 @@ export default function ApplicantsPanel({ job, active = true }) {
       .catch(() => setError('Could not load applicants.'))
       .finally(() => setLoading(false))
   }, [active, job])
+
+  const [openingResumeId, setOpeningResumeId] = useState(null)
+
+  const handleViewResume = async (applicationId, resumeId) => {
+    setOpeningResumeId(applicationId)
+    try {
+      await openResumeFile(resumeId)
+    } catch {
+      showToast('Could not open that resume.', 'error')
+    } finally {
+      setOpeningResumeId(null)
+    }
+  }
 
   const handleStatusChange = async (applicationId, status) => {
     setApplicants((prev) => prev.map((a) => (a.id === applicationId ? { ...a, status } : a)))
@@ -54,6 +68,7 @@ export default function ApplicantsPanel({ job, active = true }) {
               <tr>
                 <th className="px-3 py-2 font-medium">Applicant</th>
                 <th className="px-3 py-2 font-medium">Applied</th>
+                <th className="px-3 py-2 font-medium">Resume</th>
                 <th className="px-3 py-2 font-medium">Status</th>
               </tr>
             </thead>
@@ -65,6 +80,15 @@ export default function ApplicantsPanel({ job, active = true }) {
                   </td>
                   <td className="px-3 py-2 text-slate-500 dark:text-slate-400">
                     {new Date(a.applied_at).toLocaleDateString()}
+                  </td>
+                  <td className="px-3 py-2">
+                    {a.resume_id ? (
+                      <button onClick={() => handleViewResume(a.id, a.resume_id)} disabled={openingResumeId === a.id} className="font-medium text-slate-700 underline hover:no-underline disabled:opacity-50 dark:text-slate-300">
+                        {openingResumeId === a.id ? 'Opening…' : 'View'}
+                      </button>
+                    ) : (
+                      <span className="text-slate-400 dark:text-slate-500">No resume</span>
+                    )}
                   </td>
                   <td className="px-3 py-2">
                     <select

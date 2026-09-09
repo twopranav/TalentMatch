@@ -5,6 +5,7 @@ from app.core.audit import record_audit, snapshot
 from app.core.deps import get_current_user, require_recruiter_or_admin
 from app.db.session import get_db
 from app.models.application import Application
+from app.models.resume import Resume
 from app.models.job import Job, JobStatus
 from app.models.user import User, UserRole
 from app.schemas.application import (
@@ -35,7 +36,18 @@ def apply_to_job(
     if existing:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="You have already applied to this job")
 
-    application = Application(user_id=current_user.id, job_id=job.id)
+    resume = (
+        db.query(Resume)
+        .filter(Resume.owner_id == current_user.id, Resume.is_archived.is_(False))
+        .first()
+    )
+    if resume is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Upload a resume to your profile before applying to a job.",
+        )
+
+    application = Application(user_id=current_user.id, job_id=job.id, resume_id=resume.id)
     db.add(application)
     db.flush()  # assigns application.id before we snapshot it for the audit row
     record_audit(
@@ -64,7 +76,7 @@ def list_my_applications(
     )
     return [
         ApplicationWithJob(
-            id=a.id, user_id=a.user_id, job_id=a.job_id, status=a.status,
+            id=a.id, user_id=a.user_id, job_id=a.job_id, resume_id=a.resume_id, status=a.status,
             applied_at=a.applied_at, updated_at=a.updated_at,
             job_title=a.job.title, job_status=a.job.status.value,
             location=a.job.location, company=a.job.created_by.company,
@@ -92,7 +104,7 @@ def list_job_applications(
 
     apps = (
         db.query(Application)
-        .options(joinedload(Application.user))
+        .options(joinedload(Application.user), joinedload(Application.resume))
         .filter(Application.job_id == job_id)
         .order_by(Application.applied_at.desc())
         .offset(offset)
@@ -101,9 +113,10 @@ def list_job_applications(
     )
     return [
         ApplicationWithApplicant(
-            id=a.id, user_id=a.user_id, job_id=a.job_id, status=a.status,
+            id=a.id, user_id=a.user_id, job_id=a.job_id, resume_id=a.resume_id, status=a.status,
             applied_at=a.applied_at, updated_at=a.updated_at,
             applicant_email=a.user.email, applicant_name=a.user.full_name,
+            resume_filename=a.resume.original_filename if a.resume else None,
         )
         for a in apps
     ]

@@ -6,8 +6,8 @@ from app.models.user import UserRole
 
 
 def _validate_password_strength(value: str) -> str:
-    if len(value) < 10:
-        raise ValueError("Password must be at least 10 characters long")
+    if len(value) < 8:
+        raise ValueError("Password must be at least 8 characters long")
     if not re.search(r"[A-Za-z]", value):
         raise ValueError("Password must contain at least one letter")
     if not re.search(r"[0-9]", value):
@@ -53,6 +53,7 @@ class UserRead(BaseModel):
     experience_years: int | None
     location: str | None
     desired_role: str | None
+    avatar_url: str | None = None
     created_at: datetime
     model_config = ConfigDict(from_attributes=True)
 

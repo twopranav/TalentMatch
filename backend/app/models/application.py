@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from app.models.user import User
     from app.models.job import Job
+    from app.models.resume import Resume
 
 class ApplicationStatus(str, PyEnum):
     APPLIED = "applied"
@@ -32,6 +33,7 @@ class Application(Base):
     job_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("jobs.id", ondelete="CASCADE"), nullable=False
     )
+    resume_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("resumes.id", ondelete="SET NULL"), nullable=True)
     status: Mapped[ApplicationStatus] = mapped_column(
         SAEnum(ApplicationStatus, name="application_status"), default=ApplicationStatus.APPLIED, nullable=False
     )
@@ -42,3 +44,4 @@ class Application(Base):
 
     user: Mapped["User"] = relationship(back_populates="applications")
     job: Mapped["Job"] = relationship(back_populates="applications")
+    resume: Mapped["Resume | None"] = relationship()

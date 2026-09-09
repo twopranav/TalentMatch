@@ -28,7 +28,13 @@ export default function Register() {
   // Live check — evaluated on every render, not just on submit, so the
   // message appears the instant the second field diverges from the first.
   const passwordsMismatch = form.confirmPassword.length > 0 && form.password !== form.confirmPassword
-  const canSubmit = form.password.length > 0 && form.confirmPassword.length > 0 && !passwordsMismatch
+  // Mirrors the backend's rule (schemas/user.py::_validate_password_strength):
+  // at least 8 chars, with at least one letter and one number.
+  const passwordTooWeak =
+    form.password.length > 0 &&
+    (form.password.length < 8 || !/[A-Za-z]/.test(form.password) || !/[0-9]/.test(form.password))
+  const canSubmit =
+    form.password.length > 0 && form.confirmPassword.length > 0 && !passwordsMismatch && !passwordTooWeak
 
   const handleSubmit = async (e) => {
     e.preventDefault()
@@ -50,10 +56,15 @@ export default function Register() {
       )
       navigate('/login')
     } catch (err) {
-      const message =
-        err.response?.status === 400
-          ? err.response?.data?.detail || 'That email is already registered.'
-          : 'Could not create the account. Please try again.'
+      const status = err.response?.status
+      const detail = err.response?.data?.detail
+      let message = 'Could not create the account. Please try again.'
+      if (status === 400) {
+        message = detail || 'That email is already registered.'
+      } else if (status === 422) {
+        // FastAPI validation errors: detail is a list of {msg, loc, ...}.
+        message = Array.isArray(detail) ? detail.map((d) => d.msg).join(' ') : detail || message
+      }
       showToast(message, 'error')
     } finally {
       setSubmitting(false)
@@ -96,8 +107,22 @@ export default function Register() {
           minLength={8}
           value={form.password}
           onChange={set('password')}
-          className="mb-4 w-full rounded border border-slate-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100 dark:focus:ring-slate-500"
+          aria-invalid={passwordTooWeak}
+          aria-describedby="password-hint"
+          className={`mb-1 w-full rounded border px-3 py-2 text-sm focus:outline-none focus:ring-2 dark:bg-slate-800 dark:text-slate-100 ${
+            passwordTooWeak
+              ? 'border-red-400 focus:ring-red-400 dark:border-red-500 dark:focus:ring-red-500'
+              : 'border-slate-300 focus:ring-slate-400 dark:border-slate-700 dark:focus:ring-slate-500'
+          }`}
         />
+        <p
+          id="password-hint"
+          className={`mb-4 min-h-4 text-xs font-medium ${
+            passwordTooWeak ? 'text-red-600 dark:text-red-400' : 'text-slate-400 dark:text-slate-500'
+          }`}
+        >
+          At least 8 characters, with a letter and a number
+        </p>
 
         <label className="mb-1 block text-sm font-medium text-slate-700 dark:text-slate-300" htmlFor="confirm_password">
           Confirm password
@@ -175,4 +200,4 @@ export default function Register() {
       </form>
     </div>
   )
-}
+} 

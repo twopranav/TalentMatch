@@ -7,6 +7,7 @@ session — not Base.metadata.create_all() — because the RBAC migration adds
 an enum value and a partial unique index via raw SQL that only exist in the
 migration file, not in the SQLAlchemy models, so create_all() would miss them.
 """
+import io
 import os
 import subprocess
 import sys
@@ -16,6 +17,7 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker
+from app.core import security as security_module
 from app.core.config import settings
 from app.core.security import create_access_token, hash_password
 from app.db.session import get_db
@@ -59,11 +61,39 @@ def _prepare_test_database():
 def _clean_tables():
     """Runs after every test — wipes all rows so tests never affect each
     other (important here since 'only one admin can exist' would otherwise
-    fail on the second admin-related test in a run)."""
+    fail on the second admin-related test in a run). Truncates every table
+    the app writes to, not just jobs/users — token_blacklist and audit_logs
+    are written as side effects of auth/CRUD flows, and resumes/applications
+    both reference users/jobs by FK, so they all need to go together."""
     yield
     with test_engine.connect() as conn:
-        conn.execute(text("TRUNCATE jobs, users RESTART IDENTITY CASCADE"))
+        conn.execute(text(
+            "TRUNCATE token_blacklist, audit_logs, applications, resumes, jobs, users "
+            "RESTART IDENTITY CASCADE"
+        ))
         conn.commit()
+
+
+@pytest.fixture(autouse=True)
+def _reset_login_throttle():
+    """core/security.py's login-lockout state (_failed_attempts,
+    _locked_until) lives in module-level dicts, not the DB — _clean_tables
+    never touches it. Without this, a lockout triggered by one test (e.g.
+    5 failed logins) would still be in effect for the next test that
+    happens to reuse the same email, and tests that assert lockout
+    behavior would leak into each other."""
+    yield
+    security_module._failed_attempts.clear()
+    security_module._locked_until.clear()
+
+
+@pytest.fixture(autouse=True)
+def _isolated_storage_root(tmp_path, monkeypatch):
+    """Redirects local-disk blob storage (resumes + avatars both go through
+    app.core.storage.local_disk, which reads settings.LOCAL_STORAGE_ROOT at
+    call time) to a per-test temp dir, so uploaded-file tests never read or
+    write the real ./storage/resumes directory or leak files across tests."""
+    monkeypatch.setattr(settings, "LOCAL_STORAGE_ROOT", str(tmp_path / "storage"))
 
 def _override_get_db():
     db = TestSessionLocal()
@@ -92,13 +122,10 @@ def make_user(db):
     make_user(role=UserRole.RECRUITER) -> (User, raw_password)
     make_user(requested_role=UserRole.RECRUITER) -> a plain USER with a
     pending recruiter request, for testing the approval/rejection flow.
-    is_active defaults to False for role=USER, matching what self-registration
-    actually produces — pass is_active=True/False explicitly to override.
-    ADMIN/RECRUITER/SUPERUSER fixtures default to True instead: those roles
-    are never created via the pending-approval signup flow in the real app
-    (an admin is promoted, a recruiter is approved, a superuser is seeded),
-    so a test creating one directly is simulating an already-provisioned
-    account, not day-zero registration.
+    is_active defaults to True for every role, matching the real app's
+    current default (self-registration is active immediately — see
+    models/user.py's default and test_register_is_active_immediately) —
+    pass is_active=False explicitly to simulate a deactivated account.
     """
     def _make(
         role: UserRole = UserRole.USER,
@@ -107,7 +134,7 @@ def make_user(db):
         is_active: bool | None = None,
     ):
         if is_active is None:
-            is_active = role != UserRole.USER
+            is_active = True
         email = email or f"{role.value}-{uuid.uuid4().hex[:8]}@test.com"
         password = "testpass123"
         user = User(
@@ -130,3 +157,33 @@ def auth_headers():
         token = create_access_token(subject=str(user.id), extra_claims={"role": user.role.value})
         return {"Authorization": f"Bearer {token}"}
     return _headers
+
+
+@pytest.fixture()
+def pdf_bytes():
+    """pdf_bytes("some text") -> real, parseable minimal PDF bytes (built
+    with reportlab), not fake bytes wearing a .pdf extension — this matters
+    for any test that exercises actual content-parsing, not just the
+    upload/validation path."""
+    def _make(text: str = "Sample content") -> bytes:
+        from reportlab.pdfgen import canvas
+        buf = io.BytesIO()
+        c = canvas.Canvas(buf)
+        c.drawString(100, 750, text)
+        c.save()
+        return buf.getvalue()
+    return _make
+
+
+@pytest.fixture()
+def docx_bytes():
+    """docx_bytes("some text") -> real, parseable minimal DOCX bytes (built
+    with python-docx)."""
+    def _make(text: str = "Sample content") -> bytes:
+        from docx import Document
+        buf = io.BytesIO()
+        doc = Document()
+        doc.add_paragraph(text)
+        doc.save(buf)
+        return buf.getvalue()
+    return _make

@@ -1,13 +1,3 @@
-"""
-Rewrite note: the previous version of this file tested a hierarchy that
-doesn't match the actual code — it assumed ADMIN was a unique singleton
-role (`test_only_one_admin_ever_exists`, expecting IntegrityError on a
-second ADMIN) and called endpoints that don't exist (`PATCH .../role`,
-`POST .../transfer-admin`). The real model, per models/user.py's own
-docstring, is: SUPERUSER is the singleton (enforced by a DB partial unique
-index), ADMIN allows many, and the real endpoints are `/admin-status` and
-`/transfer-superuser`. This file tests that actual hierarchy instead.
-"""
 import pytest
 from sqlalchemy.exc import IntegrityError
 from app.models.user import UserRole
@@ -153,7 +143,7 @@ def test_reject_clears_pending_request_without_changing_role(client, make_user, 
     body = resp.json()
     assert body["requested_role"] is None
     assert body["role"] == UserRole.USER.value
-    assert body["is_active"] is False  # rejection doesn't activate them either
+    assert body["is_active"] is True  # rejection doesn't touch is_active either way — it defaults True regardless
 
     db.expire_all()
     refreshed = db.get(type(pending_user), pending_user.id)

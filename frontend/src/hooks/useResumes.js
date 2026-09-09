@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useState } from 'react'
 import { fetchMyResumes } from '../api/resumes'
 
-export function useResumes() {
+export function useResumes({ enabled = true } = {}) {
   const [resumes, setResumes] = useState([])
-  const [loading, setLoading] = useState(true)
+  const [loading, setLoading] = useState(enabled)
   const [error, setError] = useState(null)
 
   const load = useCallback(() => {
@@ -22,8 +22,9 @@ export function useResumes() {
   }, [])
 
   useEffect(() => {
+    if (!enabled) return
     load()
-  }, [load])
+  }, [enabled, load])
 
   return { resumes, loading, error, refetch: load }
 }

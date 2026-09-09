@@ -59,7 +59,7 @@ class User(Base):
     # --- profile fields, all roles ---
     full_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
     phone: Mapped[str | None] = mapped_column(String(50), nullable=True)
-    is_active: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     last_login_at: Mapped[datetime | None] = mapped_column(nullable=True)
 
     # --- recruiter-specific ---
@@ -71,6 +71,7 @@ class User(Base):
     experience_years: Mapped[int | None] = mapped_column(Integer, nullable=True)
     location: Mapped[str | None] = mapped_column(String(255), nullable=True)
     desired_role: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    avatar_blob_path: Mapped[str | None] = mapped_column(String(1000), nullable=True)
 
     created_at: Mapped[datetime] = mapped_column(server_default=func.now(), nullable=False)
     applications: Mapped[list["Application"]] = relationship(back_populates="user", cascade="all, delete-orphan")   

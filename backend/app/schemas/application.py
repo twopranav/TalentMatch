@@ -5,6 +5,7 @@ from app.models.application import ApplicationStatus
 
 class ApplicationCreate(BaseModel):
     job_id: uuid.UUID
+    resume_id: uuid.UUID | None
 
 class ApplicationStatusUpdate(BaseModel):
     status: ApplicationStatus
@@ -13,6 +14,7 @@ class ApplicationRead(BaseModel):
     id: uuid.UUID
     user_id: uuid.UUID
     job_id: uuid.UUID
+    resume_id: uuid.UUID | None
     status: ApplicationStatus
     applied_at: datetime
     updated_at: datetime
@@ -30,3 +32,4 @@ class ApplicationWithJob(ApplicationRead):
 class ApplicationWithApplicant(ApplicationRead):
     applicant_email: str
     applicant_name: str | None
+    resume_filename: str | None = None

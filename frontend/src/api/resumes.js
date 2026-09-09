@@ -29,3 +29,10 @@ export function archiveResume(resumeId, archived) {
 export function deleteResume(resumeId) {
   return apiClient.delete(`/resumes/${resumeId}`)
 }
+
+export async function openResumeFile(resumeId) {
+  const res = await apiClient.get(`/resumes/${resumeId}/file`, { responseType: 'blob' })
+  const url = window.URL.createObjectURL(res.data)
+  window.open(url, '_blank', 'noopener,noreferrer')
+  setTimeout(() => window.URL.revokeObjectURL(url), 30000)
+}

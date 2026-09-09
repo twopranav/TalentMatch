@@ -1,8 +1,11 @@
 import uuid
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, status
+from fastapi.responses import RedirectResponse, Response
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 from app.core.audit import record_audit, snapshot
+from app.core.config import settings
+from app.core.resume_storage import build_blob_name, delete_resume_blob, get_resume_download_url, upload_resume_blob
 from app.core.deps import get_current_user, require_recruiter_or_admin, require_admin_or_superuser, require_superuser
 from app.db.session import get_db
 from app.models.job import Job
@@ -11,9 +14,17 @@ from app.schemas.user import UserRead, UserPublicRead, UserRoleUpdate, UserActiv
 
 router = APIRouter()
 
+_ALLOWED_AVATAR_CONTENT_TYPES = {"image/jpeg", "image/png", "image/webp"}
+_MAX_AVATAR_UPLOAD_BYTES = 5 * 1024 * 1024
+
+def _serialize_user(user: User) -> UserRead:
+    data = UserRead.model_validate(user).model_dump()
+    data["avatar_url"] = f"/api/users/{user.id}/avatar/file" if user.avatar_blob_path else None
+    return UserRead(**data)
+
 @router.get("/me", response_model=UserRead)
 def get_me(current_user: User = Depends(get_current_user)):
-    return current_user
+    return _serialize_user(current_user)
 
 @router.patch("/me", response_model=UserRead)
 def update_me(
@@ -36,7 +47,39 @@ def update_me(
         )
     db.commit()
     db.refresh(current_user)
-    return current_user
+    return _serialize_user(current_user)
+
+@router.post("/me/avatar", response_model=UserRead)
+async def upload_avatar(file: UploadFile = File(...), db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    if file.content_type not in _ALLOWED_AVATAR_CONTENT_TYPES:
+        raise HTTPException(status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE, detail="Avatar must be a JPEG, PNG, or WebP image.")
+    contents = await file.read()
+    if len(contents) > _MAX_AVATAR_UPLOAD_BYTES:
+        raise HTTPException(status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, detail="Avatar file must be under 5 MB.")
+    if current_user.avatar_blob_path:
+        delete_resume_blob(current_user.avatar_blob_path)
+    before = snapshot(current_user, "user")
+    blob_name = build_blob_name(current_user.id, file.filename)
+    current_user.avatar_blob_path = upload_resume_blob(contents, blob_name, file.content_type)
+    record_audit(db, actor=current_user, action="update", resource_type="user", resource_id=current_user.id, before=before, after=snapshot(current_user, "user"))
+    db.commit(); db.refresh(current_user)
+    return _serialize_user(current_user)
+
+@router.get("/{user_id}/avatar/file")
+def get_avatar_file(user_id: uuid.UUID, db: Session = Depends(get_db)):
+    target = db.get(User, user_id)
+    if target is None or not target.avatar_blob_path:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No avatar on file")
+    if settings.STORAGE_BACKEND == "azure":
+        return RedirectResponse(get_resume_download_url(target.avatar_blob_path))
+    from app.core.storage.local_disk import read_blob
+    try:
+        contents = read_blob(target.avatar_blob_path)
+    except FileNotFoundError:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Avatar file is missing from storage.")
+    ext = target.avatar_blob_path.rsplit(".", 1)[-1].lower()
+    media_type = {"jpg":"image/jpeg","jpeg":"image/jpeg","png":"image/png","webp":"image/webp"}.get(ext, "application/octet-stream")
+    return Response(content=contents, media_type=media_type)
 
 @router.get("")
 def list_users(
@@ -129,7 +172,7 @@ def update_user(
         )
     db.commit()
     db.refresh(target)
-    return target
+    return _serialize_user(target)
 
 @router.patch("/{user_id}/active", response_model=UserRead)
 def update_user_active(

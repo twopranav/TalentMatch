@@ -1,7 +1,9 @@
 import uuid
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, status
+from fastapi.responses import RedirectResponse, Response
 from sqlalchemy.orm import Session
 from app.core.audit import record_audit, snapshot
+from app.core.config import settings
 from app.core.deps import get_current_user, require_recruiter_or_admin
 from app.core.resume_storage import build_blob_name, delete_resume_blob, get_resume_download_url, upload_resume_blob
 from app.db.session import get_db
@@ -26,7 +28,7 @@ def _validate_upload(content_type: str, size: int) -> None:
         )
     if size > _MAX_RESUME_UPLOAD_BYTES:
         raise HTTPException(
-            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            status_code=status.HTTP_413_REQUEST_CONTENT_TOO_LARGE,
             detail="Resume file must be under 10 MB.",
         )
 
@@ -121,18 +123,25 @@ async def upload_resumes_bulk(
     results: list[ResumeBulkUploadResult] = []
     for file in files:
         contents = await file.read()
+        # Each file gets its own SAVEPOINT (via db.begin_nested()). A plain
+        # db.rollback() rolls back the *entire* outer transaction, wiping
+        # out every earlier success staged in this same loop — not just the
+        # current file's work. Scoping the rollback to a nested transaction
+        # is what actually makes "one bad file in a batch of fifty shouldn't
+        # sink the other forty-nine" true, instead of just documented.
         try:
-            _validate_upload(file.content_type, len(contents))
-            resume = _store_one(contents, file.filename, file.content_type, None, current_user, db)
-            db.flush()
+            with db.begin_nested():
+                _validate_upload(file.content_type, len(contents))
+                resume = _store_one(contents, file.filename, file.content_type, None, current_user, db)
+                db.flush()
             results.append(ResumeBulkUploadResult(
                 original_filename=file.filename, success=True,
                 resume=ResumeRead.model_validate(resume),
             ))
         except HTTPException as exc:
-            # Roll back only this file's partial state, not the whole batch —
-            # successes recorded earlier in the loop stay staged for commit.
-            db.rollback()
+            # The `with db.begin_nested()` block already rolled back to the
+            # savepoint on exception — earlier successes in this loop stay
+            # staged for the final commit below.
             results.append(ResumeBulkUploadResult(
                 original_filename=file.filename, success=False, error=exc.detail,
             ))
@@ -184,10 +193,33 @@ def list_resumes(
 
 
 @router.get("/{resume_id}", response_model=ResumeReadWithUrl)
-def get_resume(resume_id: uuid.UUID, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+def get_resume(
+    resume_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
     resume = _get_visible_resume(resume_id, db, current_user)
-    download_url = get_resume_download_url(resume.blob_path)
-    return ResumeReadWithUrl(**ResumeRead.model_validate(resume).model_dump(), download_url=download_url)
+    if settings.STORAGE_BACKEND == "azure":
+        download_url = get_resume_download_url(resume.blob_path)
+    else:
+        download_url = f"/api/resumes/{resume.id}/file"
+    return ResumeReadWithUrl(
+        **ResumeRead.model_validate(resume).model_dump(),
+        download_url=download_url,
+    )
+
+
+@router.get("/{resume_id}/file")
+def download_resume_file(resume_id: uuid.UUID, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    resume = _get_visible_resume(resume_id, db, current_user)
+    if settings.STORAGE_BACKEND == "azure":
+        return RedirectResponse(get_resume_download_url(resume.blob_path))
+    from app.core.storage.local_disk import read_blob
+    try:
+        contents = read_blob(resume.blob_path)
+    except FileNotFoundError:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Resume file is missing from storage.")
+    return Response(content=contents, media_type=resume.content_type, headers={"Content-Disposition": f'inline; filename="{resume.original_filename}"'})
 
 
 @router.patch("/{resume_id}/archive", response_model=ResumeRead)
