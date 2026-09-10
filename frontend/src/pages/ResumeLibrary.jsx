@@ -4,6 +4,7 @@ import ConfirmDialog from '../components/ui/ConfirmDialog'
 import Spinner from '../components/ui/Spinner'
 import { useToast } from '../components/ui/Toast'
 import { getErrorMessage } from '../utils/format'
+import ResumeExtractionModal, { ExtractionStatusBadge } from '../components/resume/ResumeExtractionModal'
 
 const STATUS_STYLES = {
   uploaded: 'bg-emerald-100 text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-300',
@@ -91,6 +92,7 @@ export default function ResumeLibrary() {
   const [openingId, setOpeningId] = useState(null)
   const [busyId, setBusyId] = useState(null)
   const [deleteTarget, setDeleteTarget] = useState(null)
+  const [extractionTarget, setExtractionTarget] = useState(null)
 
   const load = () => {
     setLoading(true)
@@ -183,6 +185,7 @@ export default function ResumeLibrary() {
                 <th className="px-4 py-2 font-medium">Uploaded by</th>
                 <th className="px-4 py-2 font-medium">Size</th>
                 <th className="px-4 py-2 font-medium">Status</th>
+                <th className="px-4 py-2 font-medium">Extraction</th>
                 <th className="px-4 py-2 font-medium">Added</th>
                 <th className="px-4 py-2 font-medium">Actions</th>
               </tr>
@@ -205,6 +208,15 @@ export default function ResumeLibrary() {
                         archived
                       </span>
                     )}
+                  </td>
+                  <td className="px-4 py-2">
+                    <button
+                      onClick={() => setExtractionTarget(r)}
+                      className="rounded-full hover:opacity-80"
+                      title="View extraction details"
+                    >
+                      <ExtractionStatusBadge status={r.extraction_status} />
+                    </button>
                   </td>
                   <td className="px-4 py-2 text-slate-500 dark:text-slate-400">{new Date(r.created_at).toLocaleDateString()}</td>
                   <td className="px-4 py-2">
@@ -235,6 +247,12 @@ export default function ResumeLibrary() {
         message={`"${deleteTarget?.original_filename}" will be permanently removed. This can't be undone.`}
         confirmLabel="Delete"
         destructive
+      />
+
+      <ResumeExtractionModal
+        open={Boolean(extractionTarget)}
+        onClose={() => setExtractionTarget(null)}
+        resume={extractionTarget}
       />
     </div>
   )

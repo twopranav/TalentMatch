@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime
 from pydantic import BaseModel, ConfigDict
-from app.models.job import JobStatus, EmploymentType, SeniorityLevel, RemoteType
+from app.models.job import JobStatus, EmploymentType, SeniorityLevel, RemoteType, JobExtractionStatus
 
 class JobCreate(BaseModel):
     title: str
@@ -58,4 +58,15 @@ class JobRead(BaseModel):
     created_by_id: uuid.UUID
     created_at: datetime
     updated_at: datetime
+    # --- Phase 4: extraction results, kept separate from the
+    # recruiter-editable required_skills/min_experience_years/etc. above —
+    # see the model's comment on why these never overwrite each other. ---
+    extraction_status: JobExtractionStatus
+    extraction_error: str | None = None
+    extracted_at: datetime | None = None
+    extracted_required_skills: list[str] | None = None
+    extracted_min_experience_years: int | None = None
+    extracted_max_experience_years: int | None = None
+    extracted_education_requirement: str | None = None
+    extracted_profile: dict | None = None
     model_config = ConfigDict(from_attributes=True)

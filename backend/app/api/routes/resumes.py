@@ -1,4 +1,6 @@
+import logging
 import uuid
+from datetime import datetime, timezone
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, status
 from fastapi.responses import RedirectResponse, Response
 from sqlalchemy.orm import Session, joinedload
@@ -6,10 +8,14 @@ from app.core.audit import record_audit, snapshot
 from app.core.config import settings
 from app.core.deps import get_current_user, require_recruiter_or_admin
 from app.core.resume_storage import build_blob_name, delete_resume_blob, get_resume_download_url, upload_resume_blob
+from app.core.text_extract import EmptyExtractionError, UnsupportedFileTypeError, extract_text_from_bytes
+from app.core.llm_extract import ExtractionError, extract_candidate_profile
 from app.db.session import get_db
-from app.models.resume import Resume, ResumeStatus
+from app.models.resume import Resume, ResumeExtractionStatus, ResumeStatus
 from app.models.user import User, UserRole
 from app.schemas.resume import ResumeBulkUploadResult, ResumeRead, ResumeReadWithUrl
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -28,9 +34,51 @@ def _validate_upload(content_type: str, size: int) -> None:
         )
     if size > _MAX_RESUME_UPLOAD_BYTES:
         raise HTTPException(
-            status_code=status.HTTP_413_REQUEST_CONTENT_TOO_LARGE,
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
             detail="Resume file must be under 10 MB.",
         )
+
+
+def _run_extraction(resume: Resume, file_bytes: bytes, filename: str, is_sourced: bool) -> None:
+    """Runs the Phase 4 extraction pipeline against the bytes just
+    uploaded and mutates `resume` in place. Synchronous for now, matching
+    how JD text extraction already works on upload — this is the piece to
+    move behind Celery later without changing what it does.
+
+    Never raises: a failed/empty extraction marks the row FAILED with a
+    reason instead of failing the upload itself, since the file is safely
+    stored either way and this is retriable independently later.
+    """
+    try:
+        text = extract_text_from_bytes(file_bytes, filename)
+        profile = extract_candidate_profile(text)
+    except (UnsupportedFileTypeError, EmptyExtractionError, ExtractionError) as exc:
+        resume.extraction_status = ResumeExtractionStatus.FAILED
+        resume.extraction_error = str(exc)
+        return
+    except Exception as exc:  # Ollama unreachable, model not pulled, etc.
+        logger.warning("Resume extraction failed for %s: %s", filename, exc)
+        resume.extraction_status = ResumeExtractionStatus.FAILED
+        resume.extraction_error = f"Extraction failed: {exc}"
+        return
+
+    resume.raw_text = text
+    resume.extracted_skills = profile.skills
+    resume.extracted_experience_years = profile.experience_years
+    resume.extracted_education = [e.model_dump() for e in profile.education]
+    resume.extracted_certifications = profile.certifications
+    resume.extracted_profile = profile.model_dump()
+    resume.extraction_status = ResumeExtractionStatus.DONE
+    resume.extracted_at = datetime.now(timezone.utc)
+
+    # Only sourced (bulk, no account yet) resumes get candidate_name/email
+    # filled from extraction — self-uploads already identify the person
+    # via owner_id, and _to_read() deliberately leaves these blank for
+    # self-uploads so it can show "you" instead of a possibly-messy
+    # resume-derived name.
+    if is_sourced:
+        resume.candidate_name = profile.candidate_name
+        resume.candidate_email = profile.candidate_email
 
 
 def _store_one(
@@ -67,6 +115,11 @@ def _store_one(
         blob_path=blob_path,
         status=upload_status,
     )
+    if upload_status == ResumeStatus.UPLOADED:
+        # Extraction failure is independent of upload success — the file
+        # is already safely in blob storage by this point regardless of
+        # what happens next, so this only ever affects extraction_status.
+        _run_extraction(resume, file_bytes, filename, is_sourced=owner_id is None)
     db.add(resume)
     db.flush()  # assigns resume.id before we snapshot it for the audit row
     record_audit(

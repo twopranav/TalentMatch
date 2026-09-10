@@ -1,14 +1,18 @@
+import logging
 import uuid
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, status
 from sqlalchemy.orm import Session
 from app.core.audit import record_audit, snapshot
 from app.core.deps import get_current_user, require_recruiter_or_admin
 from app.core.text_extract import extract_text_from_upload
+from app.core.llm_extract import ExtractionError, extract_job_requirements
 from app.db.session import get_db
-from app.models.job import Job, JobStatus, EmploymentType, SeniorityLevel, RemoteType
+from app.models.job import Job, JobExtractionStatus, JobStatus, EmploymentType, SeniorityLevel, RemoteType
 from app.models.user import User, UserRole
 from app.schemas.job import JobCreate, JobRead, JobUpdate
 from datetime import datetime, timezone
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -173,6 +177,28 @@ async def upload_jd(job_id: uuid.UUID, file: UploadFile = File(...), db: Session
 
     had_jd_before = job.jd_raw_text is not None
     job.jd_raw_text = await extract_text_from_upload(file)
+
+    # Structured extraction (Phase 4) — synchronous for now, same pattern
+    # as resume extraction. Failure here never blocks the JD upload
+    # itself: jd_raw_text is already saved above regardless of outcome.
+    try:
+        requirements = extract_job_requirements(job.jd_raw_text)
+    except ExtractionError as exc:
+        job.extraction_status = JobExtractionStatus.FAILED
+        job.extraction_error = str(exc)
+    except Exception as exc:  # Ollama unreachable, model not pulled, etc.
+        logger.warning("JD extraction failed for job %s: %s", job.id, exc)
+        job.extraction_status = JobExtractionStatus.FAILED
+        job.extraction_error = f"Extraction failed: {exc}"
+    else:
+        job.extracted_required_skills = requirements.required_skills
+        job.extracted_min_experience_years = requirements.min_experience_years
+        job.extracted_max_experience_years = requirements.max_experience_years
+        job.extracted_education_requirement = requirements.education_requirement
+        job.extracted_profile = requirements.model_dump()
+        job.extraction_status = JobExtractionStatus.DONE
+        job.extracted_at = datetime.now(timezone.utc)
+
     # jd_raw_text itself is excluded from snapshots (see _SNAPSHOT_EXCLUDE) —
     # it can be large and the file content isn't useful to diff in an audit
     # trail. What matters here is recording that an upload happened.

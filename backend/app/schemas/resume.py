@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime
 from pydantic import BaseModel, ConfigDict
-from app.models.resume import ResumeStatus
+from app.models.resume import ResumeStatus, ResumeExtractionStatus
 
 class ResumeRead(BaseModel):
     id: uuid.UUID
@@ -22,6 +22,17 @@ class ResumeRead(BaseModel):
     # this is what lets the listing show *who* a resume belongs to).
     owner_email: str | None = None
     uploaded_by_email: str | None = None
+    # --- Phase 4: extraction results. raw_text is deliberately NOT exposed
+    # here (it's the full document text — large, and not useful to a UI
+    # that already has the parsed fields below). ---
+    extraction_status: ResumeExtractionStatus
+    extraction_error: str | None = None
+    extracted_at: datetime | None = None
+    extracted_skills: list[str] | None = None
+    extracted_experience_years: int | None = None
+    extracted_education: list | None = None
+    extracted_certifications: list | None = None
+    extracted_profile: dict | None = None
     model_config = ConfigDict(from_attributes=True)
 
 class ResumeReadWithUrl(ResumeRead):
