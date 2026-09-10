@@ -1,15 +1,22 @@
 import { useEffect, useState } from 'react'
 import { useAuth } from '../context/AuthContext'
 import { fetchMe, updateMe, uploadAvatar } from '../api/users'
+import { deleteResume } from '../api/resumes'
 import { useResumes } from '../hooks/useResumes'
 import ResumeUploadModal from '../components/resume/ResumeUploadModal'
 import ResumePreview from '../components/resume/ResumePreview'
 import Spinner from '../components/ui/Spinner'
+import ConfirmDialog from '../components/ui/ConfirmDialog'
 import { useToast } from '../components/ui/Toast'
 import { getErrorMessage } from '../utils/format'
 
 const LABEL_CLASSES = 'mb-1 block text-xs font-medium text-slate-500 dark:text-slate-400'
 const INPUT_CLASSES = 'w-full rounded border border-slate-200 bg-white px-3 py-2 text-sm text-slate-800 outline-none focus:border-slate-400 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100'
+
+const RESUME_STATUS_STYLES = {
+  uploaded: 'bg-emerald-100 text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-300',
+  failed: 'bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300',
+}
 
 function emptyFormFor(role) {
   return {
@@ -49,9 +56,25 @@ export default function Profile() {
   const [saving, setSaving] = useState(false)
   const [avatarUploading, setAvatarUploading] = useState(false)
   const [resumeModalOpen, setResumeModalOpen] = useState(false)
+  const [confirmDeleteResume, setConfirmDeleteResume] = useState(false)
+  const [deletingResume, setDeletingResume] = useState(false)
   const isCandidate = profile?.role === 'user'
   const { resumes, refetch: refetchResumes } = useResumes({ enabled: isCandidate })
   const currentResume = resumes[0]
+
+  const handleDeleteResume = async () => {
+    if (!currentResume) return
+    setDeletingResume(true)
+    try {
+      await deleteResume(currentResume.id)
+      showToast('Resume deleted.', 'success')
+      refetchResumes()
+    } catch (err) {
+      showToast(getErrorMessage(err, 'Could not delete your resume.'), 'error')
+    } finally {
+      setDeletingResume(false)
+    }
+  }
 
   useEffect(() => {
     let mounted = true
@@ -161,12 +184,37 @@ export default function Profile() {
       {isCandidate && (
         <section className="rounded border border-slate-200 p-4 dark:border-slate-700">
           <h2 className="mb-3 text-sm font-medium text-slate-700 dark:text-slate-300">Resume</h2>
-          {currentResume ? <p className="mb-3 text-sm text-slate-600 dark:text-slate-400">On file: {currentResume.original_filename}</p> : <p className="mb-3 text-sm text-slate-400 dark:text-slate-500">No resume uploaded yet.</p>}
-          <button onClick={() => setResumeModalOpen(true)} className="rounded bg-slate-800 px-4 py-2 text-sm font-medium text-white hover:bg-slate-900 dark:bg-slate-700 dark:hover:bg-slate-600">
-            {currentResume ? 'Replace resume' : 'Upload resume'}
-          </button>
+          {currentResume ? (
+            <p className="mb-3 flex items-center gap-2 text-sm text-slate-600 dark:text-slate-400">
+              On file: {currentResume.original_filename}
+              <span className={`rounded-full px-2 py-0.5 text-xs font-medium ${RESUME_STATUS_STYLES[currentResume.status]}`}>
+                {currentResume.status}
+              </span>
+            </p>
+          ) : (
+            <p className="mb-3 text-sm text-slate-400 dark:text-slate-500">No resume uploaded yet.</p>
+          )}
+          <div className="flex items-center gap-2">
+            <button onClick={() => setResumeModalOpen(true)} className="rounded bg-slate-800 px-4 py-2 text-sm font-medium text-white hover:bg-slate-900 dark:bg-slate-700 dark:hover:bg-slate-600">
+              {currentResume ? 'Replace resume' : 'Upload resume'}
+            </button>
+            {currentResume && (
+              <button onClick={() => setConfirmDeleteResume(true)} disabled={deletingResume} className="rounded px-4 py-2 text-sm font-medium text-red-600 hover:bg-red-50 disabled:opacity-60 dark:text-red-400 dark:hover:bg-red-950">
+                {deletingResume ? <Spinner size="sm" label="Deleting" /> : 'Delete resume'}
+              </button>
+            )}
+          </div>
           {currentResume && <ResumePreview resume={currentResume} />}
           <ResumeUploadModal open={resumeModalOpen} onClose={() => setResumeModalOpen(false)} currentResume={currentResume} onUploaded={refetchResumes} />
+          <ConfirmDialog
+            open={confirmDeleteResume}
+            onClose={() => setConfirmDeleteResume(false)}
+            onConfirm={handleDeleteResume}
+            title="Delete your resume?"
+            message="You won't be able to apply to jobs until you upload a new one."
+            confirmLabel="Delete"
+            destructive
+          />
         </section>
       )}
     </div>

@@ -10,7 +10,7 @@ venv/
 .env
 *.env.local
 
-# Local resume storage
+# Resume storage
 storage/
 
 # Node

@@ -19,6 +19,7 @@ export default function AppLayout({ children }) {
               <Link to="/profile" className="hover:text-slate-900 dark:hover:text-slate-100">Profile</Link>
               {isApplicant && <Link to="/applied-jobs" className="hover:text-slate-900 dark:hover:text-slate-100">Applied Jobs</Link>}
               {canViewUsers && <Link to="/my-jobs" className="hover:text-slate-900 dark:hover:text-slate-100">My Jobs</Link>}
+              {canViewUsers && <Link to="/resumes" className="hover:text-slate-900 dark:hover:text-slate-100">Resumes</Link>}
               {canViewUsers && <Link to="/users" className="hover:text-slate-900 dark:hover:text-slate-100">Users</Link>}
             </nav>
           </div>

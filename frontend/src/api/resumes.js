@@ -6,6 +6,21 @@ export function fetchMyResumes(includeArchived = false) {
     .then((res) => res.data)
 }
 
+// Same endpoint as fetchMyResumes — the backend already returns every
+// resume in the system to recruiter/admin/superuser (not just their own),
+// this is just a clearer name for that use on the recruiter-facing library.
+export const fetchResumes = fetchMyResumes
+
+export function uploadResumesBulk(files) {
+  const form = new FormData()
+  files.forEach((file) => form.append('files', file))
+  return apiClient
+    .post('/resumes/bulk', form, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+    })
+    .then((res) => res.data)
+}
+
 export function fetchResume(resumeId) {
   return apiClient.get(`/resumes/${resumeId}`).then((res) => res.data)
 }

@@ -1,7 +1,7 @@
 import uuid
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, status
 from fastapi.responses import RedirectResponse, Response
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 from app.core.audit import record_audit, snapshot
 from app.core.config import settings
 from app.core.deps import get_current_user, require_recruiter_or_admin
@@ -174,6 +174,18 @@ def _get_manageable_resume(resume_id: uuid.UUID, db: Session, current_user: User
     return resume
 
 
+def _to_read(resume: Resume) -> ResumeRead:
+    """Attaches owner/uploader email on top of the plain column mapping —
+    self-uploaded resumes have no candidate_name/candidate_email (only
+    recruiter-sourced ones do), so without this a recruiter browsing the
+    library sees a bare UUID instead of who the resume belongs to."""
+    return ResumeRead(
+        **ResumeRead.model_validate(resume).model_dump(exclude={"owner_email", "uploaded_by_email"}),
+        owner_email=resume.owner.email if resume.owner else None,
+        uploaded_by_email=resume.uploaded_by.email if resume.uploaded_by else None,
+    )
+
+
 @router.get("", response_model=list[ResumeRead])
 def list_resumes(
     include_archived: bool = False,
@@ -184,12 +196,13 @@ def list_resumes(
 ):
     """USER sees only their own resume(s); recruiter/admin/superuser see
     every resume in the system, same visibility split as list_users."""
-    query = db.query(Resume)
+    query = db.query(Resume).options(joinedload(Resume.owner), joinedload(Resume.uploaded_by))
     if current_user.role == UserRole.USER:
         query = query.filter(Resume.owner_id == current_user.id)
     if not include_archived:
         query = query.filter(Resume.is_archived.is_(False))
-    return query.order_by(Resume.created_at.desc()).offset(offset).limit(limit).all()
+    resumes = query.order_by(Resume.created_at.desc()).offset(offset).limit(limit).all()
+    return [_to_read(r) for r in resumes]
 
 
 @router.get("/{resume_id}", response_model=ResumeReadWithUrl)
@@ -204,7 +217,7 @@ def get_resume(
     else:
         download_url = f"/api/resumes/{resume.id}/file"
     return ResumeReadWithUrl(
-        **ResumeRead.model_validate(resume).model_dump(),
+        **_to_read(resume).model_dump(),
         download_url=download_url,
     )
 

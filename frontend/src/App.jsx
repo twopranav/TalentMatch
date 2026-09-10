@@ -10,6 +10,7 @@ import Profile from './pages/Profile'
 import MyJobs from './pages/MyJobs'
 import AppliedJobs from './pages/AppliedJobs'
 import JobApplicants from './pages/JobApplicants'
+import ResumeLibrary from './pages/ResumeLibrary'
 
 function LoginRoute() {
   const { isAuthenticated } = useAuth()
@@ -75,6 +76,17 @@ function App() {
             <ProtectedRoute>
               <RequireRole roles={['recruiter', 'admin', 'superuser']}>
                 <JobApplicants />
+              </RequireRole>
+            </ProtectedRoute>
+          }
+        />
+
+        <Route
+          path="/resumes"
+          element={
+            <ProtectedRoute>
+              <RequireRole roles={['recruiter', 'admin', 'superuser']}>
+                <ResumeLibrary />
               </RequireRole>
             </ProtectedRoute>
           }

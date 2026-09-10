@@ -16,6 +16,12 @@ class ResumeRead(BaseModel):
     is_archived: bool
     created_at: datetime
     updated_at: datetime
+    # Populated by joining Resume.owner / Resume.uploaded_by in the route —
+    # not on the ORM model itself, so this stays None unless the route sets
+    # it explicitly (self-uploads have no candidate_name/candidate_email,
+    # this is what lets the listing show *who* a resume belongs to).
+    owner_email: str | None = None
+    uploaded_by_email: str | None = None
     model_config = ConfigDict(from_attributes=True)
 
 class ResumeReadWithUrl(ResumeRead):
