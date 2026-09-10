@@ -1,8 +1,8 @@
 import uuid
 from datetime import datetime
 from enum import Enum as PyEnum
-from sqlalchemy import String, Integer, BigInteger, Boolean, Enum as SAEnum, ForeignKey, func
-from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy import String, Text, Integer, BigInteger, Boolean, Enum as SAEnum, ForeignKey, func
+from sqlalchemy.dialects.postgresql import UUID, JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.db.session import Base
 from typing import TYPE_CHECKING
@@ -15,6 +15,15 @@ class ResumeStatus(str, PyEnum):
     model in Phase 4 — deliberately not reusing this one, so a parsing
     failure can never be confused with an upload failure."""
     UPLOADED = "uploaded"
+    FAILED = "failed"
+
+class ResumeExtractionStatus(str, PyEnum):
+    """Separate from ResumeStatus on purpose (see that enum's docstring) —
+    a resume can be UPLOADED (file safely stored) while extraction is still
+    PENDING/PROCESSING, or even FAILED, without ever touching upload status."""
+    PENDING = "pending"
+    PROCESSING = "processing"
+    DONE = "done"
     FAILED = "failed"
 
 class Resume(Base):
@@ -63,6 +72,26 @@ class Resume(Base):
     updated_at: Mapped[datetime] = mapped_column(
         server_default=func.now(), onupdate=func.now(), nullable=False
     )
+
+    # --- Phase 4: extraction (populated by the Ollama pipeline, never by
+    # the user) ---
+    raw_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    extraction_status: Mapped[ResumeExtractionStatus] = mapped_column(
+        SAEnum(ResumeExtractionStatus, name="resume_extraction_status"),
+        default=ResumeExtractionStatus.PENDING, nullable=False,
+    )
+    extraction_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    extracted_at: Mapped[datetime | None] = mapped_column(nullable=True)
+    # Promoted to their own columns because Phase 5's rules engine queries
+    # them directly (skill/experience/education matching); everything else
+    # extraction produces (projects, work history, raw model output) lives
+    # in extracted_profile so future phases can use it without another
+    # migration.
+    extracted_skills: Mapped[list[str] | None] = mapped_column(JSONB, nullable=True)
+    extracted_experience_years: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    extracted_education: Mapped[list | None] = mapped_column(JSONB, nullable=True)
+    extracted_certifications: Mapped[list | None] = mapped_column(JSONB, nullable=True)
+    extracted_profile: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
 
     owner: Mapped["User | None"] = relationship(foreign_keys=[owner_id])
     uploaded_by: Mapped["User"] = relationship(foreign_keys=[uploaded_by_id])

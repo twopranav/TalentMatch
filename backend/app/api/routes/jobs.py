@@ -3,7 +3,7 @@ from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, 
 from sqlalchemy.orm import Session
 from app.core.audit import record_audit, snapshot
 from app.core.deps import get_current_user, require_recruiter_or_admin
-from app.core.jd_extract import extract_text_from_upload
+from app.core.text_extract import extract_text_from_upload
 from app.db.session import get_db
 from app.models.job import Job, JobStatus, EmploymentType, SeniorityLevel, RemoteType
 from app.models.user import User, UserRole

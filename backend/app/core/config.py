@@ -22,6 +22,10 @@ class Settings(BaseSettings):
     AZURE_STORAGE_SAS_URL: str | None = None
     LOCAL_STORAGE_ROOT: str = "./storage/resumes"
 
+    # Ollama (Phase 4 extraction)
+    OLLAMA_HOST: str = "http://localhost:11434"
+    OLLAMA_EXTRACTION_MODEL: str = "qwen2.5:7b-instruct"
+
     # CORS
     CORS_ORIGINS: list[str] = ["http://localhost:5173"]
 

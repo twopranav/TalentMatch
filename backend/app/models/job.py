@@ -33,6 +33,12 @@ class RemoteType(str, PyEnum):
     REMOTE = "remote"
     HYBRID = "hybrid"
 
+class JobExtractionStatus(str, PyEnum):
+    PENDING = "pending"
+    PROCESSING = "processing"
+    DONE = "done"
+    FAILED = "failed"
+
 class Job(Base):
     __tablename__ = "jobs"
 
@@ -69,6 +75,25 @@ class Job(Base):
     min_experience_years: Mapped[int | None] = mapped_column(Integer, nullable=True)
     max_experience_years: Mapped[int | None] = mapped_column(Integer, nullable=True)
     education_requirement: Mapped[str | None] = mapped_column(String(255), nullable=True)
+
+    # --- Phase 4: extraction (populated by the Ollama pipeline). Kept
+    # SEPARATE from required_skills / min_experience_years / max_experience_years /
+    # education_requirement above, which are recruiter-editable via
+    # JobCreate/JobUpdate — extraction must never silently overwrite a
+    # value a recruiter typed in by hand. Phase 5/6 decide how these two
+    # sets combine (e.g. "use extracted_* only where the recruiter left
+    # the manual field blank"); storage keeps them independent regardless.
+    extraction_status: Mapped[JobExtractionStatus] = mapped_column(
+        SAEnum(JobExtractionStatus, name="job_extraction_status"),
+        default=JobExtractionStatus.PENDING, nullable=False,
+    )
+    extraction_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    extracted_at: Mapped[datetime | None] = mapped_column(nullable=True)
+    extracted_required_skills: Mapped[list[str] | None] = mapped_column(JSONB, nullable=True)
+    extracted_min_experience_years: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    extracted_max_experience_years: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    extracted_education_requirement: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    extracted_profile: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
 
     # --- lifecycle fields ---
     published_at: Mapped[datetime | None] = mapped_column(nullable=True)

@@ -10,12 +10,14 @@ from app.core.config import settings
 if settings.STORAGE_BACKEND == "azure":
     from app.core.storage.azure_blob import (
         delete_blob as delete_resume_blob,
+        download_blob as download_resume_blob,
         download_url as get_resume_download_url,
         upload_blob as upload_resume_blob,
     )
 else:
     from app.core.storage.local_disk import (
         delete_blob as delete_resume_blob,
+        read_blob as download_resume_blob,
         download_url as get_resume_download_url,
         upload_blob as upload_resume_blob,
     )
