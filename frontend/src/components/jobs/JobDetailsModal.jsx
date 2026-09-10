@@ -4,7 +4,6 @@ import ConfirmDialog from '../ui/ConfirmDialog'
 import { useAuth } from '../../context/AuthContext'
 import { useToast } from '../ui/Toast'
 import { updateJob, deleteJob } from '../../api/jobs'
-import ApplicantsPanel from './ApplicantsPanel'
 import { formatEnumLabel } from '../../utils/format'
 
 
@@ -81,6 +80,13 @@ export default function JobDetailsModal({ open, onClose, job, onEdit, onUploadJD
               <button onClick={() => onUploadJD(job)} disabled={busy} className="rounded px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-slate-800">
                 Upload JD
               </button>
+              <button
+                onClick={() => window.open(`/jobs/${job.id}/applicants`, '_blank', 'noopener,noreferrer')}
+                disabled={busy}
+                className="rounded px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-slate-800"
+              >
+                Applicants
+              </button>
               {job.status === 'draft' && (
                 <button onClick={() => setStatus('published')} disabled={busy} className="rounded bg-emerald-600 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-700 disabled:opacity-60">
                   Publish
@@ -133,6 +139,12 @@ export default function JobDetailsModal({ open, onClose, job, onEdit, onUploadJD
             <div><dt className="text-xs text-slate-400 dark:text-slate-500">Education</dt><dd>{formatLabel(job.education_requirement)}</dd></div>
           </dl>
 
+          {canManage && (
+            <p className="text-xs text-slate-400 dark:text-slate-500">
+              Applicants and their resumes open in a new tab via the "Applicants" button below.
+            </p>
+          )}
+
           {job.jd_raw_text && (
             <div>
               <dt className="text-xs text-slate-400 dark:text-slate-500">Extracted JD text</dt>
@@ -141,8 +153,6 @@ export default function JobDetailsModal({ open, onClose, job, onEdit, onUploadJD
               </p>
             </div>
           )}
-
-          {canManage && <ApplicantsPanel job={job} active={open && canManage} />}
         </div>
       </Modal>
 

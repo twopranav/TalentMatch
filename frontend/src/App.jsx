@@ -9,6 +9,7 @@ import RequireRole from './components/RequireRole'
 import Profile from './pages/Profile'
 import MyJobs from './pages/MyJobs'
 import AppliedJobs from './pages/AppliedJobs'
+import JobApplicants from './pages/JobApplicants'
 
 function LoginRoute() {
   const { isAuthenticated } = useAuth()
@@ -63,6 +64,17 @@ function App() {
             <ProtectedRoute>
               <RequireRole roles={['recruiter', 'admin', 'superuser']}>
                 <MyJobs />
+              </RequireRole>
+            </ProtectedRoute>
+          }
+        />
+
+        <Route
+          path="/jobs/:jobId/applicants"
+          element={
+            <ProtectedRoute>
+              <RequireRole roles={['recruiter', 'admin', 'superuser']}>
+                <JobApplicants />
               </RequireRole>
             </ProtectedRoute>
           }

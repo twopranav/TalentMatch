@@ -3,7 +3,6 @@ import { useAuth } from '../context/AuthContext'
 import { useJobs } from '../hooks/useJobs'
 import { updateJob } from '../api/jobs'
 import JobFormDrawer from '../components/jobs/JobFormDrawer'
-import ApplicantsModal from '../components/jobs/ApplicantsModal'
 import Spinner from '../components/ui/Spinner'
 import { useToast } from '../components/ui/Toast'
 import { formatEnumLabel, getErrorMessage } from '../utils/format'
@@ -28,12 +27,17 @@ export default function MyJobs() {
 
   const [editingJob, setEditingJob] = useState(null)
   const [formOpen, setFormOpen] = useState(false)
-  const [applicantsJob, setApplicantsJob] = useState(null)
   const [busyJobId, setBusyJobId] = useState(null)
 
   const openEdit = (job) => {
     setEditingJob(job)
     setFormOpen(true)
+  }
+
+  // Opens the dedicated applicants page in a new tab/window instead of a
+  // small modal, so the JD and every resume link are visible on one screen.
+  const openApplicants = (job) => {
+    window.open(`/jobs/${job.id}/applicants`, '_blank', 'noopener,noreferrer')
   }
 
   const setStatus = async (job, status) => {
@@ -114,7 +118,7 @@ export default function MyJobs() {
                   Edit
                 </button>
                 <button
-                  onClick={() => setApplicantsJob(job)}
+                  onClick={() => openApplicants(job)}
                   className="rounded bg-slate-800 px-3 py-1.5 text-xs font-medium text-white hover:bg-slate-900 dark:bg-slate-700 dark:hover:bg-slate-600"
                 >
                   Applicants
@@ -126,8 +130,6 @@ export default function MyJobs() {
       )}
 
       <JobFormDrawer open={formOpen} onClose={() => setFormOpen(false)} job={editingJob} onSaved={refetch} />
-
-      <ApplicantsModal job={applicantsJob} open={Boolean(applicantsJob)} onClose={() => setApplicantsJob(null)} />
     </div>
   )
 }

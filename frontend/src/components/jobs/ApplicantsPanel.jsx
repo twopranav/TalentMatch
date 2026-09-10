@@ -9,7 +9,9 @@ const APPLICATION_STATUS_OPTIONS = ['applied', 'under_review', 'shortlisted', 'r
 
 // active=false skips fetching — used so a closed/hidden modal doesn't fire
 // a request, same intent as the old `open && canManage` guard it replaces.
-export default function ApplicantsPanel({ job, active = true }) {
+// fullPage=true drops the height cap / scroll box for use on a dedicated
+// applicants page instead of inside a cramped modal.
+export default function ApplicantsPanel({ job, active = true, fullPage = false }) {
   const { showToast } = useToast()
   const [applicants, setApplicants] = useState([])
   const [loading, setLoading] = useState(false)
@@ -62,7 +64,7 @@ export default function ApplicantsPanel({ job, active = true }) {
       ) : applicants.length === 0 ? (
         <p className="text-xs text-slate-400 dark:text-slate-500">No applications yet.</p>
       ) : (
-        <div className="max-h-52 overflow-y-auto rounded border border-slate-100 dark:border-slate-700">
+        <div className={`rounded border border-slate-100 dark:border-slate-700 ${fullPage ? '' : 'max-h-52 overflow-y-auto'}`}>
           <table className="w-full text-left text-xs">
             <thead className="bg-slate-50 text-slate-400 dark:bg-slate-800 dark:text-slate-500">
               <tr>
