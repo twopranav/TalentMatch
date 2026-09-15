@@ -1,35 +1,36 @@
 """
-Ollama-based structured extraction (Phase 4). Two entry points:
-extract_candidate_profile() and extract_job_requirements().
+Hugging Face Inference Providers-based structured extraction (Phase 4).
+Two entry points: extract_candidate_profile() and
+extract_job_requirements(). Replaces the earlier Ollama implementation —
+see the .env.example / config.py diffs for the settings that moved.
 
-Both are plain synchronous functions — no Celery here on purpose. This is
-the piece to hand-test against real resumes/JDs before any async plumbing
-goes around it (see eval_extraction.py). The Celery task wraps these
-unchanged; it doesn't reimplement extraction logic.
+Both are plain synchronous functions — the Celery task in
+extraction_tasks.py wraps these unchanged; it doesn't reimplement
+extraction logic. Keeping that separation is what let this swap happen
+without touching resumes.py's extraction call site (only the import).
 """
 import json
 import logging
+from copy import deepcopy
 
-from ollama import Client
+from huggingface_hub import InferenceClient
 from pydantic import ValidationError
 
 from app.core.config import settings
+from app.core.experience_calc import compute_experience_years
 from app.schemas.extraction import CandidateProfileExtraction, JobRequirementsExtraction
 
 logger = logging.getLogger(__name__)
 
-_client = Client(host=settings.OLLAMA_HOST)
+_client = InferenceClient(provider=settings.HF_INFERENCE_PROVIDER, api_key=settings.HF_TOKEN)
 
 
 class ExtractionError(Exception):
-    """Ollama's response couldn't be parsed/validated into the target
-    schema, even after a retry. The Celery task catches this and marks
-    the row 'failed' with the message — it does not crash the worker."""
+    """The provider's response couldn't be parsed/validated into the
+    target schema, even after a retry. The Celery task catches this and
+    marks the row 'failed' with the message — it does not crash the
+    worker."""
 
-
-# Schema-constrained decoding (the `format` dict below) guarantees valid
-# JSON *shape*. It does not guarantee the model read the document
-# correctly — that's what these prompts are for.
 
 _CANDIDATE_SYSTEM_PROMPT = """You extract structured data from resumes. \
 Return only what the resume actually supports — do not invent, guess, or \
@@ -39,10 +40,10 @@ Field-specific rules:
 - skills: every skill explicitly named anywhere in the resume (a skills \
 section, a project description, a job bullet). Use the resume's own \
 wording, don't normalize or rename them.
-- experience_years: compute this from the date ranges in work_history \
-(sum the distinct employment periods, don't double-count overlaps). Do \
-not state a number that disagrees with the work_history dates you also \
-return. If there is no work history at all, return null, not 0.
+- experience_years: leave this null. It is calculated separately from \
+the work_history dates you return, not by you — put your effort into \
+getting start_date/end_date exactly right for every entry instead \
+(including writing "Present"/"Current" verbatim when a role is ongoing).
 - education / certifications / projects / work_history: return an empty \
 list [] if the resume has none — never invent a plausible-looking entry \
 to fill the field.
@@ -71,47 +72,88 @@ in Computer Science or related field"), or null if none is stated.
 Return JSON matching the given schema exactly, with no extra commentary."""
 
 
-def _call_ollama(system_prompt: str, document_text: str, schema: dict, retries: int = 1) -> dict:
+def _strict_json_schema(schema: dict) -> dict:
+    """OpenAI-style strict structured output (what HF's providers
+    implement) requires EVERY object in the schema graph — not just the
+    top level — to list all its own properties as required and set
+    additionalProperties: false. Pydantic's model_json_schema() only
+    marks a property required at the top level when it has no default
+    (every field here has one, so a partial document doesn't fail
+    validation), and never touches nested $defs or array-item schemas at
+    all.
+
+    Left unpatched, an object with zero keys is already schema-valid,
+    which let Ollama's local grammar (the old engine) stop after a
+    couple of easy fields near the top of the resume. Some HF providers
+    are worse here: instead of erroring on a non-strict nested schema,
+    they silently fall back to unconstrained decoding — defeating the
+    whole point of the retry-once reliability trick below. So this walks
+    the entire schema (top level, every entry in $defs, and inside every
+    array's 'items') and patches each object node in place.
+    """
+    schema = deepcopy(schema)
+
+    def _patch(node: dict) -> None:
+        if "properties" in node:
+            node["required"] = list(node["properties"].keys())
+            node["additionalProperties"] = False
+            for prop_schema in node["properties"].values():
+                _patch(prop_schema)
+        if "items" in node:
+            _patch(node["items"])
+
+    _patch(schema)
+    for def_schema in schema.get("$defs", {}).values():
+        _patch(def_schema)
+    return schema
+
+
+def _call_hf(system_prompt: str, document_text: str, schema: dict, retries: int = 1) -> dict:
+    strict_schema = _strict_json_schema(schema)
+    response_format = {
+        "type": "json_schema",
+        "json_schema": {"name": "extraction", "schema": strict_schema, "strict": True},
+    }
     last_error: Exception | None = None
     for attempt in range(retries + 1):
-        response = _client.chat(
-            model=settings.OLLAMA_EXTRACTION_MODEL,
+        response = _client.chat_completion(
+            model=settings.HF_EXTRACTION_MODEL,
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": document_text},
             ],
-            format=schema,
-            # Low, not default (Ollama's default of 0.7 is tuned for
-            # conversational variety, which is the opposite of what you
-            # want from repeated structured extraction).
-            options={"temperature": 0.1},
+            response_format=response_format,
+            temperature=0.1,
         )
+        content = response.choices[0].message.content
         try:
-            return json.loads(response.message.content)
+            return json.loads(content)
         except json.JSONDecodeError as e:
             last_error = e
             logger.warning(
-                "Ollama returned invalid JSON on attempt %d/%d: %s",
+                "HF provider returned invalid JSON on attempt %d/%d: %s",
                 attempt + 1, retries + 1, e,
             )
     raise ExtractionError(
-        f"Ollama did not return valid JSON after {retries + 1} attempt(s): {last_error}"
+        f"HF provider did not return valid JSON after {retries + 1} attempt(s): {last_error}"
     )
 
 
 def extract_candidate_profile(resume_text: str) -> CandidateProfileExtraction:
-    raw = _call_ollama(
+    raw = _call_hf(
         _CANDIDATE_SYSTEM_PROMPT, resume_text,
         CandidateProfileExtraction.model_json_schema(),
     )
     try:
-        return CandidateProfileExtraction.model_validate(raw)
+        profile = CandidateProfileExtraction.model_validate(raw)
     except ValidationError as e:
         raise ExtractionError(f"Response didn't match CandidateProfileExtraction: {e}")
+    profile.experience_years = compute_experience_years(profile.work_history)
+    return profile
 
 
 def extract_job_requirements(jd_text: str) -> JobRequirementsExtraction:
-    raw = _call_ollama(
+    raw = _call_hf(
         _JOB_SYSTEM_PROMPT, jd_text,
         JobRequirementsExtraction.model_json_schema(),
     )

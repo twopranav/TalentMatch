@@ -35,11 +35,12 @@ class CandidateProfileExtraction(BaseModel):
     onto the promoted columns on Resume; everything is also stored
     wholesale in Resume.extracted_profile as the source of truth."""
     skills: list[str] = Field(default_factory=list)
-    experience_years: int | None = None  # computed by the model from the
-                                          # work history date ranges, not a
-                                          # verbatim span — flag low
-                                          # confidence results for review
-                                          # once you have a UI for that
+    experience_years: int | None = None  # NOT trusted from the model —
+                                          # llm_extract.py overwrites this
+                                          # with a deterministic calculation
+                                          # from work_history dates
+                                          # (app/core/experience_calc.py)
+                                          # after validation, every time
     education: list[EducationEntry] = Field(default_factory=list)
     certifications: list[str] = Field(default_factory=list)
     work_history: list[WorkHistoryEntry] = Field(default_factory=list)

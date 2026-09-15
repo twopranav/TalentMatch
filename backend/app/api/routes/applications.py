@@ -5,7 +5,7 @@ from app.core.audit import record_audit, snapshot
 from app.core.deps import get_current_user, require_recruiter_or_admin
 from app.db.session import get_db
 from app.models.application import Application
-from app.models.resume import Resume
+from app.models.resume import Resume, ResumeExtractionStatus
 from app.models.job import Job, JobStatus
 from app.models.user import User, UserRole
 from app.schemas.application import (
@@ -17,6 +17,42 @@ from app.schemas.application import (
 )
 
 router = APIRouter()
+
+
+def _require_ready_resume(candidate_id: uuid.UUID, db: Session) -> Resume:
+    """Gate for application creation: 'no resume, no application.' Runs
+    before the Application row is ever created — an application without
+    a fully-processed resume behind it isn't something a recruiter can
+    evaluate, so it shouldn't exist as a row at all, not even a
+    provisional one waiting to be filled in later.
+
+    Three separate checks rather than one combined condition, on purpose:
+    each maps to exactly one candidate-facing message, in the order a
+    candidate would actually hit them (no resume -> unreadable resume ->
+    not-finished-yet resume).
+    """
+    resume = (
+        db.query(Resume)
+        .filter(Resume.owner_id == candidate_id, Resume.is_archived.is_(False))
+        .first()
+    )
+    if resume is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Upload a resume to your profile before applying to a job.",
+        )
+    if resume.extraction_status == ResumeExtractionStatus.FAILED:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="We couldn't read your resume — please try uploading it again.",
+        )
+    if resume.extraction_status != ResumeExtractionStatus.DONE:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Your resume is still being processed — try applying again in a moment.",
+        )
+    return resume
+
 
 @router.post("", response_model=ApplicationRead, status_code=status.HTTP_201_CREATED)
 def apply_to_job(
@@ -36,16 +72,7 @@ def apply_to_job(
     if existing:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="You have already applied to this job")
 
-    resume = (
-        db.query(Resume)
-        .filter(Resume.owner_id == current_user.id, Resume.is_archived.is_(False))
-        .first()
-    )
-    if resume is None:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Upload a resume to your profile before applying to a job.",
-        )
+    resume = _require_ready_resume(current_user.id, db)
 
     application = Application(user_id=current_user.id, job_id=job.id, resume_id=resume.id)
     db.add(application)
