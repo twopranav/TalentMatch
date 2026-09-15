@@ -1,9 +1,15 @@
 """
-Pydantic schemas for Phase 4 structured extraction. These serve double
-duty: (1) the JSON schema handed to Ollama's structured-output mode, so
-the model is constrained to this exact shape, and (2) the validation
-target for parsing Ollama's response before it's written to the DB.
+Pydantic schemas for Phase 4 structured extraction.
+
+These schemas are used for:
+1. generating the structured-output schema sent to the Hugging Face
+   Inference Provider, and
+2. validating the provider response before it is persisted.
+
+Extraction intentionally preserves source information. Normalization and
+matching happen separately.
 """
+
 from pydantic import BaseModel, Field
 
 
@@ -16,13 +22,9 @@ class EducationEntry(BaseModel):
 class WorkHistoryEntry(BaseModel):
     company: str | None = None
     title: str | None = None
-    start_date: str | None = None  # kept as free text (e.g. "2021-06" or
-                                    # "Jun 2021") — resumes rarely give
-                                    # clean ISO dates, and forcing one here
-                                    # would just make the model invent it
-    end_date: str | None = None    # None/"" may mean "current" — see note
-                                    # in extracted_profile.is_current if you
-                                    # need that distinguished later
+    start_date: str | None = None
+    end_date: str | None = None
+    duration: str | None = None
 
 
 class ProjectEntry(BaseModel):
@@ -30,33 +32,58 @@ class ProjectEntry(BaseModel):
     description: str | None = None
 
 
+class CertificationEntry(BaseModel):
+    name: str | None = None
+    issuer: str | None = None
+    year: int | None = None
+
+
 class CandidateProfileExtraction(BaseModel):
-    """Result of extracting a resume. Top-level fields here map directly
-    onto the promoted columns on Resume; everything is also stored
-    wholesale in Resume.extracted_profile as the source of truth."""
+    """
+    Structured extraction result for a resume.
+
+    experience_years is intentionally derived separately from work_history
+    by the application. stated_experience preserves an explicit total-
+    experience statement from the resume such as "5+" or "around seven years".
+    """
+
     skills: list[str] = Field(default_factory=list)
-    experience_years: int | None = None  # NOT trusted from the model —
-                                          # llm_extract.py overwrites this
-                                          # with a deterministic calculation
-                                          # from work_history dates
-                                          # (app/core/experience_calc.py)
-                                          # after validation, every time
+
+    stated_experience: str | None = None
+
+    # Derived by compute_experience_years() after extraction.
+    experience_years: int | None = None
+
     education: list[EducationEntry] = Field(default_factory=list)
-    certifications: list[str] = Field(default_factory=list)
+
+    certifications: list[CertificationEntry] = Field(default_factory=list)
+
     work_history: list[WorkHistoryEntry] = Field(default_factory=list)
+
     projects: list[ProjectEntry] = Field(default_factory=list)
+
     candidate_name: str | None = None
     candidate_email: str | None = None
 
 
 class JobRequirementsExtraction(BaseModel):
-    """Result of extracting a JD. required_skills / preferred_skills are
-    kept as separate lists because your PRD calls out 'mandatory vs
-    preferred requirements' as its own Phase 4/5 deliverable — this is
-    where that distinction gets made, at extraction time, while the model
-    still has the full JD text and phrasing in front of it."""
-    required_skills: list[str] = Field(default_factory=list)
-    preferred_skills: list[str] = Field(default_factory=list)
+    """
+    Structured extraction result for a job description.
+
+    skills:
+        All concrete technical skills/competencies mentioned anywhere.
+
+    compulsory_skills:
+        Only skills that the JD explicitly marks as mandatory/required.
+        This is the set used by the hard matching gate.
+    """
+
+    skills: list[str] = Field(default_factory=list)
+
+    compulsory_skills: list[str] = Field(default_factory=list)
+
     min_experience_years: int | None = None
+
     max_experience_years: int | None = None
+
     education_requirement: str | None = None
