@@ -11,9 +11,11 @@ without touching resumes.py's extraction call site (only the import).
 """
 import json
 import logging
+import time
 from copy import deepcopy
 
 from huggingface_hub import InferenceClient
+from huggingface_hub.errors import HfHubHTTPError, InferenceTimeoutError
 from pydantic import ValidationError
 
 from app.core.config import settings
@@ -22,14 +24,28 @@ from app.schemas.extraction import CandidateProfileExtraction, JobRequirementsEx
 
 logger = logging.getLogger(__name__)
 
-_client = InferenceClient(provider=settings.HF_INFERENCE_PROVIDER, api_key=settings.HF_TOKEN)
+# How long to wait on a single HF call before giving up on it. Without
+# this, a hung provider hangs a Celery worker indefinitely (resumes) or —
+# worse — the synchronous JD-upload request itself (jobs.py), since that
+# path calls extract_job_requirements() inline in the request handler.
+_HF_TIMEOUT_SECONDS = 30
 
+_clients: dict[str, InferenceClient] = {}
+
+def _get_client(provider: str) -> InferenceClient:
+    if provider not in _clients:
+        _clients[provider] = InferenceClient(
+            provider=provider, api_key=settings.HF_TOKEN, timeout=_HF_TIMEOUT_SECONDS,
+        )
+    return _clients[provider]
 
 class ExtractionError(Exception):
     """The provider's response couldn't be parsed/validated into the
-    target schema, even after a retry. The Celery task catches this and
-    marks the row 'failed' with the message — it does not crash the
-    worker."""
+    target schema, or the call to the provider itself failed in a way
+    that a retry won't fix (bad auth, bad request, timeout after
+    exhausting retries). The Celery task and the JD-upload route both
+    catch this and mark the row 'failed' with the message — it does not
+    crash the worker or 500 the request."""
 
 
 _CANDIDATE_SYSTEM_PROMPT = """You extract structured data from resumes. \
@@ -37,9 +53,16 @@ Return only what the resume actually supports — do not invent, guess, or \
 pad any field.
 
 Field-specific rules:
-- skills: every skill explicitly named anywhere in the resume (a skills \
-section, a project description, a job bullet). Use the resume's own \
-wording, don't normalize or rename them.
+- skills: named tools, languages, frameworks, platforms, or techniques \
+mentioned anywhere in the resume (a skills section, a project \
+description, a job bullet) — e.g. "Kubernetes", "PostgreSQL", "query \
+optimization". Do NOT extract project names, team/company names, job \
+titles, or paraphrased responsibilities as skills. A bullet saying "led \
+schema migration for zero-downtime changes" is not itself a skill — only \
+pull out an actual named technology mentioned within it, if any (here: \
+none). When in doubt whether a phrase is a real named skill or just \
+prose describing what someone did, leave it out. Use the resume's own \
+wording for genuine skills, don't normalize or rename them.
 - experience_years: leave this null. It is calculated separately from \
 the work_history dates you return, not by you — put your effort into \
 getting start_date/end_date exactly right for every entry instead \
@@ -108,26 +131,72 @@ def _strict_json_schema(schema: dict) -> dict:
     return schema
 
 
-def _call_hf(system_prompt: str, document_text: str, schema: dict, retries: int = 1) -> dict:
+def _call_hf(
+    system_prompt: str,
+    document_text: str,
+    schema: dict,
+    *,
+    model: str | None = None,
+    provider: str | None = None,
+    retries: int = 1,
+) -> tuple[dict, dict]:
+    model = model or settings.HF_EXTRACTION_MODEL
+    provider = provider or settings.HF_INFERENCE_PROVIDER
+    client = _get_client(provider)
     strict_schema = _strict_json_schema(schema)
     response_format = {
         "type": "json_schema",
         "json_schema": {"name": "extraction", "schema": strict_schema, "strict": True},
     }
     last_error: Exception | None = None
+    start = time.monotonic()
     for attempt in range(retries + 1):
-        response = _client.chat_completion(
-            model=settings.HF_EXTRACTION_MODEL,
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": document_text},
-            ],
-            response_format=response_format,
-            temperature=0.1,
-        )
+        try:
+            response = client.chat_completion(
+                model=model,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": document_text},
+                ],
+                response_format=response_format,
+                temperature=0.1,
+            )
+        except HfHubHTTPError as e:
+            last_error = e
+            status_code = getattr(getattr(e, "response", None), "status_code", None)
+            if status_code is not None and 400 <= status_code < 500 and status_code != 429:
+                # Bad auth, bad request, gated/unknown model — retrying with
+                # the exact same call won't change the outcome. Fail fast
+                # instead of burning the retry budget (and, for the Celery
+                # path, Celery's own retry budget on top of this one).
+                raise ExtractionError(
+                    f"HF provider rejected the request ({status_code}), not retrying: {e}"
+                ) from e
+            logger.warning(
+                "HF provider HTTP error on attempt %d/%d (status=%s): %s",
+                attempt + 1, retries + 1, status_code, e,
+            )
+            continue
+        except InferenceTimeoutError as e:
+            last_error = e
+            logger.warning(
+                "HF provider timed out after %ss on attempt %d/%d",
+                _HF_TIMEOUT_SECONDS, attempt + 1, retries + 1,
+            )
+            continue
+
         content = response.choices[0].message.content
         try:
-            return json.loads(content)
+            parsed = json.loads(content)
+            usage = getattr(response, "usage", None)
+            meta = {
+                "model": model,
+                "provider": provider,
+                "elapsed": time.monotonic() - start,
+                "prompt_tokens": getattr(usage, "prompt_tokens", None),
+                "completion_tokens": getattr(usage, "completion_tokens", None),
+            }
+            return parsed, meta
         except json.JSONDecodeError as e:
             last_error = e
             logger.warning(
@@ -135,12 +204,12 @@ def _call_hf(system_prompt: str, document_text: str, schema: dict, retries: int 
                 attempt + 1, retries + 1, e,
             )
     raise ExtractionError(
-        f"HF provider did not return valid JSON after {retries + 1} attempt(s): {last_error}"
+        f"HF provider did not return a usable response after {retries + 1} attempt(s): {last_error}"
     )
 
 
 def extract_candidate_profile(resume_text: str) -> CandidateProfileExtraction:
-    raw = _call_hf(
+    raw, _ = _call_hf(
         _CANDIDATE_SYSTEM_PROMPT, resume_text,
         CandidateProfileExtraction.model_json_schema(),
     )
@@ -153,7 +222,7 @@ def extract_candidate_profile(resume_text: str) -> CandidateProfileExtraction:
 
 
 def extract_job_requirements(jd_text: str) -> JobRequirementsExtraction:
-    raw = _call_hf(
+    raw, _ = _call_hf(
         _JOB_SYSTEM_PROMPT, jd_text,
         JobRequirementsExtraction.model_json_schema(),
     )
@@ -161,3 +230,29 @@ def extract_job_requirements(jd_text: str) -> JobRequirementsExtraction:
         return JobRequirementsExtraction.model_validate(raw)
     except ValidationError as e:
         raise ExtractionError(f"Response didn't match JobRequirementsExtraction: {e}")
+
+def _extract_candidate_profile_for_eval(
+    resume_text: str, model: str, provider: str
+) -> tuple[CandidateProfileExtraction, dict]:
+    """eval_harness.py only. Same pipeline as extract_candidate_profile,
+    but with model/provider overrides and metadata returned for
+    side-by-side comparison. Not used by any request/Celery path."""
+    raw, meta = _call_hf(
+        _CANDIDATE_SYSTEM_PROMPT, resume_text,
+        CandidateProfileExtraction.model_json_schema(),
+        model=model, provider=provider,
+    )
+    profile = CandidateProfileExtraction.model_validate(raw)  # let ValidationError propagate — eval_harness reports it
+    profile.experience_years = compute_experience_years(profile.work_history)
+    return profile, meta
+
+def _extract_job_requirements_for_eval(
+    jd_text: str, model: str, provider: str
+) -> tuple[JobRequirementsExtraction, dict]:
+    """eval_harness.py only. See _extract_candidate_profile_for_eval."""
+    raw, meta = _call_hf(
+        _JOB_SYSTEM_PROMPT, jd_text,
+        JobRequirementsExtraction.model_json_schema(),
+        model=model, provider=provider,
+    )
+    return JobRequirementsExtraction.model_validate(raw), meta

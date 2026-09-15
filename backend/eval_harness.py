@@ -1,17 +1,16 @@
 """
-Standalone extraction test harness. No FastAPI, no Postgres, no Redis, no
-Celery worker, no blob storage — this calls text_extract.py/llm_extract.py/
-experience_calc.py exactly as they'd run in production, just with the
-inputs and outputs printed straight to your terminal instead of flowing
-through a request, a queue, and a DB row.
+Unified extraction eval harness — the only place model/provider choices
+get compared side by side. llm_extract.py's public functions
+(extract_candidate_profile/extract_job_requirements) stay fixed to
+settings.HF_EXTRACTION_MODEL/HF_INFERENCE_PROVIDER, as production
+expects; this harness is a throwaway tool for arriving at that
+configuration, not a permanent code path.
 
 Usage (run from inside backend/, so `app.*` imports resolve):
-    python3 eval_harness.py path/to/resume.pdf
-    python3 eval_harness.py path/to/resume.pdf --models Qwen/Qwen3-32B:cerebras openai/gpt-oss-120b:groq
-
-Each --models entry is "model:provider". Loop as many as you want in one
-run; each prints its own timing + JSON output so you can eyeball
-correctness and cost side by side before touching a single endpoint.
+    python3 eval_harness.py resume path/to/resume.pdf
+    python3 eval_harness.py job path/to/jd.txt
+    python3 eval_harness.py job path/to/jds/            # every JD in a folder
+    python3 eval_harness.py resume path/to/resume.pdf --models Qwen/Qwen3-32B:cerebras openai/gpt-oss-120b:groq
 """
 import argparse
 import json
@@ -19,84 +18,114 @@ import sys
 import time
 from pathlib import Path
 
-from huggingface_hub import InferenceClient
+from pydantic import ValidationError
 
 from app.core.config import settings
 from app.core.llm_extract import (
-    _CANDIDATE_SYSTEM_PROMPT,
-    _strict_json_schema,
+    _extract_candidate_profile_for_eval,
+    _extract_job_requirements_for_eval,
     ExtractionError,
 )
-from app.core.text_extract import extract_text_from_bytes
-from app.core.experience_calc import compute_experience_years
-from app.schemas.extraction import CandidateProfileExtraction
-from pydantic import ValidationError
+from app.core.text_extract import ALLOWED_EXTENSIONS, EmptyExtractionError, UnsupportedFileTypeError, extract_text_from_bytes
 
+_TEXT_PREVIEW_CHARS = 500
+_MAX_RETRIES = 3
+_BACKOFF_BASE_SECONDS = 2  # 2s, 4s, 8s
 
-def run_one(file_bytes: bytes, filename: str, model: str, provider: str) -> None:
-    print(f"\n{'=' * 60}\nmodel={model}  provider={provider}\n{'=' * 60}")
+def _call_with_retry(fn, *args):
+    """Retries on transient provider errors (429, network blips) with
+    exponential backoff. Doesn't retry on ValidationError/ExtractionError
+    (bad content, not a transient failure) or on HTTP 402 (billing —
+    credits are either present or not; retrying won't make more appear)."""
+    last_error: Exception | None = None
+    for attempt in range(_MAX_RETRIES):
+        try:
+            return fn(*args)
+        except (ValidationError, ExtractionError):
+            raise  # not transient, don't retry
+        except Exception as e:
+            if "402" in str(e) or "Payment Required" in str(e):
+                raise  # billing exhausted — retrying won't fix this
+            last_error = e
+            if attempt < _MAX_RETRIES - 1:
+                wait = _BACKOFF_BASE_SECONDS * (2 ** attempt)
+                print(f"[retrying in {wait}s after error: {e}]")
+                time.sleep(wait)
+    raise last_error
 
-    text = extract_text_from_bytes(file_bytes, filename)
-    print(f"[extracted {len(text)} chars of resume text after trim/cap]")
-
-    client = InferenceClient(provider=provider, api_key=settings.HF_TOKEN)
-    schema = _strict_json_schema(CandidateProfileExtraction.model_json_schema())
-
-    start = time.monotonic()
+def run_one(kind: str, text: str, model: str, provider: str) -> None:
+    print(f"\n{'=' * 60}\nkind={kind}  model={model}  provider={provider}\n{'=' * 60}")
     try:
-        response = client.chat_completion(
-            model=model,
-            messages=[
-                {"role": "system", "content": _CANDIDATE_SYSTEM_PROMPT},
-                {"role": "user", "content": text},
-            ],
-            response_format={
-                "type": "json_schema",
-                "json_schema": {"name": "extraction", "schema": schema, "strict": True},
-            },
-            temperature=0.1,
-        )
-        elapsed = time.monotonic() - start
-        raw = json.loads(response.choices[0].message.content)
-        profile = CandidateProfileExtraction.model_validate(raw)
-        profile.experience_years = compute_experience_years(profile.work_history)
-
-        # Token usage, if the provider reports it — useful for eyeballing
-        # free-tier credit burn per model before committing to one.
-        usage = getattr(response, "usage", None)
-        if usage:
-            print(f"[tokens: prompt={usage.prompt_tokens} completion={usage.completion_tokens}]")
-        print(f"[took {elapsed:.2f}s]")
-        print(json.dumps(profile.model_dump(), indent=2))
+        if kind == "resume":
+            result, meta = _call_with_retry(_extract_candidate_profile_for_eval, text, model, provider)
+        else:
+            result, meta = _call_with_retry(_extract_job_requirements_for_eval, text, model, provider)
     except (json.JSONDecodeError, ValidationError, ExtractionError) as e:
-        elapsed = time.monotonic() - start
-        print(f"[FAILED after {elapsed:.2f}s]: {e}")
+        print(f"[FAILED]: {e}")
+        return
     except Exception as e:
-        elapsed = time.monotonic() - start
-        print(f"[PROVIDER/NETWORK ERROR after {elapsed:.2f}s]: {e}")
+        print(f"[PROVIDER/NETWORK ERROR after {_MAX_RETRIES} attempts]: {e}")
+        return
 
+    if meta.get("prompt_tokens") is not None:
+        print(f"[tokens: prompt={meta['prompt_tokens']} completion={meta['completion_tokens']}]")
+    print(f"[took {meta['elapsed']:.2f}s]")
+    print(json.dumps(result.model_dump(), indent=2))
 
-def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("file", help="Path to a sample resume (.pdf/.docx/.txt)")
-    parser.add_argument(
-        "--models",
-        nargs="+",
-        default=[f"{settings.HF_EXTRACTION_MODEL}:{settings.HF_INFERENCE_PROVIDER}"],
-        help="One or more 'model:provider' pairs to test against the same file, "
-             "e.g. Qwen/Qwen3-32B:cerebras openai/gpt-oss-120b:groq",
-    )
-    args = parser.parse_args()
+def run_file(kind: str, path: Path, models: list[str]) -> None:
+    """Extracts text from one file and runs every requested model/provider
+    against it. Pulled out of main() so --dir can call this per-file
+    without duplicating the text-extraction/preview logic."""
+    print(f"\n{'#' * 60}\nfile={path.name}\n{'#' * 60}")
+    try:
+        text = extract_text_from_bytes(path.read_bytes(), path.name)
+    except (UnsupportedFileTypeError, EmptyExtractionError) as e:
+        print(f"[SKIPPED]: {e}")
+        return
+    print(f"--- extracted text ({len(text)} chars) ---")
+    print(text[:_TEXT_PREVIEW_CHARS] + ("..." if len(text) > _TEXT_PREVIEW_CHARS else ""))
 
-    path = Path(args.file)
-    file_bytes = path.read_bytes()
-
-    for entry in args.models:
+    for entry in models:
         model, _, provider = entry.partition(":")
         if not provider:
             print(f"Skipping '{entry}': expected 'model:provider' format")
             continue
-        run_one(file_bytes, path.name, model, provider)
+        run_one(kind, text, model, provider)
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("kind", choices=["resume", "job"])
+    parser.add_argument(
+        "file",
+        help="Path to a single sample document (.pdf/.docx/.txt), OR a "
+             "directory — every supported file directly inside it is run "
+             "in turn (not recursive).",
+    )
+    parser.add_argument(
+        "--models",
+        nargs="+",
+        default=[f"{settings.HF_EXTRACTION_MODEL}:{settings.HF_INFERENCE_PROVIDER}"],
+        help="One or more 'model:provider' pairs, e.g. Qwen/Qwen3-32B:cerebras openai/gpt-oss-120b:groq",
+    )
+    args = parser.parse_args()
+
+    path = Path(args.file)
+    if path.is_dir():
+        files = sorted(
+            p for p in path.iterdir()
+            if p.is_file() and p.suffix.lower() in ALLOWED_EXTENSIONS
+        )
+        if not files:
+            print(f"No {sorted(ALLOWED_EXTENSIONS)} files found directly in '{path}'")
+            return
+        print(f"Found {len(files)} file(s) in '{path}':")
+        for f in files:
+            print(f"  {f.name}")
+        for f in files:
+            run_file(args.kind, f, args.models)
+    else:
+        run_file(args.kind, path, args.models)
 
 
 if __name__ == "__main__":

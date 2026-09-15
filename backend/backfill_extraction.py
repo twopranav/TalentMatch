@@ -9,10 +9,10 @@ walks those rows once and runs the exact same extraction logic the upload
 routes use, so results end up identical to what a fresh upload would have
 produced.
 
-Requires Ollama running locally with OLLAMA_EXTRACTION_MODEL pulled (see
-app/core/config.py — defaults to qwen2.5:7b-instruct). Safe to re-run:
-only PENDING rows are picked up by default, so a row already DONE or
-FAILED is left alone unless you pass --retry-failed.
+Requires HF_TOKEN set (see app/core/config.py / .env.example — the
+Hugging Face Inference Providers token used by app/core/llm_extract.py).
+Safe to re-run: only PENDING rows are picked up by default, so a row
+already DONE or FAILED is left alone unless you pass --retry-failed.
 
 Usage:
     python backfill_extraction.py resumes
@@ -57,7 +57,7 @@ def _run_resume_extraction(resume: Resume) -> None:
         resume.extraction_status = ResumeExtractionStatus.FAILED
         resume.extraction_error = str(exc)
         return
-    except Exception as exc:  # Ollama unreachable, model not pulled, etc.
+    except Exception as exc:  # belt-and-suspenders — see the matching comment in jobs.py
         logger.warning("Resume extraction failed for %s: %s", resume.original_filename, exc)
         resume.extraction_status = ResumeExtractionStatus.FAILED
         resume.extraction_error = f"Extraction failed: {exc}"
@@ -90,7 +90,7 @@ def _run_job_extraction(job: Job) -> None:
         job.extraction_status = JobExtractionStatus.FAILED
         job.extraction_error = str(exc)
         return
-    except Exception as exc:  # Ollama unreachable, model not pulled, etc.
+    except Exception as exc:  # belt-and-suspenders — see the matching comment in jobs.py
         logger.warning("JD extraction failed for job %s: %s", job.id, exc)
         job.extraction_status = JobExtractionStatus.FAILED
         job.extraction_error = f"Extraction failed: {exc}"
@@ -137,7 +137,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("target", choices=["resumes", "jobs", "all"])
     parser.add_argument("--retry-failed", action="store_true", help="Also re-attempt rows currently marked FAILED, not just PENDING.")
-    parser.add_argument("--dry-run", action="store_true", help="List what would be processed without calling Ollama or writing anything.")
+    parser.add_argument("--dry-run", action="store_true", help="List what would be processed without calling the HF API or writing anything.")
     args = parser.parse_args()
 
     resume_statuses = [ResumeExtractionStatus.PENDING] + (

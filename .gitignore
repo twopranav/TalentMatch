@@ -13,6 +13,9 @@ venv/
 # Resume storage
 storage/
 
+# Local test fixtures
+/testing files/
+
 # Node
 node_modules/
 dist/

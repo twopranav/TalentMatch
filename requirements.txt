@@ -18,5 +18,4 @@ requests>=2.34
 reportlab>=4.2
 huggingface_hub>=0.26
 celery[redis]>=5.4
-redis>=5.1
 python-dateutil>=2.9.0

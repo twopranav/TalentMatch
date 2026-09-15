@@ -20,6 +20,14 @@ MIN_TEXT_LENGTH = 50  # chars; below this, treat extraction as failed rather
 
 _PDF_PAGE_CAP = 3  # resumes rarely run longer than this; also guards
                     # against a degenerate 40-page upload burning tokens
+_DOCX_CHAR_CAP = 20_000  # DOCX has no natural "page" boundary to cap on
+                          # the way PDF does, so this caps by character
+                          # count instead. ~20k chars is generous for any
+                          # real resume/JD while still bounding token cost
+                          # and context-window risk from a pathological
+                          # upload (a 10MB DOCX is allowed by the byte-size
+                          # gate in the route, but its extracted text was
+                          # previously unbounded)
 _BOILERPLATE_MAX_LINE_LEN = 60  # header/footer lines are short; a repeated
                                  # 60+ char line is more likely real content
                                  # (e.g. a bullet copy-pasted across two
@@ -103,6 +111,12 @@ def extract_text_from_bytes(raw: bytes, filename: str) -> str:
         import docx
         document = docx.Document(io.BytesIO(raw))
         text = "\n".join(p.text for p in document.paragraphs)
+        if len(text) > _DOCX_CHAR_CAP:
+            logger.info(
+                "'%s' extracted to %d chars; truncating to the first %d",
+                filename, len(text), _DOCX_CHAR_CAP,
+            )
+            text = text[:_DOCX_CHAR_CAP]
 
     if len(text.strip()) < MIN_TEXT_LENGTH:
         raise EmptyExtractionError(

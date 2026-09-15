@@ -11,6 +11,7 @@ from app.models.job import Job, JobExtractionStatus, JobStatus, EmploymentType, 
 from app.models.user import User, UserRole
 from app.schemas.job import JobCreate, JobRead, JobUpdate
 from datetime import datetime, timezone
+from starlette.concurrency import run_in_threadpool
 
 logger = logging.getLogger(__name__)
 
@@ -182,11 +183,15 @@ async def upload_jd(job_id: uuid.UUID, file: UploadFile = File(...), db: Session
     # as resume extraction. Failure here never blocks the JD upload
     # itself: jd_raw_text is already saved above regardless of outcome.
     try:
-        requirements = extract_job_requirements(job.jd_raw_text)
+        requirements = await run_in_threadpool(extract_job_requirements, job.jd_raw_text)
     except ExtractionError as exc:
         job.extraction_status = JobExtractionStatus.FAILED
         job.extraction_error = str(exc)
-    except Exception as exc:  # Ollama unreachable, model not pulled, etc.
+    except Exception as exc:  # belt-and-suspenders: llm_extract.py should
+        # only ever raise ExtractionError above, but this route runs
+        # inline in the upload request, so an unanticipated exception
+        # here must never turn into a 500 for what's otherwise a
+        # successful upload — jd_raw_text is already saved.
         logger.warning("JD extraction failed for job %s: %s", job.id, exc)
         job.extraction_status = JobExtractionStatus.FAILED
         job.extraction_error = f"Extraction failed: {exc}"
