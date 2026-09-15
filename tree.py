@@ -4,9 +4,9 @@ Print a clean directory tree starting from root.
 Designed for displaying project structure without repetitive/generated noise.
 
 Usage:
-    python print_tree.py [root_path]
-    python print_tree.py [root_path] --all
-    python print_tree.py [root_path] --max-depth N
+    python tree.py [root_path]
+    python tree.py [root_path] --all
+    python tree.py [root_path] --max-depth N
 """
 
 import argparse
@@ -44,9 +44,14 @@ DEFAULT_IGNORE_FILES = {
 
 
 # Directories whose contents should be summarized instead of printed individually.
-# The directory itself will still be shown.
+#
+# These are matched by directory name.
+# For directories where the same name may appear elsewhere in the project,
+# use should_collapse_dir() below instead.
 COLLAPSE_DIRS = {
     "versions",
+    "test resumes",
+    "test jds",
 }
 
 
@@ -56,7 +61,7 @@ def should_skip_dir(name: str, ignore: set[str]) -> bool:
     if name in ignore:
         return True
 
-    # Python package metadata directories
+    # Python package metadata directories.
     if name.endswith(".egg-info"):
         return True
 
@@ -69,15 +74,44 @@ def should_skip_file(name: str, ignore: set[str]) -> bool:
     if name in ignore:
         return True
 
-    # Python bytecode
+    # Python bytecode.
     if name.endswith(".pyc"):
         return True
 
-    # Python compiled cache files
+    # Python compiled cache files.
     if name.endswith(".pyo"):
         return True
 
     return False
+
+
+def should_collapse_dir(path: str) -> bool:
+    """
+    Collapse specific directories by their full path.
+
+    This prevents unrelated directories with the same name from
+    being collapsed.
+
+    Currently collapses:
+        backend/storage/resumes/
+
+    while keeping:
+        backend/app/core/storage/
+
+    fully visible.
+    """
+
+    normalized = os.path.normpath(path).lower()
+
+    backend_storage_resumes = os.path.normpath(
+        os.path.join(
+            "backend",
+            "storage",
+            "resumes",
+        )
+    ).lower()
+
+    return normalized.endswith(backend_storage_resumes)
 
 
 def get_entries(
@@ -117,28 +151,71 @@ def get_entries(
     return visible
 
 
-def count_visible_files(
+def count_hidden_contents(
     root: str,
     ignore_dirs: set[str],
     ignore_files: set[str],
-) -> int:
-    """Count files inside a directory without recursively walking subdirectories."""
+):
+    """
+    Recursively count visible files and directories inside a collapsed folder.
+
+    Returns:
+        (folder_count, file_count)
+    """
+
+    folder_count = 0
+    file_count = 0
 
     try:
         entries = os.listdir(root)
     except (PermissionError, FileNotFoundError):
-        return 0
-
-    count = 0
+        return folder_count, file_count
 
     for entry in entries:
         path = os.path.join(root, entry)
 
-        if os.path.isfile(path):
-            if not should_skip_file(entry, ignore_files):
-                count += 1
+        if os.path.isdir(path):
+            if should_skip_dir(entry, ignore_dirs):
+                continue
 
-    return count
+            folder_count += 1
+
+            child_folders, child_files = count_hidden_contents(
+                path,
+                ignore_dirs,
+                ignore_files,
+            )
+
+            folder_count += child_folders
+            file_count += child_files
+
+        else:
+            if not should_skip_file(entry, ignore_files):
+                file_count += 1
+
+    return folder_count, file_count
+
+
+def format_hidden_summary(
+    folder_count: int,
+    file_count: int,
+) -> str:
+    """Create a readable summary of collapsed contents."""
+
+    parts = []
+
+    if folder_count:
+        folder_word = "folder" if folder_count == 1 else "folders"
+        parts.append(f"{folder_count} {folder_word}")
+
+    if file_count:
+        file_word = "file" if file_count == 1 else "files"
+        parts.append(f"{file_count} {file_word}")
+
+    if not parts:
+        return "[empty]"
+
+    return "[" + ", ".join(parts) + " hidden]"
 
 
 def print_tree(
@@ -154,7 +231,11 @@ def print_tree(
     if max_depth is not None and depth > max_depth:
         return
 
-    entries = get_entries(root, ignore_dirs, ignore_files)
+    entries = get_entries(
+        root,
+        ignore_dirs,
+        ignore_files,
+    )
 
     if entries is None:
         print(prefix + "└── [permission denied or path unavailable]")
@@ -162,6 +243,7 @@ def print_tree(
 
     for index, entry in enumerate(entries):
         path = os.path.join(root, entry)
+
         is_last = index == len(entries) - 1
         connector = "└── " if is_last else "├── "
 
@@ -171,22 +253,34 @@ def print_tree(
             extension = "    " if is_last else "│   "
             child_prefix = prefix + extension
 
-            # Collapse repetitive directories such as alembic/versions.
-            if entry in COLLAPSE_DIRS:
-                file_count = count_visible_files(
+            # Collapse repetitive directories such as:
+            #   alembic/versions/
+            #   testing files/test resumes/
+            #   testing files/test jds/
+            #
+            # Also collapse the specific:
+            #   backend/storage/resumes/
+            #
+            # without collapsing:
+            #   backend/app/core/storage/
+            if (
+                entry in COLLAPSE_DIRS
+                or should_collapse_dir(path)
+            ):
+                folder_count, file_count = count_hidden_contents(
                     path,
                     ignore_dirs,
                     ignore_files,
                 )
 
-                if file_count:
-                    print(
-                        child_prefix
-                        + "└── "
-                        + f"[{file_count} files hidden]"
+                print(
+                    child_prefix
+                    + "└── "
+                    + format_hidden_summary(
+                        folder_count,
+                        file_count,
                     )
-                else:
-                    print(child_prefix + "└── [empty]")
+                )
 
                 continue
 
@@ -218,7 +312,10 @@ def main():
     parser.add_argument(
         "--all",
         action="store_true",
-        help="Show normally ignored generated/dependency directories and files.",
+        help=(
+            "Show normally ignored generated/dependency "
+            "directories and files."
+        ),
     )
 
     parser.add_argument(
@@ -244,6 +341,7 @@ def main():
         ignore_files = DEFAULT_IGNORE_FILES
 
     print(root)
+
     print_tree(
         root,
         ignore_dirs,
