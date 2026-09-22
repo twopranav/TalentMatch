@@ -19,10 +19,8 @@ from app.core.deps import (
     get_current_user,
     require_recruiter_or_admin,
 )
-from app.core.llm_extract import (
-    ExtractionError,
-    extract_job_requirements,
-)
+from app.core.jd_skills_extraction_tasks import run_jd_skills_extraction_task
+from app.core.resume_storage import build_blob_name, upload_resume_blob
 from app.core.text_extract import extract_text_from_upload
 from app.db.session import get_db
 from app.models.job import (
@@ -395,75 +393,42 @@ async def upload_jd(
 
     had_jd_before = job.jd_raw_text is not None
 
-    job.extraction_status = JobExtractionStatus.PROCESSING
-    job.extraction_error = None
-    job.extracted_at = None
-
-    # New upload supersedes the previous extraction result.
-    job.extracted_skills = None
-    job.extracted_compulsory_skills = None
-    job.extracted_min_experience_years = None
-    job.extracted_max_experience_years = None
-    job.extracted_education_requirement = None
-    job.extracted_profile = None
+    # New upload supersedes any previous skills-extraction result.
+    job.skills_result = None
+    job.skills_section_heading = None
+    job.skills_extraction_status = JobExtractionStatus.PENDING
+    job.skills_extraction_error = None
+    job.skills_extracted_at = None
 
     job.jd_raw_text = await extract_text_from_upload(file)
 
+    # Store the file itself, mirroring resumes.py's use of
+    # resume_storage.py -- these wrappers were built generic from the
+    # start (see azure_blob.py / local_disk.py docstrings), so no
+    # JD-specific storage module is needed here.
+    blob_name = build_blob_name(job.created_by_id, file.filename)
+
     try:
-        requirements = await run_in_threadpool(
-            extract_job_requirements,
-            job.jd_raw_text,
+        blob_path = await run_in_threadpool(
+            upload_resume_blob,
+            contents,
+            blob_name,
+            file.content_type,
         )
-
-    except ExtractionError as exc:
-        job.extraction_status = JobExtractionStatus.FAILED
-        job.extraction_error = str(exc)
-
-        logger.warning(
-            "JD extraction failed for job %s: %s",
-            job.id,
-            exc,
-        )
-
     except Exception as exc:
-        job.extraction_status = JobExtractionStatus.FAILED
-        job.extraction_error = (
-            f"Extraction failed: {exc}"
-        )
-
         logger.exception(
-            "Unexpected JD extraction failure for job %s",
+            "Failed to store JD file for job %s",
             job.id,
         )
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Could not store the job description file. Please try again.",
+        ) from exc
 
-    else:
-        job.extracted_skills = list(
-            requirements.skills
-        )
-
-        job.extracted_compulsory_skills = list(
-            requirements.compulsory_skills
-        )
-
-        job.extracted_min_experience_years = (
-            requirements.min_experience_years
-        )
-
-        job.extracted_max_experience_years = (
-            requirements.max_experience_years
-        )
-
-        job.extracted_education_requirement = (
-            requirements.education_requirement
-        )
-
-        job.extracted_profile = (
-            requirements.model_dump()
-        )
-
-        job.extraction_status = JobExtractionStatus.DONE
-        job.extraction_error = None
-        job.extracted_at = datetime.now(timezone.utc)
+    job.blob_path = blob_path
+    job.original_filename = file.filename
+    job.content_type = file.content_type
+    job.size_bytes = len(contents)
 
     record_audit(
         db,
@@ -477,13 +442,19 @@ async def upload_jd(
         after={
             "jd_uploaded": True,
             "jd_filename": file.filename,
-            "extraction_status": (
-                job.extraction_status.value
+            "skills_extraction_status": (
+                job.skills_extraction_status.value
             ),
         },
     )
 
     db.commit()
     db.refresh(job)
+
+    # Dispatched after commit: the Celery task looks the job up by id in
+    # its own DB session (see jd_skills_extraction_tasks.py), so the row
+    # -- including the blob_path/jd_raw_text just written -- must already
+    # be committed before the worker can see it.
+    run_jd_skills_extraction_task.delay(str(job.id))
 
     return job

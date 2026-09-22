@@ -190,6 +190,17 @@ class Resume(Base):
         nullable=True,
     )
 
+    # Incremented only by the fault-handling sweep (never by the task
+    # itself on a normal run) each time it redispatches this row after
+    # finding it PENDING past the stale window or FAILED. Caps how many
+    # times a row can come back from failure on its own before it's left
+    # for a human / re-upload -- see extraction_retry_sweep.py.
+    skills_extraction_retry_count: Mapped[int] = mapped_column(
+        Integer,
+        default=0,
+        nullable=False,
+    )
+
     # -------------------------
     # Lifecycle
     # -------------------------

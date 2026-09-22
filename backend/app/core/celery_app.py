@@ -7,6 +7,11 @@ would register tasks a worker started against *this* instance can't see.
 Start a worker with:
     celery -A app.core.celery_app worker --loglevel=info --concurrency=1
 
+Start the beat scheduler (drives the periodic sweep tasks in
+extraction_retry_sweep.py -- without this process running, PENDING/
+FAILED rows are never automatically retried) separately:
+    celery -A app.core.celery_app beat --loglevel=info
+
 --concurrency=1 is deliberate for now: it caps HF API calls to one in
 flight at a time, network-wide, regardless of how many resumes are
 queued — the whole point of moving extraction behind a queue in the
@@ -25,7 +30,12 @@ celery_app = Celery(
     "talentmatch",
     broker=settings.CELERY_BROKER_URL or settings.REDIS_URL,
     backend=settings.CELERY_RESULT_BACKEND or settings.REDIS_URL,
-    include=["app.core.extraction_tasks", "app.core.skills_extraction_tasks"],
+    include=[
+        "app.core.extraction_tasks",
+        "app.core.skills_extraction_tasks",
+        "app.core.jd_skills_extraction_tasks",
+        "app.core.extraction_retry_sweep",
+    ],
 )
 
 celery_app.conf.update(
@@ -36,4 +46,17 @@ celery_app.conf.update(
     enable_utc=True,
     task_acks_late=True,
     worker_prefetch_multiplier=1,
+    beat_schedule={
+        "sweep-stale-resume-skills-extractions": {
+            "task": "extraction_retry_sweep.sweep_resumes",
+            "schedule": 600.0,  # 10 minutes -- matches STALE_PENDING_AFTER,
+                                 # so a row is checked again right as it
+                                 # first becomes eligible, not held an
+                                 # extra cycle.
+        },
+        "sweep-stale-job-skills-extractions": {
+            "task": "extraction_retry_sweep.sweep_jobs",
+            "schedule": 600.0,
+        },
+    },
 )

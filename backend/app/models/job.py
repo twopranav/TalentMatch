@@ -4,6 +4,7 @@ from enum import Enum as PyEnum
 from typing import TYPE_CHECKING
 
 from sqlalchemy import (
+    BigInteger,
     Enum as SAEnum,
     ForeignKey,
     Integer,
@@ -76,6 +77,34 @@ class Job(Base):
 
     jd_raw_text: Mapped[str | None] = mapped_column(
         Text,
+        nullable=True,
+    )
+
+    # -------------------------
+    # JD file storage (mirrors Resume's blob_path/original_filename/
+    # content_type/size_bytes). Nullable, unlike Resume's non-null
+    # versions: a Job can exist and even be published today without a
+    # stored file (jd_raw_text-only), so this can't be made required
+    # without a backfill. Revisit once upload_jd() always populates it.
+    # -------------------------
+
+    blob_path: Mapped[str | None] = mapped_column(
+        String(1000),
+        nullable=True,
+    )
+
+    original_filename: Mapped[str | None] = mapped_column(
+        String(500),
+        nullable=True,
+    )
+
+    content_type: Mapped[str | None] = mapped_column(
+        String(255),
+        nullable=True,
+    )
+
+    size_bytes: Mapped[int | None] = mapped_column(
+        BigInteger,
         nullable=True,
     )
 
@@ -202,6 +231,51 @@ class Job(Base):
     )
 
     # -------------------------
+    # Standalone skills-only extraction (separate from extracted_skills/
+    # extracted_compulsory_skills above, which belong to the deleted
+    # full-profile call and are being phased out). Mirrors
+    # Resume.skills_result and friends -- own status lifecycle so this
+    # pipeline never fights the legacy extraction_status column for the
+    # same row. See app/core/jd_skills_extraction_tasks.py.
+    # -------------------------
+
+    skills_result: Mapped[list[str] | None] = mapped_column(
+        JSONB,
+        nullable=True,
+    )
+
+    skills_section_heading: Mapped[str | None] = mapped_column(
+        String(255),
+        nullable=True,
+    )
+
+    skills_extraction_status: Mapped[JobExtractionStatus] = mapped_column(
+        SAEnum(
+            JobExtractionStatus,
+            name="job_extraction_status",
+        ),
+        default=JobExtractionStatus.PENDING,
+        nullable=False,
+    )
+
+    skills_extraction_error: Mapped[str | None] = mapped_column(
+        Text,
+        nullable=True,
+    )
+
+    skills_extracted_at: Mapped[datetime | None] = mapped_column(
+        nullable=True,
+    )
+
+    # See Resume.skills_extraction_retry_count -- same purpose, same
+    # convention: only the fault-handling sweep increments this.
+    skills_extraction_retry_count: Mapped[int] = mapped_column(
+        Integer,
+        default=0,
+        nullable=False,
+    )
+
+    # -------------------------
     # Lifecycle
     # -------------------------
 
@@ -237,4 +311,4 @@ class Job(Base):
     applications: Mapped[list["Application"]] = relationship(
         back_populates="job",
         cascade="all, delete-orphan",
-    )   
+    )

@@ -41,12 +41,12 @@ def _require_ready_resume(candidate_id: uuid.UUID, db: Session) -> Resume:
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Upload a resume to your profile before applying to a job.",
         )
-    if resume.extraction_status == ResumeExtractionStatus.FAILED:
+    if resume.skills_extraction_status == ResumeExtractionStatus.FAILED:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="We couldn't read your resume — please try uploading it again.",
         )
-    if resume.extraction_status != ResumeExtractionStatus.DONE:
+    if resume.skills_extraction_status != ResumeExtractionStatus.DONE:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Your resume is still being processed — try applying again in a moment.",
