@@ -1,39 +1,33 @@
 """
-Skill normalization and hard-gate matching.
+Skill normalization and matching for candidate ranking.
 
-The hard gate uses ONLY compulsory JD skills.
-
-Broader JD skills are intentionally kept separate and can be used later
-by semantic/fuzzy ranking without changing the auditable pass/fail gate.
+No elimination happens here or anywhere downstream of it: every
+applicant who applies is scored and ranked, never filtered out for
+missing compulsory skills, a missing skills section, or anything else.
+compulsory_skill_match_ratio() feeds the *score* -- it does not gate
+who gets scored. Recruiters see the full applicant list, sorted by
+score, and make the final call themselves.
 """
 
-import math
-
-
-def passes_hard_gate(
+def compulsory_skill_match_ratio(
     matched_count: int,
     compulsory_count: int,
-    threshold: float = 0.5,
-) -> bool:
+) -> float:
     """
-    Candidate must match at least `threshold` of the compulsory skills.
+    Fraction of compulsory JD skills the candidate matched, in [0, 1].
 
-    With the default threshold of 0.5:
-        1 compulsory skill  -> 1 match required
-        2 compulsory skills -> 1 match required
-        3 compulsory skills -> 2 matches required
-        4 compulsory skills -> 2 matches required
-        etc.
+    This is one input into the eventual weighted score (alongside
+    experience/education matching) -- NOT a pass/fail gate. A candidate
+    who matches 0 of 3 compulsory skills still gets scored and shown to
+    the recruiter; they just score lower on this component.
 
-    A JD with no compulsory skills automatically passes this gate because
-    there is nothing explicitly mandatory to gate on.
+    A JD with no compulsory skills contributes a neutral 1.0, since
+    there's nothing explicit to score against.
     """
     if compulsory_count == 0:
-        return True
+        return 1.0
 
-    return matched_count >= math.ceil(
-        compulsory_count * threshold
-    )
+    return min(matched_count / compulsory_count, 1.0)
 
 
 SKILL_ALIASES = {
@@ -612,7 +606,7 @@ def count_matched_compulsory_skills(
     """
     Count only explicitly compulsory JD skills matched by the candidate.
 
-    This is the count used by the hard gate.
+    Feeds compulsory_skill_match_ratio() for scoring -- not a gate.
     """
     return count_matched_skills(
         candidate_skills,

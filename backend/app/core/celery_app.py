@@ -25,7 +25,7 @@ celery_app = Celery(
     "talentmatch",
     broker=settings.CELERY_BROKER_URL or settings.REDIS_URL,
     backend=settings.CELERY_RESULT_BACKEND or settings.REDIS_URL,
-    include=["app.core.extraction_tasks"],
+    include=["app.core.extraction_tasks", "app.core.skills_extraction_tasks"],
 )
 
 celery_app.conf.update(

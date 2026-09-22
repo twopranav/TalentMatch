@@ -1,0 +1,28 @@
+# Other top-level project areas the backend image has no business
+# containing
+frontend/
+scripts/
+testing files/
+.github/
+
+# Secrets -- passed to containers via docker-compose's env_file/
+# environment at runtime, never baked into an image layer
+backend/.env
+
+# Real candidate resume files when STORAGE_BACKEND=local. In
+# production this should be a mounted volume or Azure Blob, not image
+# contents -- but even in dev, uploaded PII has no business inside a
+# built image.
+backend/storage/
+
+# Housekeeping
+.git
+.gitignore
+README.md
+run-dev.ps1
+tree.py
+docker-compose.yml
+deploy/
+**/__pycache__/
+**/*.pyc
+backend/.pytest_cache/

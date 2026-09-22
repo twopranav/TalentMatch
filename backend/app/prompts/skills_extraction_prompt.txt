@@ -1,0 +1,65 @@
+Convert the resume skills text below into a JSON array of individual skills.
+
+The text is lowercase and already cleaned, but it comes from a PDF, so the layout can be messy. Return ONLY the JSON array: a list of lowercase strings, no explanation.
+
+RULES
+1. Copy each skill exactly as written. Never add, infer, rename, shorten or spell-correct a skill.
+2. Skip category labels. A label is a short line that names a group instead of a technology (for example "languages", "backend", "cloud & devops", "tools & databases"). Only the skills listed under a label count.
+3. Skills can be separated by commas, pipes, line breaks, or only by spaces. Split a run of words into separate skills, but keep well-known multi-word names together (for example "apache flink", "vector databases", "spring cloud gateway").
+4. Join wrapped lines. If a line ends with "," or "&", or the next line is a lone word that completes the previous phrase, treat them as one line. Example: "zero-trust" followed by "networking" is one skill, "zero-trust networking".
+5. Split "a & b" into two skills. Keep slash names whole (for example "tcp/ip", "grpc/protobuf").
+6. Keep every entry, even when several start with the same word: "oci", "oci vault" and "oci functions" are three separate skills.
+7. No exact duplicates. Keep the order of first appearance.
+
+EXAMPLE 1
+TEXT:
+languages
+rust, elixir, zig
+cloud & devops
+pulumi, azure functions, azure blob storage, cloud run,
+knative
+data lineage &
+observability
+OUTPUT:
+["rust","elixir","zig","pulumi","azure functions","azure blob storage","cloud run","knative","data lineage","observability"]
+
+EXAMPLE 2
+TEXT:
+languages
+haskell ocaml clojure
+frontend & backend
+svelte solidjs vite
+hono koa fastify
+observability
+jaeger loki tempo
+OUTPUT:
+["haskell","ocaml","clojure","svelte","solidjs","vite","hono","koa","fastify","jaeger","loki","tempo"]
+
+EXAMPLE 3
+TEXT:
+oci, oci vault, oci functions, tcp/ip
+zero-trust
+networking
+data modeling and warehousing concepts, looker
+OUTPUT:
+["oci","oci vault","oci functions","tcp/ip","zero-trust networking","data modeling and warehousing concepts","looker"]
+
+EXAMPLE 4
+TEXT:
+event-driven architecture, multi-tenant
+saas
+gcp, gcp bigquery, gcp pubsub, gcp iam
+OUTPUT:
+["event-driven architecture","multi-tenant saas","gcp","gcp bigquery","gcp pubsub","gcp iam"]
+
+Notes on example 4: "multi-tenant" and "saas" are on separate bare lines with no connecting comma or "&" -- they still merge into one skill, the same way "zero-trust" / "networking" did in example 3. Separately, "gcp" is its own entry even though "gcp bigquery", "gcp pubsub" and "gcp iam" also start with "gcp" -- a bare word is never dropped just because longer variants of it appear nearby; copy it exactly as its own line item, same as rule 6.
+
+EXAMPLE 5
+TEXT:
+domain-driven design, domain-driven design ddd, microservices
+OUTPUT:
+["domain-driven design","domain-driven design ddd","microservices"]
+
+Note on example 5: "domain-driven design" and "domain-driven design ddd" look redundant next to each other, but they are two different skills as written in the text -- copy each in full. Never compress one of them down to just "ddd" or drop either one because it looks like a repeat.
+
+The text to convert is given in the next message. Return ONLY the JSON array for that text.

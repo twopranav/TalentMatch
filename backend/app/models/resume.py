@@ -155,6 +155,42 @@ class Resume(Base):
     )
 
     # -------------------------
+    # Standalone skills-only extraction (separate from extracted_skills
+    # above, which belongs to the full-profile call). See
+    # app/core/skills_extraction_tasks.py -- own status lifecycle so a
+    # full-profile success/failure never fights this pipeline for the
+    # same column.
+    # -------------------------
+
+    skills_result: Mapped[list[str] | None] = mapped_column(
+        JSONB,
+        nullable=True,
+    )
+
+    skills_section_heading: Mapped[str | None] = mapped_column(
+        String(255),
+        nullable=True,
+    )
+
+    skills_extraction_status: Mapped[ResumeExtractionStatus] = mapped_column(
+        SAEnum(
+            ResumeExtractionStatus,
+            name="resume_extraction_status",
+        ),
+        default=ResumeExtractionStatus.PENDING,
+        nullable=False,
+    )
+
+    skills_extraction_error: Mapped[str | None] = mapped_column(
+        Text,
+        nullable=True,
+    )
+
+    skills_extracted_at: Mapped[datetime | None] = mapped_column(
+        nullable=True,
+    )
+
+    # -------------------------
     # Lifecycle
     # -------------------------
 

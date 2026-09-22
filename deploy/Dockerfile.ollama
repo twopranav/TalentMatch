@@ -1,0 +1,12 @@
+FROM ollama/ollama:latest
+
+COPY ollama-entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+
+# Serialize requests: one CPU box, one model loaded, no point
+# accepting concurrent generations it can't actually run in parallel.
+ENV OLLAMA_NUM_PARALLEL=1
+ENV OLLAMA_MAX_LOADED_MODELS=1
+ENV OLLAMA_MODEL="hf.co/QuantFactory/Qwen2-1.5B-Instruct-GGUF:Q4_K_M"
+
+ENTRYPOINT ["/entrypoint.sh"]

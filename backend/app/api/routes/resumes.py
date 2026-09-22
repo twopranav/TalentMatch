@@ -8,8 +8,9 @@ from app.core.config import settings
 from app.core.deps import get_current_user, require_recruiter_or_admin
 from app.core.extraction_tasks import run_extraction_task
 from app.core.resume_storage import build_blob_name, delete_resume_blob, download_resume_blob, get_resume_download_url, upload_resume_blob
+from app.core.skills_extraction_tasks import run_skills_extraction_task
 from app.db.session import get_db
-from app.models.resume import Resume, ResumeStatus
+from app.models.resume import Resume, ResumeExtractionStatus, ResumeStatus
 from app.models.user import User, UserRole
 from app.schemas.resume import ResumeBulkUploadResult, ResumeRead, ResumeReadWithUrl
 
@@ -257,6 +258,33 @@ def set_resume_archived(
     db.commit()
     db.refresh(resume)
     return resume
+
+
+@router.post("/{resume_id}/extract-skills", response_model=ResumeRead)
+def trigger_skills_extraction(
+    resume_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Separately-triggerable skills-only extraction -- NOT fired
+    automatically on upload and NOT part of run_extraction_task's
+    full-profile pass. Re-runnable on its own (e.g. after a prompt or
+    section-locator change) without redoing full-profile extraction.
+
+    Queues app.core.skills_extraction_tasks.run_skills_extraction_task
+    and returns immediately with skills_extraction_status flipped to
+    PENDING; poll GET /resumes/{id} for it to reach DONE/FAILED.
+    """
+    resume = _get_manageable_resume(resume_id, db, current_user)
+
+    resume.skills_extraction_status = ResumeExtractionStatus.PENDING
+    resume.skills_extraction_error = None
+    db.commit()
+    db.refresh(resume)
+
+    run_skills_extraction_task.delay(str(resume.id))
+
+    return _to_read(resume)
 
 
 @router.delete("/{resume_id}", status_code=status.HTTP_204_NO_CONTENT)

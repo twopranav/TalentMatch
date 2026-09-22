@@ -1,0 +1,93 @@
+services:
+  postgres:
+    image: postgres:16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: talentdb
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    # Drop this service and point DATABASE_URL at your managed
+    # Postgres instance if you already run one.
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    # Drop this service and point REDIS_URL at your managed Redis
+    # instance if you already run one.
+
+  ollama:
+    build:
+      context: ./deploy
+      dockerfile: Dockerfile.ollama
+    restart: unless-stopped
+    volumes:
+      - ollama_data:/root/.ollama
+    healthcheck:
+      # First pull can take a few minutes on a cold volume -- give it
+      # real time before compose gives up and blocks backend/worker.
+      test: ["CMD", "ollama", "list"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 60s
+
+  backend:
+    build:
+      context: .                    # repo root -- see backend/Dockerfile
+      dockerfile: backend/Dockerfile
+    restart: unless-stopped
+    env_file: ./backend/.env        # .env lives inside backend/, not at root
+    environment:
+      DATABASE_URL: postgresql+psycopg://postgres:postgres@postgres:5432/talentdb
+      REDIS_URL: redis://redis:6379/0
+      OLLAMA_BASE_URL: http://ollama:11434
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      ollama:
+        condition: service_healthy
+
+  worker:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    command: celery -A app.core.celery_app worker --loglevel=info --concurrency=1
+    restart: unless-stopped
+    env_file: ./backend/.env
+    environment:
+      DATABASE_URL: postgresql+psycopg://postgres:postgres@postgres:5432/talentdb
+      REDIS_URL: redis://redis:6379/0
+      OLLAMA_BASE_URL: http://ollama:11434
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      ollama:
+        condition: service_healthy
+
+volumes:
+  postgres_data:
+  ollama_data:
+
+# Migrations are deliberately NOT run automatically on backend
+# startup -- with restart: unless-stopped and multiple containers
+# potentially starting together, that's a race condition waiting to
+# happen. Run them as a one-off, once, per deploy:
+#   docker compose run --rm backend alembic upgrade head

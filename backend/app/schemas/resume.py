@@ -48,6 +48,16 @@ class ResumeRead(BaseModel):
 
     extracted_profile: dict | None = None
 
+    # -------------------------
+    # Standalone skills-only extraction results
+    # -------------------------
+
+    skills_result: list[str] | None = None
+    skills_section_heading: str | None = None
+    skills_extraction_status: ResumeExtractionStatus
+    skills_extraction_error: str | None = None
+    skills_extracted_at: datetime | None = None
+
     model_config = ConfigDict(from_attributes=True)
 
 

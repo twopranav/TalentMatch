@@ -15,12 +15,12 @@ import logging
 import time
 from copy import deepcopy
 
-from huggingface_hub import InferenceClient
 from huggingface_hub.errors import HfHubHTTPError, InferenceTimeoutError
 from pydantic import ValidationError
 
 from app.core.config import settings
 from app.core.experience_calc import compute_experience_years
+from app.core.hf_client import HF_TIMEOUT_SECONDS, get_client
 from app.schemas.extraction import (
     CandidateProfileExtraction,
     JobRequirementsExtraction,
@@ -28,19 +28,9 @@ from app.schemas.extraction import (
 
 logger = logging.getLogger(__name__)
 
-_HF_TIMEOUT_SECONDS = 30
-
-_clients: dict[str, InferenceClient] = {}
-
-
-def _get_client(provider: str) -> InferenceClient:
-    if provider not in _clients:
-        _clients[provider] = InferenceClient(
-            provider=provider,
-            api_key=settings.HF_TOKEN,
-            timeout=_HF_TIMEOUT_SECONDS,
-        )
-    return _clients[provider]
+# Kept as an alias -- this module's own code below still refers to it by
+# its original name in a couple of places (e.g. the timeout log message).
+_HF_TIMEOUT_SECONDS = HF_TIMEOUT_SECONDS
 
 
 class ExtractionError(Exception):
@@ -661,16 +651,6 @@ def _strict_json_schema(schema: dict) -> dict:
     return schema
 
 
-def _get_client(provider: str) -> InferenceClient:
-    if provider not in _clients:
-        _clients[provider] = InferenceClient(
-            provider=provider,
-            api_key=settings.HF_TOKEN,
-            timeout=_HF_TIMEOUT_SECONDS,
-        )
-    return _clients[provider]
-
-
 def _call_hf(
     system_prompt: str,
     document_text: str,
@@ -689,7 +669,7 @@ def _call_hf(
     model = model or settings.HF_EXTRACTION_MODEL
     provider = provider or settings.HF_INFERENCE_PROVIDER
 
-    client = _get_client(provider)
+    client = get_client(provider)
 
     strict_schema = _strict_json_schema(schema)
 
