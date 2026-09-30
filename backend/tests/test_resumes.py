@@ -12,7 +12,7 @@ def test_self_upload_becomes_owner(client, make_user, auth_headers, pdf_bytes):
     body = resp.json()
     assert body["owner_id"] == str(candidate.id)
     assert body["uploaded_by_id"] == str(candidate.id)
-    assert body["status"] == "uploaded"
+    assert body["status"] == "UPLOADED"
 
 def test_upload_rejects_bad_content_type(client, make_user, auth_headers):
     candidate, _ = make_user(role=UserRole.USER)
@@ -218,3 +218,51 @@ def test_delete_requires_auth(client):
     import uuid
     resp = client.delete(f"/api/resumes/{uuid.uuid4()}")
     assert resp.status_code == 401
+
+
+# ---------------------------------------------------------------------------
+# Extraction dispatch — upload queues skills extraction, nothing else does
+# ---------------------------------------------------------------------------
+
+def test_self_upload_queues_skills_extraction(client, make_user, auth_headers, pdf_bytes, dispatched):
+    candidate, _ = make_user(role=UserRole.USER)
+    files = {"file": ("resume.pdf", pdf_bytes("My resume"), "application/pdf")}
+    resp = client.post("/api/resumes", files=files, headers=auth_headers(candidate))
+    assert resp.status_code == 201
+    assert dispatched["resume"] == [resp.json()["id"]]
+    assert resp.json()["skills_extraction_status"] == "pending"
+
+def test_rejected_upload_queues_nothing(client, make_user, auth_headers, dispatched):
+    candidate, _ = make_user(role=UserRole.USER)
+    files = {"file": ("resume.txt", b"not allowed", "text/plain")}
+    client.post("/api/resumes", files=files, headers=auth_headers(candidate))
+    assert dispatched["resume"] == []
+
+def test_replacement_upload_queues_only_the_new_resume(client, make_user, auth_headers, pdf_bytes, dispatched):
+    candidate, _ = make_user(role=UserRole.USER)
+    headers = auth_headers(candidate)
+    first = client.post("/api/resumes", files={"file": ("first.pdf", pdf_bytes("v1"), "application/pdf")}, headers=headers).json()
+    second = client.post("/api/resumes", files={"file": ("second.pdf", pdf_bytes("v2"), "application/pdf")}, headers=headers).json()
+    assert dispatched["resume"] == [first["id"], second["id"]]
+
+def test_bulk_upload_queues_one_task_per_stored_file(client, make_user, auth_headers, pdf_bytes, dispatched):
+    recruiter, _ = make_user(role=UserRole.RECRUITER)
+    files = [
+        ("files", ("a.pdf", pdf_bytes("a"), "application/pdf")),
+        ("files", ("bad.txt", b"nope", "text/plain")),
+        ("files", ("b.pdf", pdf_bytes("b"), "application/pdf")),
+    ]
+    resp = client.post("/api/resumes/bulk", files=files, headers=auth_headers(recruiter))
+    assert resp.status_code == 200
+    stored_ids = [r["resume"]["id"] for r in resp.json() if r["success"]]
+    assert len(stored_ids) == 2
+    assert dispatched["resume"] == stored_ids  # the rejected .txt is not queued
+
+def test_manual_extract_skills_resets_status_and_queues(client, make_user, auth_headers, pdf_bytes, dispatched):
+    candidate, _ = make_user(role=UserRole.USER)
+    headers = auth_headers(candidate)
+    resume_id = client.post("/api/resumes", files={"file": ("r.pdf", pdf_bytes("x"), "application/pdf")}, headers=headers).json()["id"]
+    resp = client.post(f"/api/resumes/{resume_id}/extract-skills", headers=headers)
+    assert resp.status_code == 200
+    assert resp.json()["skills_extraction_status"] == "pending"
+    assert dispatched["resume"] == [resume_id, resume_id]  # once on upload, once on manual re-run

@@ -27,22 +27,6 @@ services:
     # Drop this service and point REDIS_URL at your managed Redis
     # instance if you already run one.
 
-  ollama:
-    build:
-      context: ./deploy
-      dockerfile: Dockerfile.ollama
-    restart: unless-stopped
-    volumes:
-      - ollama_data:/root/.ollama
-    healthcheck:
-      # First pull can take a few minutes on a cold volume -- give it
-      # real time before compose gives up and blocks backend/worker.
-      test: ["CMD", "ollama", "list"]
-      interval: 10s
-      timeout: 5s
-      retries: 30
-      start_period: 60s
-
   backend:
     build:
       context: .                    # repo root -- see backend/Dockerfile
@@ -52,7 +36,6 @@ services:
     environment:
       DATABASE_URL: postgresql+psycopg://postgres:postgres@postgres:5432/talentdb
       REDIS_URL: redis://redis:6379/0
-      OLLAMA_BASE_URL: http://ollama:11434
     ports:
       - "8000:8000"
     depends_on:
@@ -60,34 +43,47 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
-      ollama:
-        condition: service_healthy
 
   worker:
     build:
       context: .
       dockerfile: backend/Dockerfile
-    command: celery -A app.core.celery_app worker --loglevel=info --concurrency=1
+    # -Q llm,celery: the extraction tasks are routed to the "llm" queue
+    # (see task_routes in celery_app.py); "celery" is the default queue
+    # that the periodic sweep tasks run on. Leave either out and rows
+    # sit at PENDING forever.
+    command: celery -A app.core.celery_app worker -Q llm,celery --loglevel=info --concurrency=1
     restart: unless-stopped
     env_file: ./backend/.env
     environment:
       DATABASE_URL: postgresql+psycopg://postgres:postgres@postgres:5432/talentdb
       REDIS_URL: redis://redis:6379/0
-      OLLAMA_BASE_URL: http://ollama:11434
     depends_on:
       postgres:
         condition: service_healthy
       redis:
         condition: service_healthy
-      ollama:
+
+  beat:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    # Exactly ONE beat instance. Two would double-queue every sweep.
+    command: celery -A app.core.celery_app beat --loglevel=info
+    restart: unless-stopped
+    env_file: ./backend/.env
+    environment:
+      DATABASE_URL: postgresql+psycopg://postgres:postgres@postgres:5432/talentdb
+      REDIS_URL: redis://redis:6379/0
+    depends_on:
+      redis:
         condition: service_healthy
 
 volumes:
   postgres_data:
-  ollama_data:
 
 # Migrations are deliberately NOT run automatically on backend
 # startup -- with restart: unless-stopped and multiple containers
 # potentially starting together, that's a race condition waiting to
 # happen. Run them as a one-off, once, per deploy:
-#   docker compose run --rm backend alembic upgrade head
+#   docker compose run --rm backend alembic upgrade head  

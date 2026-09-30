@@ -1,10 +1,17 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+
 from app import models  # noqa: F401
-from app.api.routes import health
+from app.api.routes import (
+    applications,
+    auth,
+    health,
+    jobs,
+    llm_config,
+    resumes,
+    users,
+)
 from app.core.config import settings
-from app.api.routes import health, auth, jobs, users, applications, resumes
-...
 
 app = FastAPI(title=settings.APP_NAME, debug=settings.DEBUG)
 
@@ -22,6 +29,7 @@ app.include_router(jobs.router, prefix="/api/jobs", tags=["jobs"])
 app.include_router(users.router, prefix="/api/users", tags=["users"])
 app.include_router(applications.router, prefix="/api/applications", tags=["applications"])
 app.include_router(resumes.router, prefix="/api/resumes", tags=["resumes"])
+app.include_router(llm_config.router, prefix="/api/admin/llm-config", tags=["admin"])
 
 @app.get("/")
 def root() -> dict:

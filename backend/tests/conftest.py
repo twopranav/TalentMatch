@@ -167,9 +167,16 @@ def pdf_bytes():
     upload/validation path."""
     def _make(text: str = "Sample content") -> bytes:
         from reportlab.pdfgen import canvas
+        from app.core.text_extract import MIN_TEXT_LENGTH
+        # upload_jd rejects anything that extracts to fewer than
+        # MIN_TEXT_LENGTH chars (422, "likely a scanned/image-only file"),
+        # so short test strings are padded past it. The original text is
+        # kept intact at the start.
+        if len(text) < MIN_TEXT_LENGTH + 10:
+            text = f"{text} " + "Filler sentence to reach the minimum length. " * 2
         buf = io.BytesIO()
         c = canvas.Canvas(buf)
-        c.drawString(100, 750, text)
+        c.drawString(20, 750, text)
         c.save()
         return buf.getvalue()
     return _make
@@ -189,55 +196,25 @@ def docx_bytes():
     return _make
 
 
-@pytest.fixture()
-def mock_hf_extraction(monkeypatch):
-    """Patches app.core.llm_extract._call_hf so extract_candidate_profile()
-    and extract_job_requirements() never make a real network call — tests
-    stay deterministic and runnable offline/in CI without an HF_TOKEN.
+@pytest.fixture(autouse=True)
+def dispatched(monkeypatch):
+    """Captures Celery dispatches instead of sending them to Redis.
 
-    Usage:
-        def test_x(client, mock_hf_extraction, ...):
-            mock_hf_extraction.set_response(required_skills=["python"])
-            ... upload a JD/resume ...
-            assert mock_hf_extraction.calls  # documents were passed through
-
-        def test_y(client, mock_hf_extraction, ...):
-            mock_hf_extraction.fail(ExtractionError("boom"))
-            ...
-
-    _call_hf is patched rather than extract_job_requirements/
-    extract_candidate_profile themselves, so the real schema validation
-    (CandidateProfileExtraction.model_validate / JobRequirementsExtraction.
-    model_validate) still runs against the mocked raw dict — a test that
-    sets an invalid shape will fail the same way a real bad provider
-    response would, which is the behavior worth testing here.
+    Without this, every route test that uploads a resume or JD would call
+    .delay() against a real broker (hanging or erroring when Redis isn't
+    up), and nothing would assert that the upload actually queued
+    extraction. Returns {"resume": [ids], "jd": [ids]} in dispatch order.
     """
-    import app.core.llm_extract as llm_extract
+    from app.api.routes import jobs as jobs_routes
+    from app.api.routes import resumes as resumes_routes
 
-    state = {"response": {}, "raise_": None, "calls": []}
-
-    def fake_call_hf(system_prompt, document_text, schema, **kwargs):
-        state["calls"].append(document_text)
-        if state["raise_"] is not None:
-            raise state["raise_"]
-        return dict(state["response"]), {"model": "fake", "provider": "fake"}
-
-    monkeypatch.setattr(llm_extract, "_call_hf", fake_call_hf)
-
-    class _Handle:
-        calls = state["calls"]
-
-        def set_response(self, **fields):
-            """Sets the raw dict _call_hf returns on the next call(s).
-            Pass the fields your test cares about; anything you omit uses
-            the schema's own default (Pydantic fills in [] / None), so a
-            partial dict like set_response(required_skills=["python"]) is
-            fine."""
-            state["response"] = fields
-            state["raise_"] = None
-
-        def fail(self, exc: Exception):
-            """Makes the next call(s) raise `exc` instead of returning."""
-            state["raise_"] = exc
-
-    return _Handle()
+    calls = {"resume": [], "jd": []}
+    monkeypatch.setattr(
+        resumes_routes.run_skills_extraction_task, "delay",
+        lambda resume_id: calls["resume"].append(resume_id),
+    )
+    monkeypatch.setattr(
+        jobs_routes.run_jd_skills_extraction_task, "delay",
+        lambda job_id: calls["jd"].append(job_id),
+    )
+    return calls

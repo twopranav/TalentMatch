@@ -6,13 +6,13 @@ from sqlalchemy.orm import Session, joinedload
 from app.core.audit import record_audit, snapshot
 from app.core.config import settings
 from app.core.deps import get_current_user, require_recruiter_or_admin
-from app.core.extraction_tasks import run_extraction_task
 from app.core.resume_storage import build_blob_name, delete_resume_blob, download_resume_blob, get_resume_download_url, upload_resume_blob
 from app.core.skills_extraction_tasks import run_skills_extraction_task
 from app.db.session import get_db
 from app.models.resume import Resume, ResumeExtractionStatus, ResumeStatus
 from app.models.user import User, UserRole
 from app.schemas.resume import ResumeBulkUploadResult, ResumeRead, ResumeReadWithUrl
+from app.core.dispatch import dispatch_extraction
 
 logger = logging.getLogger(__name__)
 
@@ -46,10 +46,10 @@ def _store_one(
     uploaded_by: User,
     db: Session,
 ) -> Resume:
-    """No longer runs extraction inline — that moved to
-    run_extraction_task, dispatched by the route handlers below, after
-    their own commit succeeds. A resume row created here always starts
-    at its default extraction_status (PENDING)."""
+    """Does not run extraction inline — the route handlers below dispatch
+    run_skills_extraction_task after their own commit succeeds. A resume
+    row created here always starts at its default
+    skills_extraction_status (PENDING)."""
     blob_name = build_blob_name(owner_id, filename)
     try:
         blob_path = upload_resume_blob(file_bytes, blob_name, content_type)
@@ -90,9 +90,11 @@ async def upload_resume(
     it outright.
 
     Extraction is queued, not run inline: the response comes back as soon
-    as the file is safely stored, with extraction_status still PENDING.
-    The frontend should poll GET /resumes/{id} to see it flip to
-    DONE/FAILED once the Celery worker gets to it.
+    as the file is safely stored, with skills_extraction_status still
+    PENDING. The frontend should poll GET /resumes/{id} to see it flip to
+    DONE/FAILED once the Celery worker gets to it. Applying to a job later
+    only checks that status (see applications._require_ready_resume); it
+    never triggers extraction itself.
     """
     contents = await file.read()
     _validate_upload(file.content_type, len(contents))
@@ -128,7 +130,7 @@ async def upload_resume(
     db.refresh(resume)
 
     if resume.status == ResumeStatus.UPLOADED:
-        run_extraction_task.delay(str(resume.id))
+        dispatch_extraction(run_skills_extraction_task, resume.id)
 
     return resume
 
@@ -160,7 +162,7 @@ async def upload_resumes_bulk(
 
     db.commit()
     for resume_id in stored_ids:
-        run_extraction_task.delay(str(resume_id))
+        dispatch_extraction(run_skills_extraction_task, resume_id)
     return results
 
 
@@ -266,10 +268,8 @@ def trigger_skills_extraction(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """Separately-triggerable skills-only extraction -- NOT fired
-    automatically on upload and NOT part of run_extraction_task's
-    full-profile pass. Re-runnable on its own (e.g. after a prompt or
-    section-locator change) without redoing full-profile extraction.
+    """Manual re-run of skills extraction (upload already triggers it
+    automatically) -- e.g. after a prompt or section-locator change.
 
     Queues app.core.skills_extraction_tasks.run_skills_extraction_task
     and returns immediately with skills_extraction_status flipped to
@@ -279,10 +279,11 @@ def trigger_skills_extraction(
 
     resume.skills_extraction_status = ResumeExtractionStatus.PENDING
     resume.skills_extraction_error = None
+    resume.skills_extraction_retry_count = 0
     db.commit()
     db.refresh(resume)
 
-    run_skills_extraction_task.delay(str(resume.id))
+    dispatch_extraction(run_skills_extraction_task, resume.id)
 
     return _to_read(resume)
 

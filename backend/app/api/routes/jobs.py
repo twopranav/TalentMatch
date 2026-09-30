@@ -33,6 +33,7 @@ from app.models.job import (
 )
 from app.models.user import User, UserRole
 from app.schemas.job import JobCreate, JobRead, JobUpdate
+from app.core.dispatch import dispatch_extraction
 
 logger = logging.getLogger(__name__)
 
@@ -399,6 +400,7 @@ async def upload_jd(
     job.skills_extraction_status = JobExtractionStatus.PENDING
     job.skills_extraction_error = None
     job.skills_extracted_at = None
+    job.skills_extraction_retry_count = 0
 
     job.jd_raw_text = await extract_text_from_upload(file)
 
@@ -455,6 +457,6 @@ async def upload_jd(
     # its own DB session (see jd_skills_extraction_tasks.py), so the row
     # -- including the blob_path/jd_raw_text just written -- must already
     # be committed before the worker can see it.
-    run_jd_skills_extraction_task.delay(str(job.id))
-
+    dispatch_extraction(run_jd_skills_extraction_task, job.id)
+    
     return job

@@ -33,6 +33,7 @@ from app.core.skills_text_prep import (
 from app.core.text_extract import EmptyExtractionError, UnsupportedFileTypeError
 from app.db.session import SessionLocal
 from app.models.resume import Resume, ResumeExtractionStatus
+from app.core.llm_provider_registry import LLMConfigError
 
 logger = logging.getLogger(__name__)
 
@@ -111,6 +112,7 @@ def run_skills_extraction_task(self, resume_id: str) -> None:
             UnsupportedFileTypeError,
             EmptyExtractionError,
             SkillsExtractionError,
+            LLMConfigError,
         ) as exc:
             resume.skills_extraction_status = ResumeExtractionStatus.FAILED
             resume.skills_extraction_error = str(exc)
@@ -118,22 +120,20 @@ def run_skills_extraction_task(self, resume_id: str) -> None:
             return
 
         except Exception as exc:
-            logger.warning(
-                "Skills extraction failed for %s: %s",
-                resume_id, exc,
-            )
-
-            try:
-                raise self.retry(exc=exc)
-
-            except self.MaxRetriesExceededError:
+            if self.request.retries >= self.max_retries:
                 resume.skills_extraction_status = ResumeExtractionStatus.FAILED
                 resume.skills_extraction_error = (
                     f"Skills extraction failed after retries: {exc}"
                 )
                 db.commit()
+                return
 
-            return
+            logger.warning(
+                "Skills extraction attempt failed for %s: %s", resume_id, exc
+            )
+            resume.skills_extraction_status = ResumeExtractionStatus.PENDING
+            db.commit()
+            raise self.retry(exc=exc, countdown=30 * 2 ** self.request.retries)
 
         # -------------------------
         # Persist extraction

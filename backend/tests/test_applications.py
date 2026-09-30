@@ -1,3 +1,6 @@
+from conftest import TestSessionLocal  # tests/ is on sys.path (no __init__.py)
+
+from app.models.resume import Resume, ResumeExtractionStatus
 from app.models.user import UserRole
 
 
@@ -12,9 +15,25 @@ def _published_job(client, auth_headers, recruiter, pdf_bytes, title="Job"):
     return job_id
 
 
-def _upload_resume(client, auth_headers, candidate, pdf_bytes):
+def _set_skills_status(owner_id, status):
+    """Stands in for the Celery worker, which isn't running in tests."""
+    session = TestSessionLocal()
+    try:
+        session.query(Resume).filter(
+            Resume.owner_id == owner_id, Resume.is_archived.is_(False),
+        ).update({"skills_extraction_status": status})
+        session.commit()
+    finally:
+        session.close()
+
+
+def _upload_resume(client, auth_headers, candidate, pdf_bytes, skills_status=ResumeExtractionStatus.DONE):
+    """Uploads a resume, then simulates the extraction worker finishing it
+    (DONE by default) — applying is gated on skills_extraction_status, and
+    upload alone leaves it PENDING."""
     files = {"file": ("resume.pdf", pdf_bytes("My resume"), "application/pdf")}
     client.post("/api/resumes", files=files, headers=auth_headers(candidate))
+    _set_skills_status(candidate.id, skills_status)
 
 
 # ---------------------------------------------------------------------------
@@ -42,6 +61,39 @@ def test_apply_without_resume_rejected(client, make_user, auth_headers, pdf_byte
 
     resp = client.post("/api/applications", json={"job_id": job_id, "resume_id": None}, headers=auth_headers(candidate))
     assert resp.status_code == 400
+
+def test_apply_rejected_while_resume_still_processing(client, make_user, auth_headers, pdf_bytes):
+    recruiter, _ = make_user(role=UserRole.RECRUITER)
+    candidate, _ = make_user(role=UserRole.USER)
+    job_id = _published_job(client, auth_headers, recruiter, pdf_bytes)
+    _upload_resume(client, auth_headers, candidate, pdf_bytes, skills_status=ResumeExtractionStatus.PENDING)
+
+    resp = client.post("/api/applications", json={"job_id": job_id, "resume_id": None}, headers=auth_headers(candidate))
+    assert resp.status_code == 400
+    assert "still being processed" in resp.json()["detail"]
+
+def test_apply_rejected_when_resume_extraction_failed(client, make_user, auth_headers, pdf_bytes):
+    recruiter, _ = make_user(role=UserRole.RECRUITER)
+    candidate, _ = make_user(role=UserRole.USER)
+    job_id = _published_job(client, auth_headers, recruiter, pdf_bytes)
+    _upload_resume(client, auth_headers, candidate, pdf_bytes, skills_status=ResumeExtractionStatus.FAILED)
+
+    resp = client.post("/api/applications", json={"job_id": job_id, "resume_id": None}, headers=auth_headers(candidate))
+    assert resp.status_code == 400
+    assert "couldn't read your resume" in resp.json()["detail"]
+
+def test_applying_never_queues_extraction(client, make_user, auth_headers, pdf_bytes, dispatched):
+    """Extraction happens at upload time; the apply route only checks the
+    result and must not dispatch anything itself."""
+    recruiter, _ = make_user(role=UserRole.RECRUITER)
+    candidate, _ = make_user(role=UserRole.USER)
+    job_id = _published_job(client, auth_headers, recruiter, pdf_bytes)
+    _upload_resume(client, auth_headers, candidate, pdf_bytes)
+    before = (list(dispatched["resume"]), list(dispatched["jd"]))
+
+    resp = client.post("/api/applications", json={"job_id": job_id, "resume_id": None}, headers=auth_headers(candidate))
+    assert resp.status_code == 201
+    assert (dispatched["resume"], dispatched["jd"]) == before
 
 def test_apply_to_unpublished_job_rejected(client, make_user, auth_headers, pdf_bytes):
     recruiter, _ = make_user(role=UserRole.RECRUITER)

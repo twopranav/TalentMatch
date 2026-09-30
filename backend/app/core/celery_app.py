@@ -31,7 +31,6 @@ celery_app = Celery(
     broker=settings.CELERY_BROKER_URL or settings.REDIS_URL,
     backend=settings.CELERY_RESULT_BACKEND or settings.REDIS_URL,
     include=[
-        "app.core.extraction_tasks",
         "app.core.skills_extraction_tasks",
         "app.core.jd_skills_extraction_tasks",
         "app.core.extraction_retry_sweep",
@@ -46,6 +45,18 @@ celery_app.conf.update(
     enable_utc=True,
     task_acks_late=True,
     worker_prefetch_multiplier=1,
+    task_routes={
+        "skills_extraction.run": {"queue": settings.LLM_QUEUE_NAME},
+        "jd_skills_extraction.run": {"queue": settings.LLM_QUEUE_NAME},
+    },
+    task_annotations=(
+        {
+            "skills_extraction.run": {"rate_limit": settings.LLM_TASK_RATE_LIMIT},
+            "jd_skills_extraction.run": {"rate_limit": settings.LLM_TASK_RATE_LIMIT},
+        }
+        if settings.LLM_TASK_RATE_LIMIT
+        else {}
+    ),
     beat_schedule={
         "sweep-stale-resume-skills-extractions": {
             "task": "extraction_retry_sweep.sweep_resumes",

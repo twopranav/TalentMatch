@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { fetchResumes, uploadResumesBulk, archiveResume, deleteResume, openResumeFile } from '../api/resumes'
 import ConfirmDialog from '../components/ui/ConfirmDialog'
 import Spinner from '../components/ui/Spinner'
@@ -21,6 +21,7 @@ function BulkUpload({ onDone }) {
   const [files, setFiles] = useState([])
   const [submitting, setSubmitting] = useState(false)
   const [results, setResults] = useState(null)
+  const fileInputRef = useRef(null)
   const { showToast } = useToast()
 
   const handleSubmit = async () => {
@@ -39,6 +40,7 @@ function BulkUpload({ onDone }) {
         failed === 0 ? 'success' : 'error',
       )
       setFiles([])
+      if (fileInputRef.current) fileInputRef.current.value = ''
       onDone()
     } catch (err) {
       showToast(getErrorMessage(err, 'Could not upload those files.'), 'error')
@@ -55,12 +57,28 @@ function BulkUpload({ onDone }) {
       </p>
       <div className="flex flex-wrap items-center gap-3">
         <input
+          ref={fileInputRef}
           type="file"
           accept=".pdf,.docx"
           multiple
           onChange={(e) => setFiles(Array.from(e.target.files ?? []))}
-          className="text-sm text-slate-600 dark:text-slate-300"
+          className="hidden"
         />
+        <button
+          type="button"
+          onClick={() => fileInputRef.current?.click()}
+          disabled={submitting}
+          className="rounded bg-red-600 px-4 py-2 text-sm font-medium text-white shadow-sm hover:bg-red-700 disabled:opacity-60 dark:bg-red-700 dark:hover:bg-red-600"
+        >
+          Choose resume file
+        </button>
+        <span className="max-w-xs truncate text-sm text-slate-500 dark:text-slate-400">
+          {files.length === 0
+            ? 'No file chosen'
+            : files.length === 1
+              ? files[0].name
+              : `${files.length} files selected`}
+        </span>
         <button
           onClick={handleSubmit}
           disabled={files.length === 0 || submitting}
@@ -104,6 +122,34 @@ export default function ResumeLibrary() {
   }
 
   useEffect(load, [showArchived])
+
+  // Auto-refresh while any resume is still being extracted, so the badge
+  // flips to Done/Failed without a manual reload. Polls quietly (no
+  // spinner) every 4s and gives up after ~3 minutes so a resume stuck at
+  // Pending can't keep the page polling forever.
+  const hasInFlight = resumes.some((r) => {
+    const s = String(r.skills_extraction_status ?? r.extraction_status ?? '').toLowerCase()
+    return s === 'pending' || s === 'processing'
+  })
+
+  useEffect(() => {
+    if (!hasInFlight) return undefined
+    let polls = 0
+    const id = setInterval(() => {
+      polls += 1
+      if (polls > 45) {
+        clearInterval(id)
+        return
+      }
+      fetchResumes(showArchived).then(setResumes).catch(() => {})
+    }, 4000)
+    return () => clearInterval(id)
+  }, [hasInFlight, showArchived])
+
+  // The open modal should follow the refreshed data, not a stale snapshot.
+  const liveExtractionTarget = extractionTarget
+    ? resumes.find((r) => r.id === extractionTarget.id) ?? extractionTarget
+    : null
 
   const handleView = async (resume) => {
     setOpeningId(resume.id)
@@ -162,7 +208,7 @@ export default function ResumeLibrary() {
 
       <BulkUpload onDone={load} />
 
-      <div className="overflow-hidden rounded-lg border border-slate-200 bg-white dark:border-slate-800 dark:bg-slate-900">
+      <div className="overflow-x-auto rounded-lg border border-slate-200 bg-white dark:border-slate-800 dark:bg-slate-900">
         {loading ? (
           <div className="flex justify-center py-16"><Spinner size="lg" label="Loading resumes" /></div>
         ) : error ? (
@@ -215,7 +261,7 @@ export default function ResumeLibrary() {
                       className="rounded-full hover:opacity-80"
                       title="View extraction details"
                     >
-                      <ExtractionStatusBadge status={r.extraction_status} />
+                      <ExtractionStatusBadge status={r.skills_extraction_status ?? r.extraction_status} />
                     </button>
                   </td>
                   <td className="px-4 py-2 text-slate-500 dark:text-slate-400">{new Date(r.created_at).toLocaleDateString()}</td>
@@ -252,7 +298,7 @@ export default function ResumeLibrary() {
       <ResumeExtractionModal
         open={Boolean(extractionTarget)}
         onClose={() => setExtractionTarget(null)}
-        resume={extractionTarget}
+        resume={liveExtractionTarget}
       />
     </div>
   )

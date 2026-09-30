@@ -166,7 +166,14 @@ def _is_major_section_boundary(line: str) -> bool:
     if normalized in MAJOR_SECTION_HEADINGS:
         return True
 
-    return stripped.isupper() and len(stripped) < 40
+    # A single all-caps token ("SQL", "AWS") or a bulleted line is a
+    # skill, not a section heading -- require >= 2 words, no bullet.
+    if re.match(r"^\s*([-*\u2022\u25cf\u2013>]|\d+[.)])\s+", stripped):
+        return False
+
+    words = re.findall(r"[A-Za-z][A-Za-z&/'-]*", stripped)
+
+    return stripped.isupper() and len(stripped) < 40 and len(words) >= 2
 
 
 # ---------------------------------------------------------------------

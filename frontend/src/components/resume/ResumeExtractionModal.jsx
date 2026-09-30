@@ -11,9 +11,10 @@ export const EXTRACTION_STATUS_STYLES = {
 
 export function ExtractionStatusBadge({ status }) {
   if (!status) return null
+  const key = String(status).toLowerCase()
   return (
-    <span className={`inline-block rounded-full px-2 py-0.5 text-xs font-medium ${EXTRACTION_STATUS_STYLES[status] ?? EXTRACTION_STATUS_STYLES.pending}`}>
-      {formatEnumLabel(status)}
+    <span className={`inline-block rounded-full px-2 py-0.5 text-xs font-medium ${EXTRACTION_STATUS_STYLES[key] ?? EXTRACTION_STATUS_STYLES.pending}`}>
+      {formatEnumLabel(key)}
     </span>
   )
 }
@@ -41,7 +42,14 @@ function formatEducationEntry(edu) {
 export default function ResumeExtractionModal({ open, onClose, resume }) {
   if (!resume) return null
 
-  const status = resume.extraction_status
+  // Skills come from the standalone skills pipeline (skills_* fields).
+  // The older full-profile pipeline (extraction_status / extracted_*) is
+  // kept for the sections below and only shown when it has actually run.
+  const status = (resume.skills_extraction_status || resume.extraction_status || '').toLowerCase()
+  const legacyDone = (resume.extraction_status || '').toLowerCase() === 'done'
+  const skills = resume.skills_result ?? resume.extracted_skills
+  const errorText = resume.skills_extraction_error || resume.extraction_error
+  const extractedAt = resume.skills_extracted_at || resume.extracted_at
   const profile = resume.extracted_profile || {}
 
   return (
@@ -49,9 +57,9 @@ export default function ResumeExtractionModal({ open, onClose, resume }) {
       <div className="space-y-4 text-sm">
         <div className="flex flex-wrap items-center gap-2">
           <ExtractionStatusBadge status={status} />
-          {resume.extracted_at && (
+          {extractedAt && (
             <span className="text-xs text-slate-400 dark:text-slate-500">
-              Extracted {new Date(resume.extracted_at).toLocaleString()}
+              Extracted {new Date(extractedAt).toLocaleString()}
             </span>
           )}
         </div>
@@ -70,7 +78,7 @@ export default function ResumeExtractionModal({ open, onClose, resume }) {
 
         {status === 'failed' && (
           <div className="rounded border border-red-200 bg-red-50 p-3 text-xs text-red-700 dark:border-red-900 dark:bg-red-950/40 dark:text-red-300">
-            {resume.extraction_error || 'Extraction failed for an unknown reason.'}
+            {errorText || 'Extraction failed for an unknown reason.'}
           </div>
         )}
 
@@ -78,9 +86,13 @@ export default function ResumeExtractionModal({ open, onClose, resume }) {
           <>
             <div>
               <dt className="mb-1 text-xs text-slate-400 dark:text-slate-500">Skills</dt>
-              <dd><Chips items={resume.extracted_skills} /></dd>
+              <dd><Chips items={skills} /></dd>
             </div>
+          </>
+        )}
 
+        {status === 'done' && legacyDone && (
+          <>
             <div>
               <dt className="text-xs text-slate-400 dark:text-slate-500">Experience</dt>
               <dd className="text-slate-600 dark:text-slate-300">
