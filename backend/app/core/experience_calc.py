@@ -24,13 +24,18 @@ from app.schemas.extraction import WorkHistoryEntry
 
 logger = logging.getLogger(__name__)
 
+
+# ---------------------------------------------------------------------
+# Shared calculator: total months from work-history date ranges
+# (used by the resume side below; JD side needs no date math)
+# ---------------------------------------------------------------------
+
 _CURRENT_MARKERS = {"present", "current", "currently", "now", "ongoing", "till date", "to date"}
 
 # dateutil fills any missing year from `default` (1900 below). A string with
 # no 4-digit year -- "Jan '20", "06/21", "20" -- therefore comes back as
 # 1900 and would add ~125 phantom years. Anything before this is rejected.
 _MIN_VALID_YEAR = 1970
-
 
 def _parse_month(text: str | None, *, is_end: bool, today: date | None = None) -> date | None:
     """Parses a free-text date like 'Jun 2021', '2021-06', '2021' into a
@@ -290,3 +295,199 @@ def meets_experience_requirement(
     if required_months is None or candidate_months is None:
         return None
     return candidate_months >= required_months
+
+
+# ---------------------------------------------------------------------
+# Resume side: work-history date ranges read straight from resume text
+# ---------------------------------------------------------------------
+
+# Compared as exact whole-line matches after _heading_key() (lowercased,
+# trailing ":" removed, whitespace collapsed), so "Volunteer Experience"
+# is NOT an experience heading -- it is in the "other" set below.
+
+_EXPERIENCE_SECTION_HEADINGS = {
+    "experience",
+    "work experience",
+    "professional experience",
+    "relevant experience",
+    "industry experience",
+    "employment",
+    "employment history",
+    "employment experience",
+    "work history",
+    "career history",
+    "professional background",
+    "internship",
+    "internships",
+    "internship experience",
+}
+
+# Headings that end an experience section and whose date ranges (degrees,
+# course dates, certificates, project dates) must not count as experience.
+_OTHER_SECTION_HEADINGS = {
+    "education",
+    "education & training",
+    "education and training",
+    "academic background",
+    "academics",
+    "projects",
+    "personal projects",
+    "academic projects",
+    "key projects",
+    "certifications",
+    "certificates",
+    "licenses & certifications",
+    "training",
+    "courses",
+    "awards",
+    "honors & awards",
+    "achievements",
+    "accomplishments",
+    "publications",
+    "summary",
+    "professional summary",
+    "profile",
+    "objective",
+    "career objective",
+    "skills",
+    "technical skills",
+    "core competencies",
+    "key skills",
+    "languages",
+    "interests",
+    "hobbies",
+    "volunteer experience",
+    "volunteering",
+    "extracurricular activities",
+    "references",
+    "declaration",
+}
+
+_MONTH_NAME = (
+    r"(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|"
+    r"jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|"
+    r"nov(?:ember)?|dec(?:ember)?)"
+)
+_YEAR = r"(?:19|20)\d{2}"
+_NUM_MONTH = r"(?:0?[1-9]|1[0-2])"
+
+# "Jan 2020", "January, 2020", "Sept. 2018", "06/2021", "2019".
+# Two-digit years ("Jan '20") are deliberately not matched: they are
+# ambiguous, and _parse_month() rejects them anyway.
+_RESUME_DATE = (
+    rf"\b(?:{_MONTH_NAME}\b\.?\s*,?\s*{_YEAR}"
+    rf"|{_NUM_MONTH}\s*[/.]\s*{_YEAR}"
+    rf"|{_YEAR})(?!\d)"
+)
+
+_RESUME_CURRENT = (
+    r"(?:till\s+date|to\s+date|till\s+now|till\s+present|present|"
+    r"currently|current|now|ongoing|today|date)\b"
+)
+
+_RESUME_RANGE_RE = re.compile(
+    rf"(?P<start>{_RESUME_DATE})\s*"
+    r"(?:[\u2013\u2014-]|\bto\b|\buntil\b|\btill\b)\s*"
+    rf"(?:(?P<end>{_RESUME_DATE})|(?P<current>{_RESUME_CURRENT}))",
+    re.IGNORECASE,
+)
+
+
+@dataclass(frozen=True)
+class ResumeExperience:
+    months: int | None                      # None = no usable date range found
+    entries: tuple[WorkHistoryEntry, ...]   # the ranges that were counted
+    source: str | None                      # "experience_section" | "full_text" | None
+
+    @property
+    def years(self) -> float | None:
+        return None if self.months is None else round(self.months / 12, 1)
+
+
+def _heading_key(line: str) -> str:
+    key = " ".join(line.strip().rstrip(":").split()).lower()
+    return key if 0 < len(key) <= 40 else ""
+
+
+def _split_resume_sections(text: str) -> tuple[list[str], list[str]]:
+    """Returns (experience_lines, usable_lines).
+
+    experience_lines: lines under an experience heading, up to the next
+    known section heading. usable_lines: every line NOT under a known
+    non-experience heading (education, projects, certifications...), used
+    as the fallback when the experience section yields no date range.
+    """
+    section: str | None = None  # None (before any heading) | "experience" | "other"
+    experience_lines: list[str] = []
+    usable_lines: list[str] = []
+
+    for line in text.splitlines():
+        key = _heading_key(line)
+
+        if key in _EXPERIENCE_SECTION_HEADINGS:
+            section = "experience"
+            continue
+        if key in _OTHER_SECTION_HEADINGS:
+            section = "other"
+            continue
+
+        if section == "experience":
+            experience_lines.append(line)
+        if section != "other":
+            usable_lines.append(line)
+
+    return experience_lines, usable_lines
+
+
+def _find_work_ranges(
+    lines: list[str], today: date | None = None
+) -> list[WorkHistoryEntry]:
+    entries: list[WorkHistoryEntry] = []
+
+    for m in _RESUME_RANGE_RE.finditer("\n".join(lines)):
+        start = " ".join(m.group("start").split())
+        end = "Present" if m.group("current") else " ".join(m.group("end").split())
+        entry = WorkHistoryEntry(start_date=start, end_date=end)
+
+        # Keep only ranges the calculator can actually use (parseable,
+        # end not before start).
+        if compute_experience_months([entry], today=today) is not None:
+            entries.append(entry)
+
+    return entries
+
+
+def extract_resume_experience(
+    resume_text: str | None, today: date | None = None
+) -> ResumeExperience:
+    """Total work experience in months, read deterministically from resume
+    text: date ranges under the experience heading first, then (only if
+    that yields nothing) anywhere outside known non-experience sections.
+    Overlapping ranges are merged by compute_experience_months().
+
+    Returns months=None (not 0) when no usable range is found, matching
+    the "no work history -> null" contract.
+
+    Known limits: two-digit years ("Jan '20") are ignored; bare-year
+    ranges ("2019 - 2021") count from January of each year (see
+    _parse_month); duration-only statements ("3 years at X") and total-
+    experience claims ("5+ years") are not read.
+    """
+    if not resume_text or not resume_text.strip():
+        return ResumeExperience(None, (), None)
+
+    experience_lines, usable_lines = _split_resume_sections(resume_text)
+
+    for source, lines in (
+        ("experience_section", experience_lines),
+        ("full_text", usable_lines),
+    ):
+        entries = _find_work_ranges(lines, today=today)
+        if entries:
+            return ResumeExperience(
+                months=compute_experience_months(entries, today=today),
+                entries=tuple(entries),
+                source=source,
+            )
+
+    return ResumeExperience(None, (), None)

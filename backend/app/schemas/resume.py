@@ -57,6 +57,8 @@ class ResumeRead(BaseModel):
     skills_extraction_status: ResumeExtractionStatus
     skills_extraction_error: str | None = None
     skills_extracted_at: datetime | None = None
+    experience_months: int | None = None
+    experience_entries: list[dict] | None = None
 
     model_config = ConfigDict(from_attributes=True)
 

@@ -19,3 +19,16 @@ export function getErrorMessage(err, fallback) {
   if (typeof detail === 'string' && detail) return detail
   return fallback
 }
+
+// Months -> "2 yrs 6 mos". null/undefined -> null so callers can pick their
+// own "not stated" wording.
+export function formatExperienceMonths(months) {
+  if (months == null) return null
+  if (months === 0) return '0 mos'
+  const years = Math.floor(months / 12)
+  const rest = months % 12
+  const parts = []
+  if (years) parts.push(`${years} yr${years === 1 ? '' : 's'}`)
+  if (rest) parts.push(`${rest} mo${rest === 1 ? '' : 's'}`)
+  return parts.join(' ')
+}

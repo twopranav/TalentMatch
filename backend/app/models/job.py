@@ -267,6 +267,28 @@ class Job(Base):
         nullable=True,
     )
 
+    skills_extracted_at: Mapped[datetime | None] = mapped_column(
+        nullable=True,
+    )
+
+    # Minimum experience the JD demands, in months, computed
+    # deterministically by app/core/experience_calc.extract_min_experience()
+    # inside the JD skills extraction task. NULL = JD states no requirement;
+    # 0 = entry-level/fresher marker. Separate from the recruiter-editable
+    # min_experience_years and the legacy extracted_min_experience_years.
+    min_experience_months: Mapped[int | None] = mapped_column(
+        Integer,
+        nullable=True,
+    )
+
+    # See Resume.skills_extraction_retry_count -- same purpose, same
+    # convention: only the fault-handling sweep increments this.
+    skills_extraction_retry_count: Mapped[int] = mapped_column(
+        Integer,
+        default=0,
+        nullable=False,
+    )
+
     # See Resume.skills_extraction_retry_count -- same purpose, same
     # convention: only the fault-handling sweep increments this.
     skills_extraction_retry_count: Mapped[int] = mapped_column(

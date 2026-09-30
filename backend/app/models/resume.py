@@ -201,6 +201,23 @@ class Resume(Base):
         nullable=False,
     )
 
+        # -------------------------
+    # Work experience, computed deterministically inside the skills
+    # extraction task (app/core/experience_calc.extract_resume_experience).
+    # experience_months NULL = no usable date range found.
+    # experience_entries = the date ranges that were counted.
+    # -------------------------
+
+    experience_months: Mapped[int | None] = mapped_column(
+        Integer,
+        nullable=True,
+    )
+
+    experience_entries: Mapped[list | None] = mapped_column(
+        JSONB,
+        nullable=True,
+    )
+
     # -------------------------
     # Lifecycle
     # -------------------------

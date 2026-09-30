@@ -1,10 +1,11 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import Modal from '../ui/Modal'
 import ConfirmDialog from '../ui/ConfirmDialog'
 import { useAuth } from '../../context/AuthContext'
 import { useToast } from '../ui/Toast'
-import { updateJob, deleteJob } from '../../api/jobs'
-import { formatEnumLabel } from '../../utils/format'
+import { updateJob, deleteJob, fetchJob, reextractJobSkills } from '../../api/jobs'
+import { formatEnumLabel, formatExperienceMonths, getErrorMessage } from '../../utils/format'
+import { ExtractionStatusBadge } from '../resume/ResumeExtractionModal'
 
 
 const STATUS_STYLES = {
@@ -19,13 +20,6 @@ const APPLICATION_STATUS_STYLES = {
   shortlisted: 'bg-blue-100 text-blue-800 dark:bg-blue-900/40 dark:text-blue-300',
   rejected: 'bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300',
   hired: 'bg-emerald-100 text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-300',
-}
-
-const EXTRACTION_STATUS_STYLES = {
-  pending: 'bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-400',
-  processing: 'bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-300',
-  done: 'bg-emerald-100 text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-300',
-  failed: 'bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300',
 }
 
 function formatLabel(value) {
@@ -56,6 +50,40 @@ export default function JobDetailsModal({ open, onClose, job, onEdit, onUploadJD
   const canManage = isPrivileged || isOwner
   const isApplicant = user?.role === 'user'
 
+  // Follows the backend while extraction runs. Local to this modal so a
+  // poll never refetches the whole job list (which would flash its spinner).
+  const [live, setLive] = useState(null)
+  useEffect(() => {
+    setLive(null)
+  }, [job])
+
+  const view = (live && job && live.id === job.id ? live : job) ?? {}
+  const skillsStatus = String(view.skills_extraction_status ?? '').toLowerCase()
+  const inFlight = Boolean(view.jd_raw_text) && (skillsStatus === 'pending' || skillsStatus === 'processing')
+
+  // Quiet 4s polling, capped at ~3 minutes -- same pattern as ResumeLibrary.
+  useEffect(() => {
+    if (!open || !job || !inFlight) return undefined
+    let polls = 0
+    const id = setInterval(() => {
+      polls += 1
+      if (polls > 45) {
+        clearInterval(id)
+        return
+      }
+      fetchJob(job.id).then(setLive).catch(() => {})
+    }, 4000)
+    return () => clearInterval(id)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, job?.id, inFlight])
+
+  const experienceLabel =
+    view.min_experience_months == null
+      ? 'Not stated'
+      : view.min_experience_months === 0
+        ? 'Entry level (none required)'
+        : formatExperienceMonths(view.min_experience_months)
+
   if (!job) return null
 
   const setStatus = async (status) => {
@@ -66,6 +94,19 @@ export default function JobDetailsModal({ open, onClose, job, onEdit, onUploadJD
       onChanged(updated)
     } catch (err) {
       showToast('Could not update the job status.', 'error')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const handleRerun = async () => {
+    setBusy(true)
+    try {
+      const updated = await reextractJobSkills(job.id)
+      setLive(updated)
+      showToast('Extraction re-queued.', 'success')
+    } catch (err) {
+      showToast(getErrorMessage(err, 'Could not re-run extraction.'), 'error')
     } finally {
       setBusy(false)
     }
@@ -167,46 +208,63 @@ export default function JobDetailsModal({ open, onClose, job, onEdit, onUploadJD
 
           {job.jd_raw_text && (
             <div className="space-y-3 rounded border border-slate-100 p-3 dark:border-slate-700">
-              <div className="flex flex-wrap items-center gap-2">
-                <dt className="text-xs text-slate-400 dark:text-slate-500">Extraction</dt>
-                <span className={`inline-block rounded-full px-2 py-0.5 text-xs font-medium ${EXTRACTION_STATUS_STYLES[job.extraction_status] ?? EXTRACTION_STATUS_STYLES.pending}`}>
-                  {formatEnumLabel(job.extraction_status)}
-                </span>
-                {job.extracted_at && (
-                  <span className="text-xs text-slate-400 dark:text-slate-500">
-                    {new Date(job.extracted_at).toLocaleString()}
-                  </span>
-                )}
-              </div>
-
-              {job.extraction_status === 'failed' && (
-                <div className="rounded border border-red-200 bg-red-50 p-2 text-xs text-red-700 dark:border-red-900 dark:bg-red-950/40 dark:text-red-300">
-                  {job.extraction_error || 'Extraction failed for an unknown reason.'}
+              {!isApplicant && (
+                <div className="flex flex-wrap items-center gap-2">
+                  <dt className="text-xs text-slate-400 dark:text-slate-500">Extraction</dt>
+                  <ExtractionStatusBadge status={skillsStatus} />
+                  {view.skills_extracted_at && (
+                    <span className="text-xs text-slate-400 dark:text-slate-500">
+                      {new Date(view.skills_extracted_at).toLocaleString()}
+                    </span>
+                  )}
+                  {canManage && !inFlight && (
+                    <button
+                      onClick={handleRerun}
+                      disabled={busy}
+                      className="ml-auto text-xs font-medium text-slate-700 underline hover:no-underline disabled:opacity-50 dark:text-slate-300"
+                    >
+                      Re-run extraction
+                    </button>
+                  )}
                 </div>
               )}
 
-              {job.extraction_status === 'done' && (
-                <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-                  <div>
-                    <dt className="mb-1 text-xs text-slate-400 dark:text-slate-500">Required skills (extracted)</dt>
-                    <dd><Chips items={job.extracted_required_skills} /></dd>
-                  </div>
-                  <div>
-                    <dt className="mb-1 text-xs text-slate-400 dark:text-slate-500">Preferred skills (extracted)</dt>
-                    <dd><Chips items={job.extracted_profile?.preferred_skills} /></dd>
-                  </div>
-                  <div>
-                    <dt className="text-xs text-slate-400 dark:text-slate-500">Experience (extracted)</dt>
-                    <dd className="text-slate-600 dark:text-slate-300">
-                      {job.extracted_min_experience_years || job.extracted_max_experience_years
-                        ? `${job.extracted_min_experience_years ?? '0'}–${job.extracted_max_experience_years ?? '+'} yrs`
-                        : 'Not stated'}
-                    </dd>
-                  </div>
-                  <div>
-                    <dt className="text-xs text-slate-400 dark:text-slate-500">Education (extracted)</dt>
-                    <dd className="text-slate-600 dark:text-slate-300">{formatLabel(job.extracted_education_requirement)}</dd>
-                  </div>
+              {!isApplicant && skillsStatus === 'pending' && (
+                <p className="text-xs text-slate-500 dark:text-slate-400">
+                  Extraction is queued for this job description.
+                </p>
+              )}
+
+              {!isApplicant && skillsStatus === 'processing' && (
+                <p className="text-xs text-slate-500 dark:text-slate-400">
+                  Extraction is currently running for this job description.
+                </p>
+              )}
+
+              {!isApplicant && skillsStatus === 'failed' && (
+                <div className="rounded border border-red-200 bg-red-50 p-2 text-xs text-red-700 dark:border-red-900 dark:bg-red-950/40 dark:text-red-300">
+                  {view.skills_extraction_error || 'Extraction failed for an unknown reason.'}
+                </div>
+              )}
+
+              {skillsStatus === 'done' && (
+                <div>
+                  <dt className="mb-1 text-xs text-slate-400 dark:text-slate-500">Required skills (extracted)</dt>
+                  <dd><Chips items={view.skills_result} /></dd>
+                  {!isApplicant && view.skills_section_heading && (
+                    <p className="mt-1 text-xs text-slate-400 dark:text-slate-500">
+                      Found under "{view.skills_section_heading}"
+                    </p>
+                  )}
+                </div>
+              )}
+
+              {/* Experience is computed before the skills step, so it can exist
+                  even when skills extraction failed. */}
+              {(skillsStatus === 'done' || view.min_experience_months != null) && (
+                <div>
+                  <dt className="text-xs text-slate-400 dark:text-slate-500">Experience required (extracted)</dt>
+                  <dd className="text-slate-600 dark:text-slate-300">{experienceLabel}</dd>
                 </div>
               )}
 

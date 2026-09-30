@@ -460,3 +460,69 @@ async def upload_jd(
     dispatch_extraction(run_jd_skills_extraction_task, job.id)
     
     return job
+
+
+@router.post(
+    "/{job_id}/extract-skills",
+    response_model=JobRead,
+)
+def trigger_jd_skills_extraction(
+    job_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_recruiter_or_admin),
+):
+    """Manual re-run of JD skills extraction (JD upload already triggers
+    it automatically) -- e.g. after a locator/prompt/model change, or to
+    recover a row the retry sweep gave up on. Mirrors
+    POST /resumes/{resume_id}/extract-skills.
+
+    Queues app.core.jd_skills_extraction_tasks.run_jd_skills_extraction_task
+    and returns immediately with skills_extraction_status flipped to
+    PENDING and the retry counter reset to 0 (so the sweep will retry it
+    again if it fails). The previous skills_result is left in place until
+    the new run overwrites it. Poll GET /jobs/{job_id} for it to reach
+    DONE/FAILED.
+    """
+    job = _get_owned_job(
+        job_id,
+        db,
+        current_user,
+    )
+
+    if not job.blob_path and not (job.jd_raw_text and job.jd_raw_text.strip()):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Upload a job description file before extracting skills.",
+        )
+
+    previous_status = job.skills_extraction_status.value
+
+    job.skills_extraction_status = JobExtractionStatus.PENDING
+    job.skills_extraction_error = None
+    job.skills_extraction_retry_count = 0
+
+    record_audit(
+        db,
+        actor=current_user,
+        action="update",
+        resource_type="job",
+        resource_id=job.id,
+        before={
+            "skills_extraction_status": previous_status,
+        },
+        after={
+            "skills_extraction_status": (
+                job.skills_extraction_status.value
+            ),
+            "trigger": "manual_skills_reextract",
+        },
+    )
+
+    db.commit()
+    db.refresh(job)
+
+    # After commit, same reason as upload_jd: the worker reads the row in
+    # its own session.
+    dispatch_extraction(run_jd_skills_extraction_task, job.id)
+
+    return job

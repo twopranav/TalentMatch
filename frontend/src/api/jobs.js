@@ -39,3 +39,9 @@ export function uploadJobDescription(jobId, file) {
     })
     .then((res) => res.data)
 }
+
+// Manual re-run of JD skills extraction (uploading a JD already triggers it).
+// Resolves with the updated job, skills_extraction_status back at 'pending'.
+export function reextractJobSkills(jobId) {
+  return apiClient.post(`/jobs/${jobId}/extract-skills`).then((res) => res.data)
+}

@@ -108,4 +108,22 @@ class JobRead(BaseModel):
 
     extracted_profile: dict | None = None
 
+    # -------------------------
+    # Standalone skills-only extraction results (the live pipeline).
+    # Mirrors ResumeRead's skills_* / experience_* block. The extraction_*
+    # / extracted_* fields above belong to the deleted full-profile
+    # extractor and stay empty.
+    # -------------------------
+
+    # Final validated skill list from app/core/jd_skills_extraction_tasks.py
+    skills_result: list[str] | None = None
+    skills_section_heading: str | None = None
+    skills_extraction_status: JobExtractionStatus
+    skills_extraction_error: str | None = None
+    skills_extracted_at: datetime | None = None
+
+    # Minimum experience the JD demands, in months. None = JD states no
+    # requirement; 0 = entry-level/fresher marker.
+    min_experience_months: int | None = None
+
     model_config = ConfigDict(from_attributes=True)

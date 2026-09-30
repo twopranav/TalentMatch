@@ -1,6 +1,6 @@
 // frontend/src/components/resume/ResumeExtractionModal.jsx
 import Modal from '../ui/Modal'
-import { formatEnumLabel } from '../../utils/format'
+import { formatEnumLabel, formatExperienceMonths } from '../../utils/format'
 
 export const EXTRACTION_STATUS_STYLES = {
   pending: 'bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-400',
@@ -79,6 +79,28 @@ export default function ResumeExtractionModal({ open, onClose, resume }) {
         {status === 'failed' && (
           <div className="rounded border border-red-200 bg-red-50 p-3 text-xs text-red-700 dark:border-red-900 dark:bg-red-950/40 dark:text-red-300">
             {errorText || 'Extraction failed for an unknown reason.'}
+          </div>
+        )}
+
+        {/* Work experience is computed deterministically before the skills
+            step, so it is shown whenever it exists -- even if skills failed. */}
+        {(resume.experience_months != null || resume.experience_entries?.length > 0) && (
+          <div>
+            <dt className="mb-1 text-xs text-slate-400 dark:text-slate-500">Work experience</dt>
+            <dd className="text-slate-600 dark:text-slate-300">
+              {formatExperienceMonths(resume.experience_months) ?? 'Not stated'}
+            </dd>
+            {resume.experience_entries?.length > 0 && (
+              <ul className="mt-1 space-y-0.5 text-xs text-slate-500 dark:text-slate-400">
+                {resume.experience_entries.map((e, i) => (
+                  <li key={i}>
+                    {[e.title, e.company].filter(Boolean).join(' at ')}
+                    {[e.title, e.company].some(Boolean) ? ' ' : ''}
+                    ({e.start_date || '?'} – {e.end_date || 'present'})
+                  </li>
+                ))}
+              </ul>
+            )}
           </div>
         )}
 

@@ -296,3 +296,110 @@ def test_jd_reupload_clears_previous_skills_and_requeues(client, make_user, auth
     assert resp.json()["skills_result"] is None
     assert resp.json()["skills_extraction_status"] == "pending"
     assert dispatched["jd"] == [job_id, job_id]
+
+
+# ---------------------------------------------------------------------------
+# JD skills extraction results: persisted on the row AND visible via the API
+# ---------------------------------------------------------------------------
+
+def test_new_job_exposes_jd_skills_fields_with_defaults(client, make_user, auth_headers):
+    recruiter, _ = make_user(role=UserRole.RECRUITER)
+    body = client.post("/api/jobs", json={"title": "Job"}, headers=auth_headers(recruiter)).json()
+    assert body["skills_result"] is None
+    assert body["skills_section_heading"] is None
+    assert body["skills_extraction_status"] == "pending"
+    assert body["skills_extraction_error"] is None
+    assert body["skills_extracted_at"] is None
+    assert body["min_experience_months"] is None
+
+def test_finished_jd_extraction_is_readable_via_get(client, make_user, auth_headers, db):
+    """What the worker writes (see jd_skills_extraction_tasks.py) comes
+    back through GET /jobs/{id}, the same way ResumeRead exposes a resume's."""
+    from datetime import datetime, timezone
+
+    recruiter, _ = make_user(role=UserRole.RECRUITER)
+    headers = auth_headers(recruiter)
+    job_id = client.post("/api/jobs", json={"title": "Job"}, headers=headers).json()["id"]
+
+    job = db.get(Job, uuid.UUID(job_id))
+    job.skills_result = ["python", "fastapi", "aws ecs"]
+    job.skills_section_heading = "Required Skills"
+    job.skills_extraction_status = JobExtractionStatus.DONE
+    job.skills_extracted_at = datetime.now(timezone.utc)
+    job.min_experience_months = 36
+    db.commit()
+
+    body = client.get(f"/api/jobs/{job_id}", headers=headers).json()
+    assert body["skills_result"] == ["python", "fastapi", "aws ecs"]
+    assert body["skills_section_heading"] == "Required Skills"
+    assert body["skills_extraction_status"] == "done"
+    assert body["skills_extracted_at"] is not None
+    assert body["min_experience_months"] == 36
+
+def test_failed_jd_extraction_error_is_readable(client, make_user, auth_headers, db):
+    recruiter, _ = make_user(role=UserRole.RECRUITER)
+    headers = auth_headers(recruiter)
+    job_id = client.post("/api/jobs", json={"title": "Job"}, headers=headers).json()["id"]
+
+    job = db.get(Job, uuid.UUID(job_id))
+    job.skills_extraction_status = JobExtractionStatus.FAILED
+    job.skills_extraction_error = "Could not locate a required-skills section in this JD."
+    db.commit()
+
+    body = client.get(f"/api/jobs/{job_id}", headers=headers).json()
+    assert body["skills_extraction_status"] == "failed"
+    assert "required-skills section" in body["skills_extraction_error"]
+
+
+# ---------------------------------------------------------------------------
+# POST /jobs/{id}/extract-skills -- manual re-run
+# ---------------------------------------------------------------------------
+
+def test_extract_skills_requeues_and_resets_failure_state(client, make_user, auth_headers, pdf_bytes, dispatched, db):
+    recruiter, _ = make_user(role=UserRole.RECRUITER)
+    headers = auth_headers(recruiter)
+    job_id = client.post("/api/jobs", json={"title": "Job"}, headers=headers).json()["id"]
+    files = {"file": ("jd.pdf", pdf_bytes("We need a backend engineer."), "application/pdf")}
+    client.post(f"/api/jobs/{job_id}/jd", files=files, headers=headers)
+    assert dispatched["jd"] == [job_id]
+
+    # Simulate a row the retry sweep has given up on.
+    job = db.get(Job, uuid.UUID(job_id))
+    job.skills_extraction_status = JobExtractionStatus.FAILED
+    job.skills_extraction_error = "boom"
+    job.skills_extraction_retry_count = 3
+    db.commit()
+
+    resp = client.post(f"/api/jobs/{job_id}/extract-skills", headers=headers)
+    assert resp.status_code == 200
+    assert resp.json()["skills_extraction_status"] == "pending"
+    assert resp.json()["skills_extraction_error"] is None
+    assert dispatched["jd"] == [job_id, job_id]
+
+    db.expire_all()
+    assert db.get(Job, uuid.UUID(job_id)).skills_extraction_retry_count == 0
+
+def test_extract_skills_without_a_jd_is_rejected(client, make_user, auth_headers, dispatched):
+    recruiter, _ = make_user(role=UserRole.RECRUITER)
+    headers = auth_headers(recruiter)
+    job_id = client.post("/api/jobs", json={"title": "Job"}, headers=headers).json()["id"]
+    resp = client.post(f"/api/jobs/{job_id}/extract-skills", headers=headers)
+    assert resp.status_code == 400
+    assert dispatched["jd"] == []
+
+def test_extract_skills_on_others_job_is_404(client, make_user, auth_headers, pdf_bytes, dispatched):
+    r1, _ = make_user(role=UserRole.RECRUITER)
+    r2, _ = make_user(role=UserRole.RECRUITER)
+    job_id = client.post("/api/jobs", json={"title": "Job"}, headers=auth_headers(r1)).json()["id"]
+    files = {"file": ("jd.pdf", pdf_bytes("We need a backend engineer."), "application/pdf")}
+    client.post(f"/api/jobs/{job_id}/jd", files=files, headers=auth_headers(r1))
+    resp = client.post(f"/api/jobs/{job_id}/extract-skills", headers=auth_headers(r2))
+    assert resp.status_code == 404
+    assert dispatched["jd"] == [job_id]  # only the original upload
+
+def test_candidate_cannot_trigger_extract_skills(client, make_user, auth_headers):
+    recruiter, _ = make_user(role=UserRole.RECRUITER)
+    candidate, _ = make_user(role=UserRole.USER)
+    job_id = client.post("/api/jobs", json={"title": "Job"}, headers=auth_headers(recruiter)).json()["id"]
+    resp = client.post(f"/api/jobs/{job_id}/extract-skills", headers=auth_headers(candidate))
+    assert resp.status_code == 403
