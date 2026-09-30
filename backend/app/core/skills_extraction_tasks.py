@@ -39,6 +39,7 @@ from app.core.text_extract import (
 from app.db.session import SessionLocal
 from app.models.resume import Resume, ResumeExtractionStatus
 from app.core.llm_provider_registry import LLMConfigError
+from app.core.matching_tasks import safe_dispatch_for_resume
 
 logger = logging.getLogger(__name__)
 
@@ -144,6 +145,7 @@ def run_skills_extraction_task(self, resume_id: str) -> None:
             resume.skills_extraction_status = ResumeExtractionStatus.FAILED
             resume.skills_extraction_error = str(exc)
             db.commit()
+            safe_dispatch_for_resume(db, resume_id)
             return
 
         except Exception as exc:
@@ -173,6 +175,9 @@ def run_skills_extraction_task(self, resume_id: str) -> None:
         resume.skills_extracted_at = datetime.now(timezone.utc)
 
         db.commit()
+
+        # Applications pointing at this resume can now be (re)scored.
+        safe_dispatch_for_resume(db, resume_id)
 
     finally:
         db.close()

@@ -1,3 +1,4 @@
+from typing import Literal
 import uuid
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session, joinedload
@@ -15,6 +16,9 @@ from app.schemas.application import (
     ApplicationWithJob,
     ApplicationWithApplicant,
 )
+
+from app.core.dispatch import dispatch_extraction
+from app.core.matching_tasks import dispatch_score_for_job, score_application_task
 
 router = APIRouter()
 
@@ -83,6 +87,11 @@ def apply_to_job(
     )
     db.commit()
     db.refresh(application)
+
+    # After commit: the worker reads the row in its own session. If the JD's
+    # skills are not extracted yet the task parks the row as 'pending' and
+    # the JD extraction task re-triggers it.
+    dispatch_extraction(score_application_task, application.id)
     return application
 
 @router.get("/me", response_model=list[ApplicationWithJob])
@@ -121,19 +130,28 @@ def list_job_applications(
     job_id: uuid.UUID,
     limit: int = Query(default=50, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
+    sort: Literal["score", "applied_at"] = "score",
     db: Session = Depends(get_db),
     current_user: User = Depends(require_recruiter_or_admin),
 ):
+    """Applicants for a job. Default order is best match score first
+    (unscored applicants last, newest first among ties); sort=applied_at
+    gives the old newest-first order."""
     job = db.get(Job, job_id)
     if job is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Job not found")
     _assert_can_view_job_applications(job, current_user)
 
+    order = (
+        [Application.match_score.desc().nulls_last(), Application.applied_at.desc()]
+        if sort == "score"
+        else [Application.applied_at.desc()]
+    )
     apps = (
         db.query(Application)
         .options(joinedload(Application.user), joinedload(Application.resume))
         .filter(Application.job_id == job_id)
-        .order_by(Application.applied_at.desc())
+        .order_by(*order)
         .offset(offset)
         .limit(limit)
         .all()
@@ -144,9 +162,27 @@ def list_job_applications(
             applied_at=a.applied_at, updated_at=a.updated_at,
             applicant_email=a.user.email, applicant_name=a.user.full_name,
             resume_filename=a.resume.original_filename if a.resume else None,
+            match_score=a.match_score, match_status=a.match_status,
+            match_details=a.match_details, match_error=a.match_error,
         )
         for a in apps
     ]
+
+@router.post("/job/{job_id}/rescore", status_code=status.HTTP_202_ACCEPTED)
+def rescore_job_applications(
+    job_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_recruiter_or_admin),
+):
+    """Re-queue scoring for every applicant to this job (e.g. after changing
+    the embedding model or weights). Scores update as the worker gets to them."""
+    job = db.get(Job, job_id)
+    if job is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Job not found")
+    _assert_can_view_job_applications(job, current_user)
+    queued = dispatch_score_for_job(db, job_id)
+    return {"queued": queued}
+
 
 @router.patch("/{application_id}/status", response_model=ApplicationRead)
 def update_application_status(

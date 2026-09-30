@@ -37,3 +37,7 @@ class ApplicationWithApplicant(ApplicationRead):
     applicant_email: str
     applicant_name: str | None
     resume_filename: str | None = None
+    match_score: float | None = None
+    match_status: str = "pending"
+    match_details: dict | None = None
+    match_error: str | None = None

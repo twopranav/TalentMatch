@@ -203,12 +203,14 @@ def dispatched(monkeypatch):
     Without this, every route test that uploads a resume or JD would call
     .delay() against a real broker (hanging or erroring when Redis isn't
     up), and nothing would assert that the upload actually queued
-    extraction. Returns {"resume": [ids], "jd": [ids]} in dispatch order.
+    extraction. Returns {"resume": [ids], "jd": [ids], "score": [ids]} in dispatch order.
     """
     from app.api.routes import jobs as jobs_routes
     from app.api.routes import resumes as resumes_routes
 
-    calls = {"resume": [], "jd": []}
+    from app.core import matching_tasks
+
+    calls = {"resume": [], "jd": [], "score": []}
     monkeypatch.setattr(
         resumes_routes.run_skills_extraction_task, "delay",
         lambda resume_id: calls["resume"].append(resume_id),
@@ -216,5 +218,9 @@ def dispatched(monkeypatch):
     monkeypatch.setattr(
         jobs_routes.run_jd_skills_extraction_task, "delay",
         lambda job_id: calls["jd"].append(job_id),
+    )
+    monkeypatch.setattr(
+        matching_tasks.score_application_task, "delay",
+        lambda application_id: calls["score"].append(application_id),
     )
     return calls

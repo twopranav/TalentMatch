@@ -211,6 +211,49 @@ def update_user_active(
     db.refresh(target)
     return target
 
+@router.post("/{user_id}/approve-recruiter-request", response_model=UserRead)
+def approve_recruiter_request(
+    user_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_admin_or_superuser),
+):
+    """
+    Grant a pending recruiter signup request. Counterpart to
+    reject_recruiter_request below. Needed because new accounts are active
+    by default, so the "activate" path in update_user_active (which also
+    grants a pending request) is never reachable for them.
+
+    Sets role to RECRUITER, clears requested_role, and makes sure the
+    account is active. Only applies to accounts that are still plain USERs
+    with a pending RECRUITER request, so it can never demote an admin or
+    touch the superuser.
+    """
+    target = db.get(User, user_id)
+    if target is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+    if target.requested_role != UserRole.RECRUITER:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="This user has no pending recruiter request.",
+        )
+    if target.role != UserRole.USER:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Only regular user accounts can be approved as recruiters.",
+        )
+    before = snapshot(target, "user")
+    target.role = UserRole.RECRUITER
+    target.requested_role = None
+    target.recruiter_rejected_at = None
+    target.is_active = True
+    record_audit(
+        db, actor=current_user, action="update", resource_type="user",
+        resource_id=target.id, before=before, after=snapshot(target, "user"),
+    )
+    db.commit()
+    db.refresh(target)
+    return target
+
 @router.post("/{user_id}/reject-recruiter-request", response_model=UserRead)
 def reject_recruiter_request(
     user_id: uuid.UUID,

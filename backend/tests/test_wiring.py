@@ -41,6 +41,8 @@ def test_extraction_tasks_are_registered_under_their_names():
     assert "jd_skills_extraction.run" in celery_app.tasks
     assert "extraction_retry_sweep.sweep_resumes" in celery_app.tasks
     assert "extraction_retry_sweep.sweep_jobs" in celery_app.tasks
+    assert "match.score_application" in celery_app.tasks
+    assert "match.sweep" in celery_app.tasks
 
 
 def test_beat_schedule_points_at_registered_tasks():

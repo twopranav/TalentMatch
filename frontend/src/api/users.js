@@ -23,6 +23,10 @@ export function setUserActive(userId, isActive) {
   return apiClient.patch(`/users/${userId}/active`, { is_active: isActive }).then((res) => res.data)
 }
 
+export function approveRecruiterRequest(userId) {
+  return apiClient.post(`/users/${userId}/approve-recruiter-request`).then((res) => res.data)
+}
+
 export function rejectRecruiterRequest(userId) {
   return apiClient.post(`/users/${userId}/reject-recruiter-request`).then((res) => res.data)
 }

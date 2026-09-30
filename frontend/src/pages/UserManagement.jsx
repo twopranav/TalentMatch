@@ -4,7 +4,7 @@ import { useUsers } from '../hooks/useUsers'
 import { useToast } from '../components/ui/Toast'
 import Spinner from '../components/ui/Spinner'
 import ConfirmDialog from '../components/ui/ConfirmDialog'
-import { setUserActive, setUserRole, transferSuperuser, deleteUser, rejectRecruiterRequest } from '../api/users'
+import { setUserActive, setUserRole, transferSuperuser, deleteUser, approveRecruiterRequest, rejectRecruiterRequest } from '../api/users'
 import { getErrorMessage } from '../utils/format'
 
 const ROLE_STYLES = {
@@ -17,6 +17,7 @@ const ROLE_STYLES = {
 const DIALOG_COPY = {
   deactivate: { title: 'Deactivate this user?', message: (u) => `${u.email} will lose access until reactivated.`, confirmLabel: 'Deactivate', destructive: true },
   activate: { title: 'Approve this user?', message: (u) => `${u.email} will be granted access immediately.`, confirmLabel: 'Approve' },
+  approveRecruiter: { title: 'Approve as recruiter?', message: (u) => `${u.email} will become a recruiter and can create and manage job postings.`, confirmLabel: 'Approve' },
   reject: { title: 'Reject recruiter request?', message: (u) => `${u.email}'s request to become a recruiter will be declined. Their account is not otherwise affected.`, confirmLabel: 'Reject', destructive: true },
   promote: { title: 'Promote to admin?', message: (u) => `${u.email} will gain full admin permissions.`, confirmLabel: 'Promote' },
   demote: { title: 'Demote to user?', message: (u) => `${u.email} will lose admin permissions.`, confirmLabel: 'Demote', destructive: true },
@@ -82,6 +83,7 @@ function UserActionsMenu({ user: u, currentUser, isSuperuser, isAdminOrSuperuser
     items.push({ key: 'activate', label: 'Approve', style: 'accent' })
   }
   if (hasPendingRequest) {
+    items.push({ key: 'approveRecruiter', label: 'Approve as recruiter', style: 'accent' })
     items.push({ key: 'reject', label: 'Reject request', style: 'destructive' })
   }
   if (isSuperuser) {
@@ -238,6 +240,7 @@ export default function UserManagement() {
     const { type, target } = pendingAction
     if (type === 'deactivate') runAction(target.id, () => setUserActive(target.id, false), 'User deactivated.', 'Could not deactivate user.')
     else if (type === 'activate') runAction(target.id, () => setUserActive(target.id, true), 'User approved.', 'Could not approve user.')
+    else if (type === 'approveRecruiter') runAction(target.id, () => approveRecruiterRequest(target.id), 'User approved as recruiter.', 'Could not approve recruiter request.')
     else if (type === 'reject') runAction(target.id, () => rejectRecruiterRequest(target.id), 'Recruiter request rejected.', 'Could not reject request.')
     else if (type === 'promote') runAction(target.id, () => setUserRole(target.id, 'admin'), 'User promoted to admin.', 'Could not promote user.')
     else if (type === 'demote') runAction(target.id, () => setUserRole(target.id, 'user'), 'Admin demoted to user.', 'Could not demote user.')

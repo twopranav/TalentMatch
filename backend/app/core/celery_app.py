@@ -34,6 +34,7 @@ celery_app = Celery(
         "app.core.skills_extraction_tasks",
         "app.core.jd_skills_extraction_tasks",
         "app.core.extraction_retry_sweep",
+        "app.core.matching_tasks",
     ],
 )
 
@@ -48,6 +49,9 @@ celery_app.conf.update(
     task_routes={
         "skills_extraction.run": {"queue": settings.LLM_QUEUE_NAME},
         "jd_skills_extraction.run": {"queue": settings.LLM_QUEUE_NAME},
+        # Same queue as the extraction tasks so an existing `-Q llm` worker
+        # picks scoring up too, and embedding calls share its rate limit.
+        "match.score_application": {"queue": settings.LLM_QUEUE_NAME},
     },
     task_annotations=(
         {
@@ -67,6 +71,10 @@ celery_app.conf.update(
         },
         "sweep-stale-job-skills-extractions": {
             "task": "extraction_retry_sweep.sweep_jobs",
+            "schedule": 600.0,
+        },
+        "sweep-unscored-applications": {
+            "task": "match.sweep",
             "schedule": 600.0,
         },
     },

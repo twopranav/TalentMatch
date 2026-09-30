@@ -42,6 +42,23 @@ class Settings(BaseSettings):
     CELERY_BROKER_URL: str | None = None
     CELERY_RESULT_BACKEND: str | None = None
 
+    # --- Applicant matching score (app/core/semantic_match.py) ---
+    # "hf" = Hugging Face Inference API (needs HF_TOKEN); "local" =
+    # sentence-transformers in-process (pip install sentence-transformers).
+    EMBEDDING_PROVIDER: str = "hf"
+    EMBEDDING_MODEL: str = "sentence-transformers/all-MiniLM-L6-v2"
+
+    # Relative weights; a component the JD sets no requirement for (e.g. no
+    # minimum experience) is dropped and the rest renormalised.
+    MATCH_WEIGHT_SKILLS: float = 0.8
+    MATCH_WEIGHT_EXPERIENCE: float = 0.2
+
+    # Cosine similarity mapped to per-skill credit: <= LOW earns 0,
+    # >= HIGH earns 1, linear in between. An exact match after alias
+    # normalisation always earns 1 without calling the embedder.
+    MATCH_SIM_LOW: float = 0.40
+    MATCH_SIM_HIGH: float = 0.85
+
     CORS_ORIGINS: list[str] = ["http://localhost:5173"]
 
     model_config = SettingsConfigDict(

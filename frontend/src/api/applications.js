@@ -19,3 +19,7 @@ export function updateApplicationStatus(applicationId, statusValue) {
 export function withdrawApplication(applicationId) {
   return apiClient.delete(`/applications/${applicationId}`)
 }
+
+export function rescoreJobApplications(jobId) {
+  return apiClient.post(`/applications/job/${jobId}/rescore`).then((res) => res.data)
+}

@@ -36,6 +36,7 @@ from app.core.text_extract import EmptyExtractionError, UnsupportedFileTypeError
 from app.db.session import SessionLocal
 from app.models.job import Job, JobExtractionStatus
 from app.core.llm_provider_registry import LLMConfigError
+from app.core.matching_tasks import safe_dispatch_for_job
 
 logger = logging.getLogger(__name__)
 
@@ -135,6 +136,7 @@ def run_jd_skills_extraction_task(self, job_id: str) -> None:
             job.skills_extraction_status = JobExtractionStatus.FAILED
             job.skills_extraction_error = str(exc)
             db.commit()
+            safe_dispatch_for_job(db, job_id)
             return
 
         except Exception as exc:
@@ -164,6 +166,9 @@ def run_jd_skills_extraction_task(self, job_id: str) -> None:
         job.skills_extracted_at = datetime.now(timezone.utc)
 
         db.commit()
+
+        # Every applicant to this job can now be (re)scored against it.
+        safe_dispatch_for_job(db, job_id)
 
     finally:
         db.close()
