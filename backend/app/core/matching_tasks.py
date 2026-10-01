@@ -2,7 +2,7 @@
 Celery tasks that compute Application.match_score.
 
     score_application_task(application_id)
-        resume (skills + experience_months) vs job (skills + min months)
+        resume (skills + experience_months) vs job (skills)
         -> semantic_match.compute_match -> written onto the Application row.
 
 Triggers (all best-effort; the sweep below is the safety net):
@@ -47,6 +47,7 @@ def _weights() -> MatchWeights:
         experience=settings.MATCH_WEIGHT_EXPERIENCE,
         sim_low=settings.MATCH_SIM_LOW,
         sim_high=settings.MATCH_SIM_HIGH,
+        experience_scale_months=settings.MATCH_EXPERIENCE_SCALE_MONTHS,
     )
 
 

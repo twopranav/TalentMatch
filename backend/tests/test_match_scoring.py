@@ -83,9 +83,14 @@ def test_task_scores_and_stores_breakdown(_task_env, db, make_user):
 
     a = _reload(db, a)
     assert a.match_status == "done"
-    # skills 2/3, experience 24/48 -> 0.8*0.667 + 0.2*0.5 = 0.633
-    assert a.match_score == pytest.approx(63.3, abs=0.1)
+    # skills 2/3 = 0.667; 24 months -> experience 1-exp(-0.5) = 0.393
+    # -> 100 * (0.55 * 0.667 + 0.45 * 0.393) = 54.4
+    assert a.match_score == pytest.approx(54.4, abs=0.1)
     assert a.match_details["missing"] == ["docker"]
+    assert a.match_details["skills_score"] == pytest.approx(0.667, abs=0.001)
+    assert a.match_details["experience_score"] == pytest.approx(0.393, abs=0.001)
+    assert a.match_details["weights_used"] == {"skills": 0.55, "experience": 0.45}
+    assert a.match_details["meets_min_experience"] is False
     assert a.matched_at is not None and a.match_error is None
 
 

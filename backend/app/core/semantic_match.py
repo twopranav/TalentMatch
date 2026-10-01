@@ -2,26 +2,37 @@
 Applicant score: resume (a) vs job description (b).
 
     a = resume skills + months of experience
-    b = JD required skills + minimum months of experience
-    score = weighted blend of
-              skills      semantic match of every JD skill against the resume's skills
-              experience  resume_months / jd_min_months, capped at 1
+    b = JD required skills (+ optional minimum months of experience)
+
+    skills_score      how close the resume's skills are to the JD's skills (0-1)
+    experience_score  how much experience the resume shows (0-1, more is better)
+    score = 100 x (0.55 x skills_score + 0.45 x experience_score)
+
+The two weights are configurable and are normalised, so they only need to be
+in the right ratio.
 
 Nobody is filtered out here (same policy as core/matching.py): every
 applicant gets a score and the recruiter sorts by it.
 
 Skills are matched one JD skill at a time rather than by embedding the two
-whole documents, because (1) the recruiter can then see exactly which JD
-skills were covered and by what ("kubernetes" <- "k8s", 0.91), and (2) a
-single blended vector is poor at "did they cover ALL of these" and blind to
-numbers such as years of experience, which is why experience is scored
-numerically instead of semantically.
+whole documents, so the recruiter can see exactly which JD skills were
+covered and by what ("kubernetes" <- "k8s", 0.91).
 
 Per JD skill:
   * exact match after alias normalisation (matching.normalize_skill) -> 1.0,
     no embedding call
   * otherwise the best cosine similarity against the resume's skills,
     mapped through [sim_low, sim_high] -> [0, 1]
+
+Experience score (absolute, so more years always means a higher score,
+whether or not the JD states a minimum):
+
+    experience_score = 1 - exp(-months / experience_scale_months)
+
+    with the default 48-month scale:
+        1 yr 0.22 | 2 yr 0.39 | 3 yr 0.53 | 5 yr 0.71 | 8 yr 0.86 | 12 yr 0.95
+
+Unknown resume experience scores 0 for that component.
 
 This module has no I/O: the embedder is passed in, so it is unit-testable
 with a fake and swappable without touching the scoring rules.
@@ -40,22 +51,26 @@ _MATCHED_CREDIT = 0.5  # a JD skill counts as "matched" for display at >= this c
 
 @dataclass
 class MatchWeights:
-    skills: float = 0.8
-    experience: float = 0.2
+    skills: float = 0.55
+    experience: float = 0.45
     sim_low: float = 0.40
     sim_high: float = 0.85
+    # Speed of the experience curve; larger = more years needed to saturate.
+    experience_scale_months: int = 48
 
 
 @dataclass
 class MatchResult:
     score: float  # 0-100, one decimal
     skills_score: float | None  # 0-1, None if the JD lists no skills
-    experience_score: float | None  # 0-1, None if the JD sets no minimum
+    experience_score: float  # 0-1, from the resume's total months
     matched: list[dict] = field(default_factory=list)
     missing: list[str] = field(default_factory=list)
     resume_months: int | None = None
     jd_min_months: int | None = None
+    meets_min_experience: bool | None = None  # None = can't tell / no minimum
     weights_used: dict = field(default_factory=dict)
+    experience_scale_months: int = 48
 
     def to_dict(self) -> dict:
         return {
@@ -66,7 +81,9 @@ class MatchResult:
             "missing": self.missing,
             "resume_months": self.resume_months,
             "jd_min_months": self.jd_min_months,
+            "meets_min_experience": self.meets_min_experience,
             "weights_used": self.weights_used,
+            "experience_scale_months": self.experience_scale_months,
         }
 
 
@@ -152,18 +169,12 @@ def score_skills(
     return sum(credits.values()) / len(jd), matched, missing
 
 
-def score_experience(
-    resume_months: int | None,
-    jd_min_months: int | None,
-) -> float | None:
-    """None = the JD sets no minimum, so experience is not part of the score.
-    0 months required (fresher marker) is treated the same way.
-    Unknown resume experience against a real requirement scores 0."""
-    if not jd_min_months or jd_min_months <= 0:
-        return None
-    if resume_months is None or resume_months <= 0:
+def experience_score(months: int | None, scale_months: int = 48) -> float:
+    """0..1, strictly increasing in months and saturating toward 1.
+    Unknown or non-positive experience is 0 (no credit, not a crash)."""
+    if months is None or months <= 0 or scale_months <= 0:
         return 0.0
-    return min(1.0, resume_months / jd_min_months)
+    return 1.0 - math.exp(-months / scale_months)
 
 
 def compute_match(
@@ -178,28 +189,35 @@ def compute_match(
     w = weights or MatchWeights()
 
     skills_score, matched, missing = score_skills(resume_skills, jd_skills, embed, w)
-    exp_score = score_experience(resume_months, jd_min_months)
+    exp_score = experience_score(resume_months, w.experience_scale_months)
 
-    parts: list[tuple[str, float, float]] = []
-    if skills_score is not None:
-        parts.append(("skills", w.skills, skills_score))
-    if exp_score is not None:
-        parts.append(("experience", w.experience, exp_score))
+    w_skills = max(0.0, w.skills)
+    w_exp = max(0.0, w.experience)
+    total_w = w_skills + w_exp
 
-    total_w = sum(p[1] for p in parts)
-    if not parts or total_w <= 0:
+    if skills_score is None or total_w <= 0:
+        # Nothing to match the resume against (JD lists no skills).
         final, used = 0.0, {}
     else:
-        final = sum(weight * value for _, weight, value in parts) / total_w
-        used = {name: round(weight / total_w, 3) for name, weight, _ in parts}
+        final = (w_skills * skills_score + w_exp * exp_score) / total_w
+        used = {
+            "skills": round(w_skills / total_w, 3),
+            "experience": round(w_exp / total_w, 3),
+        }
+
+    meets_min: bool | None = None
+    if jd_min_months and jd_min_months > 0 and resume_months is not None:
+        meets_min = resume_months >= jd_min_months
 
     return MatchResult(
         score=round(final * 100, 1),
         skills_score=None if skills_score is None else round(skills_score, 3),
-        experience_score=None if exp_score is None else round(exp_score, 3),
+        experience_score=round(exp_score, 3),
         matched=matched,
         missing=missing,
         resume_months=resume_months,
         jd_min_months=jd_min_months,
+        meets_min_experience=meets_min,
         weights_used=used,
+        experience_scale_months=w.experience_scale_months,
     )

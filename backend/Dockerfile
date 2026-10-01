@@ -9,7 +9,17 @@ FROM python:3.12-slim
 WORKDIR /app
 
 COPY requirements.txt .
+
+# Install CPU-only torch first so sentence-transformers doesn't pull the
+# multi-GB GPU build from PyPI. The next step sees torch is already there.
+RUN pip install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cpu
 RUN pip install --no-cache-dir -r requirements.txt
+
+# Bake the local embedding model into the image so the worker doesn't
+# download it on first use. Must match EMBEDDING_MODEL in .env.
+ENV HF_HOME=/opt/hf-cache
+RUN python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('sentence-transformers/all-MiniLM-L6-v2')"
+ENV HF_HUB_OFFLINE=1
 
 # Only the backend/ subtree -- .dockerignore at the repo root keeps
 # frontend/, scripts/, testing files/, backend/storage/ (local resume

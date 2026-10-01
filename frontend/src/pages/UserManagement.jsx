@@ -1,4 +1,5 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import { useAuth } from '../context/AuthContext'
 import { useUsers } from '../hooks/useUsers'
 import { useToast } from '../components/ui/Toast'
@@ -50,22 +51,49 @@ function ChevronIcon({ open }) {
 
 function UserActionsMenu({ user: u, currentUser, isSuperuser, isAdminOrSuperuser, busy, onSelect }) {
   const [open, setOpen] = useState(false)
+  const [pos, setPos] = useState(null)
   const ref = useRef(null)
+  const menuRef = useRef(null)
 
   useEffect(() => {
     if (!open) return
+    const close = () => setOpen(false)
     const handleClick = (e) => {
-      if (ref.current && !ref.current.contains(e.target)) setOpen(false)
+      if (ref.current?.contains(e.target) || menuRef.current?.contains(e.target)) return
+      setOpen(false)
     }
     const handleKey = (e) => {
       if (e.key === 'Escape') setOpen(false)
     }
     document.addEventListener('mousedown', handleClick)
     document.addEventListener('keydown', handleKey)
+    window.addEventListener('scroll', close, true)
+    window.addEventListener('resize', close)
     return () => {
       document.removeEventListener('mousedown', handleClick)
       document.removeEventListener('keydown', handleKey)
+      window.removeEventListener('scroll', close, true)
+      window.removeEventListener('resize', close)
     }
+  }, [open])
+
+  // The menu is rendered in a portal with fixed positioning so a parent's
+  // overflow (table card, page container) can never clip it. It flips above
+  // the button when there isn't enough room below.
+  useLayoutEffect(() => {
+    if (!open) {
+      setPos(null)
+      return
+    }
+    const btn = ref.current?.getBoundingClientRect()
+    const menu = menuRef.current?.getBoundingClientRect()
+    if (!btn || !menu) return
+    const gap = 4
+    const openUp = btn.bottom + gap + menu.height > window.innerHeight && btn.top - gap - menu.height > 0
+    setPos({
+      top: openUp ? btn.top - gap - menu.height : btn.bottom + gap,
+      left: Math.max(8, btn.right - menu.width),
+    })
   }, [open])
 
   const isSelf = u.id === currentUser?.id
@@ -121,23 +149,32 @@ function UserActionsMenu({ user: u, currentUser, isSuperuser, isAdminOrSuperuser
         )}
       </button>
 
-      {open && (
-        <div
-          role="menu"
-          className="absolute right-0 z-20 mt-1 w-44 overflow-hidden rounded-md border border-slate-200 bg-white py-1 shadow-lg dark:border-slate-700 dark:bg-slate-900"
-        >
-          {items.map((item) => (
-            <button
-              key={item.key}
-              role="menuitem"
-              onClick={() => select(item.key)}
-              className={`block w-full px-3 py-2 text-left text-xs font-medium ${MENU_ITEM_STYLES[item.style]}`}
-            >
-              {item.label}
-            </button>
-          ))}
-        </div>
-      )}
+      {open &&
+        createPortal(
+          <div
+            ref={menuRef}
+            role="menu"
+            style={{
+              position: 'fixed',
+              top: pos?.top ?? 0,
+              left: pos?.left ?? 0,
+              visibility: pos ? 'visible' : 'hidden',
+            }}
+            className="z-50 w-44 overflow-hidden rounded-md border border-slate-200 bg-white py-1 shadow-lg dark:border-slate-700 dark:bg-slate-900"
+          >
+            {items.map((item) => (
+              <button
+                key={item.key}
+                role="menuitem"
+                onClick={() => select(item.key)}
+                className={`block w-full px-3 py-2 text-left text-xs font-medium ${MENU_ITEM_STYLES[item.style]}`}
+              >
+                {item.label}
+              </button>
+            ))}
+          </div>,
+          document.body
+        )}
     </div>
   )
 }

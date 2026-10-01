@@ -36,6 +36,12 @@ services:
     environment:
       DATABASE_URL: postgresql+psycopg://postgres:postgres@postgres:5432/talentdb
       REDIS_URL: redis://redis:6379/0
+      # Only used when STORAGE_BACKEND=local. Absolute path into the shared
+      # volume below, so backend and worker read/write the same files.
+      # Overrides LOCAL_STORAGE_ROOT from .env.
+      LOCAL_STORAGE_ROOT: /data/resumes
+    volumes:
+      - resume_storage:/data/resumes
     ports:
       - "8000:8000"
     depends_on:
@@ -58,6 +64,11 @@ services:
     environment:
       DATABASE_URL: postgresql+psycopg://postgres:postgres@postgres:5432/talentdb
       REDIS_URL: redis://redis:6379/0
+      # Must match the backend service: the worker reads uploaded JDs and
+      # resumes from this shared volume when STORAGE_BACKEND=local.
+      LOCAL_STORAGE_ROOT: /data/resumes
+    volumes:
+      - resume_storage:/data/resumes
     depends_on:
       postgres:
         condition: service_healthy
@@ -81,9 +92,10 @@ services:
 
 volumes:
   postgres_data:
+  resume_storage:
 
 # Migrations are deliberately NOT run automatically on backend
 # startup -- with restart: unless-stopped and multiple containers
 # potentially starting together, that's a race condition waiting to
 # happen. Run them as a one-off, once, per deploy:
-#   docker compose run --rm backend alembic upgrade head  
+#   docker compose run --rm backend alembic upgrade head

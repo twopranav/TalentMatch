@@ -1,0 +1,3453 @@
+﻿
+===== backend\app\core\semantic_match.py =====
+
+"""
+Applicant score: resume (a) vs job description (b).
+
+    a = resume skills + months of experience
+    b = JD required skills + minimum months of experience
+    score = weighted blend of
+              skills      semantic match of every JD skill against the resume's skills
+              experience  resume_months / jd_min_months, capped at 1
+
+Nobody is filtered out here (same policy as core/matching.py): every
+applicant gets a score and the recruiter sorts by it.
+
+Skills are matched one JD skill at a time rather than by embedding the two
+whole documents, because (1) the recruiter can then see exactly which JD
+skills were covered and by what ("kubernetes" <- "k8s", 0.91), and (2) a
+single blended vector is poor at "did they cover ALL of these" and blind to
+numbers such as years of experience, which is why experience is scored
+numerically instead of semantically.
+
+Per JD skill:
+  * exact match after alias normalisation (matching.normalize_skill) -> 1.0,
+    no embedding call
+  * otherwise the best cosine similarity against the resume's skills,
+    mapped through [sim_low, sim_high] -> [0, 1]
+
+This module has no I/O: the embedder is passed in, so it is unit-testable
+with a fake and swappable without touching the scoring rules.
+"""
+
+import math
+from dataclasses import dataclass, field
+from typing import Callable
+
+from app.core.matching import normalize_skill
+
+Embedder = Callable[[list[str]], list[list[float]]]
+
+_MATCHED_CREDIT = 0.5  # a JD skill counts as "matched" for display at >= this credit
+
+
+@dataclass
+class MatchWeights:
+    skills: float = 0.8
+    experience: float = 0.2
+    sim_low: float = 0.40
+    sim_high: float = 0.85
+
+
+@dataclass
+class MatchResult:
+    score: float  # 0-100, one decimal
+    skills_score: float | None  # 0-1, None if the JD lists no skills
+    experience_score: float | None  # 0-1, None if the JD sets no minimum
+    matched: list[dict] = field(default_factory=list)
+    missing: list[str] = field(default_factory=list)
+    resume_months: int | None = None
+    jd_min_months: int | None = None
+    weights_used: dict = field(default_factory=dict)
+
+    def to_dict(self) -> dict:
+        return {
+            "score": self.score,
+            "skills_score": self.skills_score,
+            "experience_score": self.experience_score,
+            "matched": self.matched,
+            "missing": self.missing,
+            "resume_months": self.resume_months,
+            "jd_min_months": self.jd_min_months,
+            "weights_used": self.weights_used,
+        }
+
+
+def cosine(a: list[float], b: list[float]) -> float:
+    dot = sum(x * y for x, y in zip(a, b))
+    na = math.sqrt(sum(x * x for x in a))
+    nb = math.sqrt(sum(y * y for y in b))
+    if na == 0 or nb == 0:
+        return 0.0
+    return dot / (na * nb)
+
+
+def _credit(sim: float, low: float, high: float) -> float:
+    if high <= low:
+        return 1.0 if sim >= high else 0.0
+    return min(1.0, max(0.0, (sim - low) / (high - low)))
+
+
+def _clean(skills: list[str] | None) -> list[str]:
+    """Trim, lowercase, alias-normalise, dedupe (order preserved)."""
+    out: dict[str, None] = {}
+    for s in skills or []:
+        if isinstance(s, str) and s.strip():
+            out[normalize_skill(s)] = None
+    return list(out)
+
+
+def score_skills(
+    resume_skills: list[str] | None,
+    jd_skills: list[str] | None,
+    embed: Embedder,
+    weights: MatchWeights,
+) -> tuple[float | None, list[dict], list[str]]:
+    jd = _clean(jd_skills)
+    if not jd:
+        return None, [], []
+
+    resume = _clean(resume_skills)
+    resume_set = set(resume)
+
+    credits: dict[str, float] = {}
+    best: dict[str, tuple[str | None, float]] = {}
+
+    to_embed_jd: list[str] = []
+    for j in jd:
+        if j in resume_set:
+            credits[j] = 1.0
+            best[j] = (j, 1.0)
+        else:
+            to_embed_jd.append(j)
+
+    if to_embed_jd and resume:
+        # One batched call for everything not settled by exact match.
+        texts = list(dict.fromkeys(to_embed_jd + resume))
+        vectors = dict(zip(texts, embed(texts)))
+        for j in to_embed_jd:
+            sim, who = max(
+                ((cosine(vectors[j], vectors[r]), r) for r in resume),
+                key=lambda t: t[0],
+            )
+            credits[j] = _credit(sim, weights.sim_low, weights.sim_high)
+            best[j] = (who, sim)
+    else:
+        for j in to_embed_jd:
+            credits[j] = 0.0
+            best[j] = (None, 0.0)
+
+    matched, missing = [], []
+    for j in jd:
+        who, sim = best[j]
+        if credits[j] >= _MATCHED_CREDIT:
+            matched.append(
+                {
+                    "jd_skill": j,
+                    "resume_skill": who,
+                    "similarity": round(sim, 3),
+                    "credit": round(credits[j], 3),
+                }
+            )
+        else:
+            missing.append(j)
+
+    return sum(credits.values()) / len(jd), matched, missing
+
+
+def score_experience(
+    resume_months: int | None,
+    jd_min_months: int | None,
+) -> float | None:
+    """None = the JD sets no minimum, so experience is not part of the score.
+    0 months required (fresher marker) is treated the same way.
+    Unknown resume experience against a real requirement scores 0."""
+    if not jd_min_months or jd_min_months <= 0:
+        return None
+    if resume_months is None or resume_months <= 0:
+        return 0.0
+    return min(1.0, resume_months / jd_min_months)
+
+
+def compute_match(
+    *,
+    resume_skills: list[str] | None,
+    resume_months: int | None,
+    jd_skills: list[str] | None,
+    jd_min_months: int | None,
+    embed: Embedder,
+    weights: MatchWeights | None = None,
+) -> MatchResult:
+    w = weights or MatchWeights()
+
+    skills_score, matched, missing = score_skills(resume_skills, jd_skills, embed, w)
+    exp_score = score_experience(resume_months, jd_min_months)
+
+    parts: list[tuple[str, float, float]] = []
+    if skills_score is not None:
+        parts.append(("skills", w.skills, skills_score))
+    if exp_score is not None:
+        parts.append(("experience", w.experience, exp_score))
+
+    total_w = sum(p[1] for p in parts)
+    if not parts or total_w <= 0:
+        final, used = 0.0, {}
+    else:
+        final = sum(weight * value for _, weight, value in parts) / total_w
+        used = {name: round(weight / total_w, 3) for name, weight, _ in parts}
+
+    return MatchResult(
+        score=round(final * 100, 1),
+        skills_score=None if skills_score is None else round(skills_score, 3),
+        experience_score=None if exp_score is None else round(exp_score, 3),
+        matched=matched,
+        missing=missing,
+        resume_months=resume_months,
+        jd_min_months=jd_min_months,
+        weights_used=used,
+    )
+
+
+===== backend\app\core\embeddings.py =====
+
+"""
+Text -> vector, behind one function: embed(texts).
+
+Provider is chosen by settings.EMBEDDING_PROVIDER:
+  "hf"    Hugging Face Inference API (feature-extraction pipeline). Needs
+          HF_TOKEN. Sends the whole batch in one request.
+  "local" sentence-transformers in-process. Needs the package installed;
+          the model is loaded once per process.
+
+Vectors are cached per process by (model, text). Skill strings repeat
+heavily across resumes and JDs ("python", "docker"), so after warm-up most
+scoring runs need few or no network calls.
+"""
+
+import logging
+from functools import lru_cache
+
+from app.core.config import settings
+from app.core.llm_provider_registry import LLMConfigError
+
+logger = logging.getLogger(__name__)
+
+_HF_TIMEOUT_SECONDS = 30
+_CACHE_MAX = 20_000
+_cache: dict[tuple[str, str], list[float]] = {}
+
+
+class EmbeddingError(Exception):
+    """The embedding call failed (network, quota, bad response). Transient
+    as far as the caller is concerned: the matching task retries it."""
+
+
+def _embed_hf(texts: list[str]) -> list[list[float]]:
+    import httpx
+
+    if not settings.HF_TOKEN:
+        raise LLMConfigError(
+            "EMBEDDING_PROVIDER='hf' but HF_TOKEN is not set in the environment."
+        )
+    url = (
+        "https://router.huggingface.co/hf-inference/models/"
+        f"{settings.EMBEDDING_MODEL}/pipeline/feature-extraction"
+    )
+    try:
+        resp = httpx.post(
+            url,
+            headers={"Authorization": f"Bearer {settings.HF_TOKEN}"},
+            json={"inputs": texts, "options": {"wait_for_model": True}},
+            timeout=_HF_TIMEOUT_SECONDS,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+    except Exception as exc:
+        raise EmbeddingError(f"HF embedding request failed: {exc}") from exc
+
+    if (
+        not isinstance(data, list)
+        or len(data) != len(texts)
+        or not all(isinstance(v, list) and v and isinstance(v[0], (int, float)) for v in data)
+    ):
+        raise EmbeddingError(
+            "Unexpected embedding response shape (expected one flat vector "
+            "per input; is EMBEDDING_MODEL a sentence-embedding model?)."
+        )
+    return data
+
+
+@lru_cache(maxsize=1)
+def _local_model():
+    try:
+        from sentence_transformers import SentenceTransformer
+    except ImportError as exc:
+        raise LLMConfigError(
+            "EMBEDDING_PROVIDER='local' but sentence-transformers is not installed."
+        ) from exc
+    return SentenceTransformer(settings.EMBEDDING_MODEL)
+
+
+def _embed_local(texts: list[str]) -> list[list[float]]:
+    try:
+        return [list(map(float, v)) for v in _local_model().encode(texts)]
+    except LLMConfigError:
+        raise
+    except Exception as exc:
+        raise EmbeddingError(f"Local embedding failed: {exc}") from exc
+
+
+def embed(texts: list[str]) -> list[list[float]]:
+    """One vector per input text, in order. Duplicate inputs are embedded once."""
+    model = settings.EMBEDDING_MODEL
+    missing = list(dict.fromkeys(t for t in texts if (model, t) not in _cache))
+
+    if missing:
+        provider = settings.EMBEDDING_PROVIDER
+        if provider == "hf":
+            vectors = _embed_hf(missing)
+        elif provider == "local":
+            vectors = _embed_local(missing)
+        else:
+            raise LLMConfigError(f"Unknown EMBEDDING_PROVIDER {provider!r} (use 'hf' or 'local').")
+
+        if len(_cache) + len(missing) > _CACHE_MAX:
+            _cache.clear()
+        for text, vec in zip(missing, vectors):
+            _cache[(model, text)] = vec
+
+    return [_cache[(model, t)] for t in texts]
+
+
+===== backend\app\core\matching_tasks.py =====
+
+"""
+Celery tasks that compute Application.match_score.
+
+    score_application_task(application_id)
+        resume (skills + experience_months) vs job (skills + min months)
+        -> semantic_match.compute_match -> written onto the Application row.
+
+Triggers (all best-effort; the sweep below is the safety net):
+    * candidate applies                      -> routes/applications.apply_to_job
+    * a JD's skills extraction finishes      -> dispatch_score_for_job()
+    * a resume's skills extraction finishes  -> dispatch_score_for_resume()
+    * recruiter hits POST /applications/job/{id}/rescore
+
+Readiness: an application can only be scored once BOTH sides are DONE. If
+one side is still extracting, the row stays 'pending' and returns; the
+extraction task that finishes later re-triggers scoring. If a side FAILED,
+the row is marked 'failed' with a readable reason, and is rescored
+automatically if that side is later re-extracted successfully.
+
+Nothing is filtered out: a score of 0 is still a score.
+"""
+
+import logging
+from datetime import datetime, timedelta, timezone
+
+from sqlalchemy import select
+
+from app.core.celery_app import celery_app
+from app.core.config import settings
+from app.core.dispatch import dispatch_extraction
+from app.core.embeddings import EmbeddingError, embed
+from app.core.llm_provider_registry import LLMConfigError
+from app.core.semantic_match import MatchWeights, compute_match
+from app.db.session import SessionLocal
+from app.models.application import Application
+from app.models.job import Job, JobExtractionStatus
+from app.models.resume import Resume, ResumeExtractionStatus
+
+logger = logging.getLogger(__name__)
+
+STALE_PENDING_AFTER = timedelta(minutes=10)
+
+
+def _weights() -> MatchWeights:
+    return MatchWeights(
+        skills=settings.MATCH_WEIGHT_SKILLS,
+        experience=settings.MATCH_WEIGHT_EXPERIENCE,
+        sim_low=settings.MATCH_SIM_LOW,
+        sim_high=settings.MATCH_SIM_HIGH,
+    )
+
+
+def _fail(db, application, reason: str) -> None:
+    application.match_status = "failed"
+    application.match_error = reason
+    db.commit()
+
+
+@celery_app.task(
+    name="match.score_application",
+    bind=True,
+    max_retries=2,
+    default_retry_delay=30,
+)
+def score_application_task(self, application_id: str) -> None:
+    db = SessionLocal()
+    try:
+        application = db.get(Application, application_id)
+        if application is None:
+            logger.warning("score_application_task: application %s is gone", application_id)
+            return
+
+        resume = db.get(Resume, application.resume_id) if application.resume_id else None
+        job = db.get(Job, application.job_id)
+
+        if resume is None:
+            return _fail(db, application, "Application has no resume to score.")
+        if job is None:
+            return  # cascade-deleted underneath us
+
+        # --- readiness -------------------------------------------------
+        if resume.skills_extraction_status == ResumeExtractionStatus.FAILED:
+            return _fail(db, application, "The resume's skills could not be extracted.")
+        if job.skills_extraction_status == JobExtractionStatus.FAILED:
+            return _fail(db, application, "The job description's skills could not be extracted.")
+        if (
+            resume.skills_extraction_status != ResumeExtractionStatus.DONE
+            or job.skills_extraction_status != JobExtractionStatus.DONE
+        ):
+            application.match_status = "pending"
+            db.commit()
+            return  # the extraction task that finishes later re-triggers us
+        if not job.skills_result:
+            return _fail(db, application, "The job description has no extracted skills to match against.")
+
+        # --- score -----------------------------------------------------
+        try:
+            result = compute_match(
+                resume_skills=resume.skills_result,
+                resume_months=resume.experience_months,
+                jd_skills=job.skills_result,
+                jd_min_months=job.min_experience_months,
+                embed=embed,
+                weights=_weights(),
+            )
+        except LLMConfigError as exc:
+            return _fail(db, application, str(exc))
+        except EmbeddingError as exc:
+            if self.request.retries >= self.max_retries:
+                return _fail(db, application, f"Scoring failed after retries: {exc}")
+            logger.warning("Scoring %s attempt failed: %s", application_id, exc)
+            raise self.retry(exc=exc, countdown=30 * 2 ** self.request.retries)
+
+        application.match_score = result.score
+        application.match_details = result.to_dict()
+        application.match_status = "done"
+        application.match_error = None
+        application.matched_at = datetime.now(timezone.utc)
+        db.commit()
+    finally:
+        db.close()
+
+
+# ---------------------------------------------------------------------------
+# Fan-out helpers. Take the caller's session so they can run inside another
+# task's transaction scope; failures are the caller's to swallow (best-effort).
+# ---------------------------------------------------------------------------
+
+def _dispatch_ids(ids) -> int:
+    n = 0
+    for application_id in ids:
+        if dispatch_extraction(score_application_task, application_id):
+            n += 1
+    return n
+
+
+def dispatch_score_for_job(db, job_id) -> int:
+    ids = db.scalars(select(Application.id).where(Application.job_id == job_id)).all()
+    return _dispatch_ids(ids)
+
+
+def dispatch_score_for_resume(db, resume_id) -> int:
+    ids = db.scalars(select(Application.id).where(Application.resume_id == resume_id)).all()
+    return _dispatch_ids(ids)
+
+
+@celery_app.task(name="match.sweep")
+def sweep_unscored_applications() -> None:
+    """Re-dispatch applications stuck at 'pending' although both sides are
+    ready (dispatch happened while Redis was down, or the message was lost)."""
+    db = SessionLocal()
+    try:
+        cutoff = datetime.now(timezone.utc) - STALE_PENDING_AFTER
+        ids = db.scalars(
+            select(Application.id)
+            .join(Resume, Resume.id == Application.resume_id)
+            .join(Job, Job.id == Application.job_id)
+            .where(
+                Application.match_status == "pending",
+                Application.updated_at < cutoff,
+                Resume.skills_extraction_status == ResumeExtractionStatus.DONE,
+                Job.skills_extraction_status == JobExtractionStatus.DONE,
+            )
+        ).all()
+        if ids:
+            logger.info("Match sweep: redispatching %d application(s).", len(ids))
+            _dispatch_ids(ids)
+    finally:
+        db.close()
+
+
+def safe_dispatch_for_job(db, job_id) -> None:
+    """Called at the end of a JD extraction task. Must never fail it."""
+    try:
+        dispatch_score_for_job(db, job_id)
+    except Exception:
+        logger.warning("Could not queue rescoring for job %s; sweep will catch up.", job_id, exc_info=True)
+
+
+def safe_dispatch_for_resume(db, resume_id) -> None:
+    """Called at the end of a resume extraction task. Must never fail it."""
+    try:
+        dispatch_score_for_resume(db, resume_id)
+    except Exception:
+        logger.warning("Could not queue rescoring for resume %s; sweep will catch up.", resume_id, exc_info=True)
+
+
+===== backend\app\core\matching.py =====
+
+"""
+Skill normalization and matching for candidate ranking.
+
+No elimination happens here or anywhere downstream of it: every
+applicant who applies is scored and ranked, never filtered out for
+missing compulsory skills, a missing skills section, or anything else.
+compulsory_skill_match_ratio() feeds the *score* -- it does not gate
+who gets scored. Recruiters see the full applicant list, sorted by
+score, and make the final call themselves.
+"""
+
+def compulsory_skill_match_ratio(
+    matched_count: int,
+    compulsory_count: int,
+) -> float:
+    """
+    Fraction of compulsory JD skills the candidate matched, in [0, 1].
+
+    This is one input into the eventual weighted score (alongside
+    experience/education matching) -- NOT a pass/fail gate. A candidate
+    who matches 0 of 3 compulsory skills still gets scored and shown to
+    the recruiter; they just score lower on this component.
+
+    A JD with no compulsory skills contributes a neutral 1.0, since
+    there's nothing explicit to score against.
+    """
+    if compulsory_count == 0:
+        return 1.0
+
+    return min(matched_count / compulsory_count, 1.0)
+
+
+SKILL_ALIASES = {
+    # =========================
+    # Languages
+    # =========================
+    "py": "python",
+    "python3": "python",
+    "python 3": "python",
+    "python3.x": "python",
+    "js": "javascript",
+    "javascript es6": "javascript",
+    "javascript es2015": "javascript",
+    "ecmascript": "javascript",
+    "es6": "javascript",
+    "es2015": "javascript",
+    "es2020": "javascript",
+    "es2021": "javascript",
+    "es2022": "javascript",
+    "es2023": "javascript",
+    "ts": "typescript",
+    "typescriptlang": "typescript",
+    "golang": "go",
+    "go lang": "go",
+    "go-lang": "go",
+    "c sharp": "c#",
+    "c-sharp": "c#",
+    "csharp": "c#",
+    "c plus plus": "c++",
+    "cpp": "c++",
+    "c/c++": "c++",
+    "objective c": "objective-c",
+    "objc": "objective-c",
+    "shell scripting": "shell",
+    "shell script": "shell",
+    "bash scripting": "bash",
+    "bash shell": "bash",
+    "zsh shell": "zsh",
+    "powershell scripting": "powershell",
+    "ps": "powershell",
+
+    # =========================
+    # Frontend
+    # =========================
+    "reactjs": "react",
+    "react.js": "react",
+    "react js": "react",
+    "reactjs.js": "react",
+    "vuejs": "vue",
+    "vue.js": "vue",
+    "vue js": "vue",
+    "angularjs": "angular",
+    "angular.js": "angular",
+    "angular js": "angular",
+    "nextjs": "next.js",
+    "next js": "next.js",
+    "next": "next.js",
+    "nuxtjs": "nuxt",
+    "nuxt.js": "nuxt",
+    "sveltejs": "svelte",
+    "svelte.js": "svelte",
+    "jquery.js": "jquery",
+    "j query": "jquery",
+    "html5": "html",
+    "html 5": "html",
+    "css3": "css",
+    "css 3": "css",
+    "scss": "sass",
+    "sass/scss": "sass",
+    "lesscss": "less",
+    "tailwindcss": "tailwind css",
+    "tailwind": "tailwind css",
+    "material ui": "mui",
+    "material-ui": "mui",
+    "materialui": "mui",
+    "chakraui": "chakra ui",
+    "chakra-ui": "chakra ui",
+    "react-native": "react native",
+
+    # =========================
+    # Node / JavaScript
+    # =========================
+    "node": "node.js",
+    "nodejs": "node.js",
+    "node js": "node.js",
+    "node.js runtime": "node.js",
+    "expressjs": "express",
+    "express.js": "express",
+    "express js": "express",
+    "nestjs": "nest.js",
+    "nest js": "nest.js",
+    "npmjs": "npm",
+    "npm.js": "npm",
+    "pnpmjs": "pnpm",
+    "yarnpkg": "yarn",
+    "webpackjs": "webpack",
+    "vitejs": "vite",
+    "rollupjs": "rollup",
+
+    # =========================
+    # Python
+    # =========================
+    "fast api": "fastapi",
+    "fast-api": "fastapi",
+    "fast_api": "fastapi",
+    "django-rest-framework": "django rest framework",
+    "drf": "django rest framework",
+    "flask api": "flask",
+    "sql alchemy": "sqlalchemy",
+    "sql-alchemy": "sqlalchemy",
+    "pydantic v2": "pydantic",
+    "pydantic2": "pydantic",
+    "pytest framework": "pytest",
+    "py test": "pytest",
+    "pandas python": "pandas",
+    "numpy python": "numpy",
+    "scikit learn": "scikit-learn",
+    "sklearn": "scikit-learn",
+    "scikit_learn": "scikit-learn",
+
+    # =========================
+    # SQL
+    # =========================
+    "postgres": "postgresql",
+    "postgresql db": "postgresql",
+    "postgres db": "postgresql",
+    "postgres database": "postgresql",
+    "postgresql database": "postgresql",
+    "psql": "postgresql",
+    "pgsql": "postgresql",
+    "mysql db": "mysql",
+    "mysql database": "mysql",
+    "mariadb db": "mariadb",
+    "mssql": "sql server",
+    "ms sql": "sql server",
+    "ms-sql": "sql server",
+    "microsoft sql server": "sql server",
+    "sqlserver": "sql server",
+    "sql server database": "sql server",
+    "oracle db": "oracle",
+    "oracle database": "oracle",
+    "sqlite3": "sqlite",
+    "sqlite db": "sqlite",
+    "sqlite database": "sqlite",
+
+    # =========================
+    # NoSQL
+    # =========================
+    "mongo": "mongodb",
+    "mongo db": "mongodb",
+    "mongodb db": "mongodb",
+    "mongodb database": "mongodb",
+    "redis db": "redis",
+    "redis cache": "redis",
+    "elastic search": "elasticsearch",
+    "elastic-search": "elasticsearch",
+    "elastic": "elasticsearch",
+    "cassandra db": "cassandra",
+    "dynamodb db": "dynamodb",
+    "dynamo db": "dynamodb",
+    "amazon dynamodb": "dynamodb",
+    "cosmos db": "azure cosmos db",
+    "cosmosdb": "azure cosmos db",
+
+    # =========================
+    # SQL / DB concepts
+    # =========================
+    "structured query language": "sql",
+    "sql queries": "sql",
+    "sql query": "sql",
+    "pl/sql": "plsql",
+    "pl sql": "plsql",
+    "t-sql": "tsql",
+    "t sql": "tsql",
+    "db design": "database design",
+    "database schema design": "database design",
+    "dbms": "database management",
+    "rdbms": "relational database",
+    "relational db": "relational database",
+    "object relational mapping": "orm",
+    "object-relational mapping": "orm",
+
+    # =========================
+    # AWS
+    # =========================
+    "amazon web services": "aws",
+    "amazon aws": "aws",
+    "aws cloud": "aws",
+    "amazon ec2": "aws ec2",
+    "ec2": "aws ec2",
+    "amazon s3": "aws s3",
+    "s3": "aws s3",
+    "s3 bucket": "aws s3",
+    "amazon rds": "aws rds",
+    "rds": "aws rds",
+    "lambda": "aws lambda",
+    "amazon eks": "aws eks",
+    "eks": "aws eks",
+    "amazon ecs": "aws ecs",
+    "ecs": "aws ecs",
+    "cloudwatch": "aws cloudwatch",
+    "aws cloud watch": "aws cloudwatch",
+
+    # =========================
+    # Azure
+    # =========================
+    "microsoft azure": "azure",
+    "azure cloud": "azure",
+    "ms azure": "azure",
+    "azure vm": "azure virtual machines",
+    "azure virtual machine": "azure virtual machines",
+    "azure blob": "azure blob storage",
+    "blob storage": "azure blob storage",
+    "azure adls": "azure data lake storage",
+    "adls": "azure data lake storage",
+    "adls gen2": "azure data lake storage",
+    "azure data lake": "azure data lake storage",
+    "azure data lake storage gen2": "azure data lake storage",
+    "azure function": "azure functions",
+    "azure sql": "azure sql database",
+    "azure sql db": "azure sql database",
+
+    # =========================
+    # GCP
+    # =========================
+    "google cloud": "gcp",
+    "google cloud platform": "gcp",
+    "google compute engine": "gcp compute engine",
+    "gce": "gcp compute engine",
+    "google cloud storage": "gcp cloud storage",
+    "gcs": "gcp cloud storage",
+    "google kubernetes engine": "gke",
+    "google cloud functions": "gcp cloud functions",
+
+    # =========================
+    # Containers / DevOps
+    # =========================
+    "docker container": "docker",
+    "docker containers": "docker",
+    "dockerized": "docker",
+    "dockerisation": "docker",
+    "dockerization": "docker",
+    "k8s": "kubernetes",
+    "kube": "kubernetes",
+    "kubernetes cluster": "kubernetes",
+    "kubernetes orchestration": "kubernetes",
+    "containerisation": "containerization",
+    "docker-compose": "docker compose",
+    "helm charts": "helm",
+    "helm chart": "helm",
+    "tf": "terraform",
+    "ansible automation": "ansible",
+    "ansible playbooks": "ansible",
+
+    # =========================
+    # CI/CD
+    # =========================
+    "ci cd": "ci/cd",
+    "ci/cd pipeline": "ci/cd",
+    "cicd": "ci/cd",
+    "ci-cd": "ci/cd",
+    "continuous integration": "ci/cd",
+    "continuous deployment": "ci/cd",
+    "continuous delivery": "ci/cd",
+    "github-action": "github actions",
+    "gitlab ci": "gitlab ci/cd",
+    "gitlab-ci": "gitlab ci/cd",
+    "gitlab cicd": "gitlab ci/cd",
+    "jenkins pipeline": "jenkins",
+    "jenkins ci": "jenkins",
+    "ado": "azure devops",
+
+    # =========================
+    # Git
+    # =========================
+    "git version control": "git",
+    "git scm": "git",
+    "version control": "git",
+    "git hub": "github",
+    "git lab": "gitlab",
+    "svn": "subversion",
+    "apache subversion": "subversion",
+
+    # =========================
+    # APIs / Backend
+    # =========================
+    "rest": "rest api",
+    "restful": "rest api",
+    "restful api": "rest api",
+    "rest apis": "rest api",
+    "restful apis": "rest api",
+    "http api": "rest api",
+    "http apis": "rest api",
+    "web api": "rest api",
+    "web apis": "rest api",
+    "graphql api": "graphql",
+    "graph ql": "graphql",
+    "grpc api": "grpc",
+    "g-rpc": "grpc",
+    "soap api": "soap",
+    "soap web services": "soap",
+    "microservice": "microservices",
+    "micro-services": "microservices",
+    "micro service": "microservices",
+    "oauth2": "oauth 2.0",
+    "oauth 2": "oauth 2.0",
+    "oauth2.0": "oauth 2.0",
+    "jwt auth": "jwt",
+    "jwt authentication": "jwt",
+    "json web token": "jwt",
+    "json web tokens": "jwt",
+
+    # =========================
+    # Messaging
+    # =========================
+    "apache kafka": "kafka",
+    "kafka streaming": "kafka",
+    "rabbitmq broker": "rabbitmq",
+    "rabbit mq": "rabbitmq",
+    "apache pulsar": "pulsar",
+    "message queues": "message queue",
+    "message queueing": "message queue",
+    "messaging queues": "message queue",
+
+    # =========================
+    # AI / ML / NLP
+    # =========================
+    "artificial intelligence": "ai",
+    "machine intelligence": "ai",
+    "ml": "machine learning",
+    "dl": "deep learning",
+    "natural language processing": "nlp",
+    "natural-language processing": "nlp",
+    "text processing": "nlp",
+    "large language model": "llm",
+    "large language models": "llm",
+    "llms": "llm",
+    "gen ai": "generative ai",
+    "genai": "generative ai",
+    "huggingface": "hugging face",
+    "hugging-face": "hugging face",
+    "hf": "hugging face",
+    "transformers library": "hugging face transformers",
+    "huggingface transformers": "hugging face transformers",
+    "hf transformers": "hugging face transformers",
+    "sentence transformers": "sentence-transformers",
+    "sentence_transformers": "sentence-transformers",
+    "vector db": "vector database",
+    "vector databases": "vector database",
+    "vector store": "vector database",
+    "pinecone db": "pinecone",
+    "chroma db": "chromadb",
+    "chromadb database": "chromadb",
+
+    # =========================
+    # Data / Analytics
+    # =========================
+    "data analysis": "data analytics",
+    "extract transform load": "etl",
+    "extract-transform-load": "etl",
+    "apache spark": "spark",
+    "spark sql": "spark",
+    "py spark": "pyspark",
+    "apache airflow": "airflow",
+    "airflow orchestration": "airflow",
+    "powerbi": "power bi",
+    "tableau desktop": "tableau",
+
+    # =========================
+    # Testing
+    # =========================
+    "unit tests": "unit testing",
+    "integration tests": "integration testing",
+    "automated testing": "test automation",
+    "jestjs": "jest",
+    "jest.js": "jest",
+    "mocha.js": "mocha",
+    "mochajs": "mocha",
+    "cypress.io": "cypress",
+    "playwright testing": "playwright",
+    "selenium webdriver": "selenium",
+    "selenium web driver": "selenium",
+
+    # =========================
+    # Observability / SRE
+    # =========================
+    "prometheus monitoring": "prometheus",
+    "grafana dashboards": "grafana",
+    "elk": "elk stack",
+    "elastic stack": "elk stack",
+    "application performance monitoring": "apm",
+    "opentelemetry": "open telemetry",
+    "otel": "open telemetry",
+
+    # =========================
+    # Security
+    # =========================
+    "application security": "appsec",
+    "app security": "appsec",
+    "cyber security": "cybersecurity",
+    "cyber-security": "cybersecurity",
+    "infosec": "information security",
+    "iam": "identity and access management",
+    "role based access control": "rbac",
+    "role-based access control": "rbac",
+    "single sign on": "sso",
+    "single-sign-on": "sso",
+    "multi factor authentication": "mfa",
+    "multi-factor authentication": "mfa",
+    "2fa": "mfa",
+    "two factor authentication": "mfa",
+
+    # =========================
+    # Architecture
+    # =========================
+    "system architecture": "system design",
+    "object oriented programming": "oop",
+    "object-oriented programming": "oop",
+    "oops": "oop",
+    "data structures and algorithms": "dsa",
+    "data structures & algorithms": "dsa",
+    "ds and algo": "dsa",
+    "event driven architecture": "event-driven architecture",
+    "domain driven design": "domain-driven design",
+    "ddd": "domain-driven design",
+
+    # =========================
+    # Java
+    # =========================
+    "java 8": "java",
+    "java 11": "java",
+    "java 17": "java",
+    "java 21": "java",
+    "jdk": "java",
+    "jre": "java",
+    "springboot": "spring boot",
+    "spring-boot": "spring boot",
+    "spring framework": "spring",
+    "hibernate orm": "hibernate",
+    "hibernate framework": "hibernate",
+    "maven build": "maven",
+    "apache maven": "maven",
+    "gradle build": "gradle",
+
+    # =========================
+    # .NET
+    # =========================
+    "dotnet": ".net",
+    "dot net": ".net",
+    "microsoft .net": ".net",
+    "aspnet core": "asp.net core",
+    "asp net core": "asp.net core",
+    "ef core": "entity framework core",
+
+    # =========================
+    # Mobile
+    # =========================
+    "android development": "android",
+    "android sdk": "android",
+    "ios development": "ios",
+    "ios sdk": "ios",
+    "flutter development": "flutter",
+    "dart language": "dart",
+
+    # =========================
+    # Infrastructure
+    # =========================
+    "linux os": "linux",
+    "gnu/linux": "linux",
+    "unix system": "unix",
+    "nginx web server": "nginx",
+    "nginx server": "nginx",
+    "apache http server": "apache",
+    "load balancer": "load balancing",
+
+    # =========================
+    # Infrastructure as Code
+    # =========================
+    "iac": "infrastructure as code",
+    "infrastructure-as-code": "infrastructure as code",
+    "terraform iac": "terraform",
+    "terraform cloud": "terraform",
+
+    # =========================
+    # Project / Agile
+    # =========================
+    "agile methodology": "agile",
+    "agile development": "agile",
+    "scrum methodology": "scrum",
+    "scrum framework": "scrum",
+    "kanban methodology": "kanban",
+    "jira software": "jira",
+    "atlassian jira": "jira",
+    "confluence atlassian": "confluence",
+
+    # =========================
+    # Common abbreviations
+    # =========================
+    "apis": "api",
+    "db": "database",
+    "dbs": "database",
+    "dev ops": "devops",
+    "dev-ops": "devops",
+    "devops engineering": "devops",
+    "sre": "site reliability engineering",
+    "qa": "quality assurance",
+    "quality engineering": "quality assurance",
+    "ui ux": "ui/ux",
+    "ui/ux design": "ui/ux",
+    "ux ui": "ui/ux",
+    "frontend": "frontend development",
+    "front end": "frontend development",
+    "front-end": "frontend development",
+    "backend": "backend development",
+    "back end": "backend development",
+    "back-end": "backend development",
+    "fullstack": "full-stack development",
+    "full stack": "full-stack development",
+    "full-stack": "full-stack development",
+}
+
+
+def test_skill_aliases_are_acyclic() -> None:
+    """
+    Ensure no canonical alias target is itself another alias key.
+
+    This prevents accidental multi-hop normalization.
+    """
+    alias_keys = set(SKILL_ALIASES)
+
+    for value in SKILL_ALIASES.values():
+        assert value not in alias_keys, (
+            f"'{value}' is both an alias target and an alias key"
+        )
+
+
+def normalize_skill(raw: str) -> str:
+    """
+    Normalize one skill for matching.
+    """
+    key = raw.strip().lower()
+    return SKILL_ALIASES.get(key, key)
+
+
+def normalize_skills(skills: list[str]) -> set[str]:
+    """
+    Normalize and deduplicate a skill collection.
+    """
+    return {
+        normalize_skill(skill)
+        for skill in skills
+        if skill and skill.strip()
+    }
+
+
+def count_matched_skills(
+    candidate_skills: list[str],
+    jd_skills: list[str],
+) -> int:
+    """
+    Count normalized JD skills present in candidate skills.
+    """
+    candidate_set = normalize_skills(candidate_skills)
+
+    return sum(
+        1
+        for skill in jd_skills
+        if normalize_skill(skill) in candidate_set
+    )
+
+
+def count_matched_compulsory_skills(
+    candidate_skills: list[str],
+    compulsory_skills: list[str],
+) -> int:
+    """
+    Count only explicitly compulsory JD skills matched by the candidate.
+
+    Feeds compulsory_skill_match_ratio() for scoring -- not a gate.
+    """
+    return count_matched_skills(
+        candidate_skills,
+        compulsory_skills,
+    )
+
+
+# Backward-compatible alias for any older caller still using the old name.
+def count_matched_required_skills(
+    candidate_skills: list[str],
+    required_skills: list[str],
+) -> int:
+    return count_matched_compulsory_skills(
+        candidate_skills,
+        required_skills,
+    )
+
+===== backend\app\core\experience_calc.py =====
+
+"""
+Deterministic experience-years calculation from extracted work_history
+date ranges and job description (JD) requirement text.
+
+This exists because asking the LLM to compute experience_years itself
+(sum date ranges, resolve "Present", dedupe overlaps) is unreliable â€”
+small local models are bad at multi-step date arithmetic, and the model
+has no ground truth for "today". We still let the LLM extract the raw
+start_date/end_date strings (it's good at reading text), but the actual
+math happens here in code, against the real current date, so results are
+reproducible and correct.
+"""
+from __future__ import annotations
+
+import logging
+import re
+from dataclasses import dataclass
+from datetime import date
+
+from dateutil import parser as date_parser
+from dateutil.relativedelta import relativedelta
+
+from app.schemas.extraction import WorkHistoryEntry
+
+logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------
+# Shared calculator: total months from work-history date ranges
+# (used by the resume side below; JD side needs no date math)
+# ---------------------------------------------------------------------
+
+_CURRENT_MARKERS = {"present", "current", "currently", "now", "ongoing", "till date", "to date"}
+
+# dateutil fills any missing year from `default` (1900 below). A string with
+# no 4-digit year -- "Jan '20", "06/21", "20" -- therefore comes back as
+# 1900 and would add ~125 phantom years. Anything before this is rejected.
+_MIN_VALID_YEAR = 1970
+
+def _parse_month(text: str | None, *, is_end: bool, today: date | None = None) -> date | None:
+    """Parses a free-text date like 'Jun 2021', '2021-06', '2021' into a
+    date. Ambiguous/unparseable text returns None rather than raising â€”
+    a bad single entry shouldn't blow up the whole calculation.
+    default=date(1900,1,1) lets partial dates like a bare year fill in a
+    month deterministically instead of defaulting to today's month
+    (dateutil's own default), which would silently bias every bare-year
+    entry toward whatever month happens to be current."""
+    if not text or not text.strip():
+        return None
+    today = today or date.today()
+    normalized = text.strip().lower()
+    if normalized in _CURRENT_MARKERS:
+        return today if is_end else None
+    try:
+        parsed = date_parser.parse(text, default=date(1900, 1, 1), fuzzy=True)
+    except (ValueError, OverflowError):
+        logger.warning("Could not parse work_history date %r", text)
+        return None
+    if parsed.year < _MIN_VALID_YEAR:
+        logger.warning("Ignoring work_history date %r (no usable year)", text)
+        return None
+    return date(parsed.year, parsed.month, 1)
+
+
+def compute_experience_months(
+    work_history: list[WorkHistoryEntry], today: date | None = None
+) -> int | None:
+    """Total distinct months of experience, merging overlapping ranges so
+    concurrent jobs aren't double-counted. Returns None if there's no
+    usable date range at all (matches the "no work history -> null, not 0"
+    contract). `today` is injectable so tests don't depend on the clock.
+    Months are kept (not rounded to years) so a matcher can compare 1.4
+    years against a "1.5+ years" requirement."""
+    intervals: list[tuple[date, date]] = []
+    today = today or date.today()
+
+    for entry in work_history:
+        start = _parse_month(entry.start_date, is_end=False, today=today)
+        end = _parse_month(entry.end_date, is_end=True, today=today)
+        if start is None:
+            continue
+        if end is None:
+            if entry.end_date and entry.end_date.strip():
+                # end_date present but unparseable -> skip rather than guess.
+                # (Treating it as "Present" used to inflate the total.)
+                continue
+            # No end_date at all is treated the same as "Present" â€” an
+            # open-ended entry with a real start date is still a real job.
+            end = today
+        if end < start:
+            continue
+        intervals.append((start, min(end, today)))
+
+    if not intervals:
+        return None
+
+    intervals.sort(key=lambda iv: iv[0])
+    merged: list[tuple[date, date]] = [intervals[0]]
+    for start, end in intervals[1:]:
+        last_start, last_end = merged[-1]
+        if start <= last_end:
+            merged[-1] = (last_start, max(last_end, end))
+        else:
+            merged.append((start, end))
+
+    return sum(
+        relativedelta(end, start).years * 12 + relativedelta(end, start).months
+        for start, end in merged
+    )
+
+
+def compute_experience_years(
+    work_history: list[WorkHistoryEntry], today: date | None = None
+) -> int | None:
+    """Whole years, rounded to nearest (same contract as before)."""
+    months = compute_experience_months(work_history, today=today)
+    return None if months is None else round(months / 12)
+
+
+# ---------------------------------------------------------------------
+# JD side: minimum experience REQUIRED by a job description
+# ---------------------------------------------------------------------
+
+_NUM_WORDS = {
+    "one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6,
+    "seven": 7, "eight": 8, "nine": 9, "ten": 10, "twelve": 12,
+    "fifteen": 15, "twenty": 20,
+}
+_QTY = r"\d+(?:\.\d+)?|" + "|".join(_NUM_WORDS)
+_UNIT = r"(?:years?|yrs?|months?|mos?)"
+
+# "5 years", "5+ years", "3-5 years", "3 to 5 yrs", "6 months - 1 year",
+# "at least 1.5 years", "two years". Case-insensitive because the PDF path
+# hands us lowercased text.
+_EXPERIENCE_RE = re.compile(
+    rf"\b(?P<lo>{_QTY})\s*(?P<lo_unit>{_UNIT})?\s*(?:\+|plus)?\s*"
+    rf"(?:(?:-|\u2013|\u2014|to)\s*(?P<hi>{_QTY})\s*(?:\+|plus)?\s*)?"
+    rf"(?P<unit>{_UNIT})\b",
+    re.IGNORECASE,
+)
+
+# A duration only counts if experience-ish wording is nearby. This is what
+# keeps "founded 10 years ago" / "4 weeks of PTO" style text out.
+_EXPERIENCE_CUE_RE = re.compile(
+    r"experience|\bexp\b|background|track record|hands-on|proven", re.IGNORECASE
+)
+_NOT_A_REQUIREMENT_BEFORE_RE = re.compile(r"(?:last|past)\s*$", re.IGNORECASE)
+_NOT_A_REQUIREMENT_AFTER_RE = re.compile(
+    r"^\s*(?:ago|in business|of history)", re.IGNORECASE
+)
+_PREFERRED_CUE_RE = re.compile(
+    r"preferred|nice to have|good to have|bonus|a plus|desirable|ideally|"
+    r"added advantage|advantage",
+    re.IGNORECASE,
+)
+_ENTRY_LEVEL_RE = re.compile(
+    r"\bfreshers?\b|entry[- ]level|no (?:prior |previous )?experience "
+    r"(?:is )?(?:required|needed|necessary)",
+    re.IGNORECASE,
+)
+
+_MAX_PLAUSIBLE_MONTHS = 40 * 12
+
+
+@dataclass(frozen=True)
+class ExperienceMention:
+    min_months: int
+    max_months: int | None  # None for "5+" / "5 years" (open-ended)
+    text: str               # the matched snippet, for logging/debugging
+    preferred: bool         # True if it sits on a nice-to-have line
+
+
+@dataclass(frozen=True)
+class ExperienceRequirement:
+    min_months: int | None            # None = JD states no experience requirement
+    mentions: tuple[ExperienceMention, ...]
+    source: str | None                # "requirements_section" | "full_text" | "entry_level_marker" | None
+
+    @property
+    def min_years(self) -> float | None:
+        return None if self.min_months is None else round(self.min_months / 12, 1)
+
+
+def _to_number(token: str) -> float:
+    token = token.lower()
+    return float(_NUM_WORDS[token]) if token in _NUM_WORDS else float(token)
+
+
+def _to_months(value: float, unit: str) -> int:
+    return round(value * (12 if unit.lower().startswith("y") else 1))
+
+
+def _line_context(text: str, start: int, end: int) -> str:
+    """The matched line, plus the previous line if it is short enough to be
+    a sub-heading like 'Preferred:' -- so a bullet under a nice-to-have
+    heading is still recognised as preferred."""
+    line_start = text.rfind("\n", 0, start) + 1
+    line_end = text.find("\n", end)
+    line_end = len(text) if line_end == -1 else line_end
+    context = text[line_start:line_end]
+
+    if line_start > 0:
+        prev_start = text.rfind("\n", 0, line_start - 1) + 1
+        prev = text[prev_start:line_start - 1].strip()
+        if prev and len(prev) <= 40:
+            context = prev + " " + context
+    return context
+
+
+def _find_mentions(text: str) -> list[ExperienceMention]:
+    mentions: list[ExperienceMention] = []
+
+    for m in _EXPERIENCE_RE.finditer(text):
+        before = text[max(0, m.start() - 50):m.start()]
+        after = text[m.end():m.end() + 80].split("\n\n")[0]
+        window = (before + " " + m.group(0) + " " + after).replace("\n", " ")
+
+        if not _EXPERIENCE_CUE_RE.search(window):
+            continue
+        if _NOT_A_REQUIREMENT_BEFORE_RE.search(before):
+            continue
+        if _NOT_A_REQUIREMENT_AFTER_RE.search(after):
+            continue
+
+        unit = m.group("unit")
+        lo_months = _to_months(_to_number(m.group("lo")), m.group("lo_unit") or unit)
+        hi_months = (
+            _to_months(_to_number(m.group("hi")), unit) if m.group("hi") else None
+        )
+
+        if lo_months > _MAX_PLAUSIBLE_MONTHS:
+            continue
+        if hi_months is not None and hi_months < lo_months:
+            hi_months = None  # malformed range like "5 to 2"; keep the low end
+
+        mentions.append(
+            ExperienceMention(
+                min_months=lo_months,
+                max_months=hi_months,
+                text=m.group(0).strip(),
+                preferred=bool(
+                    _PREFERRED_CUE_RE.search(_line_context(text, m.start(), m.end()))
+                ),
+            )
+        )
+
+    return mentions
+
+
+def extract_min_experience(
+    section_text: str | None,
+    full_text: str | None = None,
+) -> ExperienceRequirement:
+    """Minimum experience a JD demands, in months.
+
+    Tries the located requirements section first, then the full JD text.
+    Among non-preferred mentions the LARGEST lower bound wins: for
+    "5+ years overall, 2+ years with AWS" the overall bar is 5. All mentions
+    are returned so a matcher can look at per-skill durations later.
+
+    Known limits: "2 years Python OR 4 years any language" resolves to 4;
+    degree-equivalence clauses ("or Master's + 2 years") aren't modelled.
+    Returns min_months=None (not 0) when the JD states nothing, mirroring
+    the "no work history -> null" contract on the resume side.
+    """
+    for source, text in (
+        ("requirements_section", section_text),
+        ("full_text", full_text),
+    ):
+        if not text or not text.strip():
+            continue
+
+        mentions = _find_mentions(text)
+        required = [mn for mn in mentions if not mn.preferred]
+
+        if required:
+            return ExperienceRequirement(
+                min_months=max(mn.min_months for mn in required),
+                mentions=tuple(mentions),
+                source=source,
+            )
+
+    for text in (section_text, full_text):
+        if text and _ENTRY_LEVEL_RE.search(text):
+            return ExperienceRequirement(0, (), "entry_level_marker")
+
+    return ExperienceRequirement(None, (), None)
+
+
+def meets_experience_requirement(
+    candidate_months: int | None, required_months: int | None
+) -> bool | None:
+    """True/False when both sides are known; None means 'can't tell' so the
+    matcher can show 'unknown' instead of silently failing or passing."""
+    if required_months is None or candidate_months is None:
+        return None
+    return candidate_months >= required_months
+
+
+# ---------------------------------------------------------------------
+# Resume side: work-history date ranges read straight from resume text
+# ---------------------------------------------------------------------
+
+# Compared as exact whole-line matches after _heading_key() (lowercased,
+# trailing ":" removed, whitespace collapsed), so "Volunteer Experience"
+# is NOT an experience heading -- it is in the "other" set below.
+
+_EXPERIENCE_SECTION_HEADINGS = {
+    "experience",
+    "work experience",
+    "professional experience",
+    "relevant experience",
+    "industry experience",
+    "employment",
+    "employment history",
+    "employment experience",
+    "work history",
+    "career history",
+    "professional background",
+    "internship",
+    "internships",
+    "internship experience",
+}
+
+# Headings that end an experience section and whose date ranges (degrees,
+# course dates, certificates, project dates) must not count as experience.
+_OTHER_SECTION_HEADINGS = {
+    "education",
+    "education & training",
+    "education and training",
+    "academic background",
+    "academics",
+    "projects",
+    "personal projects",
+    "academic projects",
+    "key projects",
+    "certifications",
+    "certificates",
+    "licenses & certifications",
+    "training",
+    "courses",
+    "awards",
+    "honors & awards",
+    "achievements",
+    "accomplishments",
+    "publications",
+    "summary",
+    "professional summary",
+    "profile",
+    "objective",
+    "career objective",
+    "skills",
+    "technical skills",
+    "core competencies",
+    "key skills",
+    "languages",
+    "interests",
+    "hobbies",
+    "volunteer experience",
+    "volunteering",
+    "extracurricular activities",
+    "references",
+    "declaration",
+}
+
+_MONTH_NAME = (
+    r"(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|"
+    r"jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|"
+    r"nov(?:ember)?|dec(?:ember)?)"
+)
+_YEAR = r"(?:19|20)\d{2}"
+_NUM_MONTH = r"(?:0?[1-9]|1[0-2])"
+
+# "Jan 2020", "January, 2020", "Sept. 2018", "06/2021", "2019".
+# Two-digit years ("Jan '20") are deliberately not matched: they are
+# ambiguous, and _parse_month() rejects them anyway.
+_RESUME_DATE = (
+    rf"\b(?:{_MONTH_NAME}\b\.?\s*,?\s*{_YEAR}"
+    rf"|{_NUM_MONTH}\s*[/.]\s*{_YEAR}"
+    rf"|{_YEAR})(?!\d)"
+)
+
+_RESUME_CURRENT = (
+    r"(?:till\s+date|to\s+date|till\s+now|till\s+present|present|"
+    r"currently|current|now|ongoing|today|date)\b"
+)
+
+_RESUME_RANGE_RE = re.compile(
+    rf"(?P<start>{_RESUME_DATE})\s*"
+    r"(?:[\u2013\u2014-]|\bto\b|\buntil\b|\btill\b)\s*"
+    rf"(?:(?P<end>{_RESUME_DATE})|(?P<current>{_RESUME_CURRENT}))",
+    re.IGNORECASE,
+)
+
+
+@dataclass(frozen=True)
+class ResumeExperience:
+    months: int | None                      # None = no usable date range found
+    entries: tuple[WorkHistoryEntry, ...]   # the ranges that were counted
+    source: str | None                      # "experience_section" | "full_text" | None
+
+    @property
+    def years(self) -> float | None:
+        return None if self.months is None else round(self.months / 12, 1)
+
+
+def _heading_key(line: str) -> str:
+    key = " ".join(line.strip().rstrip(":").split()).lower()
+    return key if 0 < len(key) <= 40 else ""
+
+
+def _split_resume_sections(text: str) -> tuple[list[str], list[str]]:
+    """Returns (experience_lines, usable_lines).
+
+    experience_lines: lines under an experience heading, up to the next
+    known section heading. usable_lines: every line NOT under a known
+    non-experience heading (education, projects, certifications...), used
+    as the fallback when the experience section yields no date range.
+    """
+    section: str | None = None  # None (before any heading) | "experience" | "other"
+    experience_lines: list[str] = []
+    usable_lines: list[str] = []
+
+    for line in text.splitlines():
+        key = _heading_key(line)
+
+        if key in _EXPERIENCE_SECTION_HEADINGS:
+            section = "experience"
+            continue
+        if key in _OTHER_SECTION_HEADINGS:
+            section = "other"
+            continue
+
+        if section == "experience":
+            experience_lines.append(line)
+        if section != "other":
+            usable_lines.append(line)
+
+    return experience_lines, usable_lines
+
+
+def _find_work_ranges(
+    lines: list[str], today: date | None = None
+) -> list[WorkHistoryEntry]:
+    entries: list[WorkHistoryEntry] = []
+
+    for m in _RESUME_RANGE_RE.finditer("\n".join(lines)):
+        start = " ".join(m.group("start").split())
+        end = "Present" if m.group("current") else " ".join(m.group("end").split())
+        entry = WorkHistoryEntry(start_date=start, end_date=end)
+
+        # Keep only ranges the calculator can actually use (parseable,
+        # end not before start).
+        if compute_experience_months([entry], today=today) is not None:
+            entries.append(entry)
+
+    return entries
+
+
+def extract_resume_experience(
+    resume_text: str | None, today: date | None = None
+) -> ResumeExperience:
+    """Total work experience in months, read deterministically from resume
+    text: date ranges under the experience heading first, then (only if
+    that yields nothing) anywhere outside known non-experience sections.
+    Overlapping ranges are merged by compute_experience_months().
+
+    Returns months=None (not 0) when no usable range is found, matching
+    the "no work history -> null" contract.
+
+    Known limits: two-digit years ("Jan '20") are ignored; bare-year
+    ranges ("2019 - 2021") count from January of each year (see
+    _parse_month); duration-only statements ("3 years at X") and total-
+    experience claims ("5+ years") are not read.
+    """
+    if not resume_text or not resume_text.strip():
+        return ResumeExperience(None, (), None)
+
+    experience_lines, usable_lines = _split_resume_sections(resume_text)
+
+    for source, lines in (
+        ("experience_section", experience_lines),
+        ("full_text", usable_lines),
+    ):
+        entries = _find_work_ranges(lines, today=today)
+        if entries:
+            return ResumeExperience(
+                months=compute_experience_months(entries, today=today),
+                entries=tuple(entries),
+                source=source,
+            )
+
+    return ResumeExperience(None, (), None)
+
+===== backend\app\core\config.py =====
+
+from pathlib import Path
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+BASE_DIR = Path(__file__).resolve().parents[2]
+
+class Settings(BaseSettings):
+    APP_NAME: str = "Resume Filter Application"
+    ENV: str = "development"
+    DEBUG: bool = True
+
+    DATABASE_URL: str = "postgresql+psycopg://postgres:postgres@localhost:5432/talentdb"
+
+    JWT_SECRET_KEY: str = "change-me-in-env"
+    JWT_ALGORITHM: str = "HS256"
+    ACCESS_TOKEN_EXPIRE_MINUTES: int = 60
+
+    STORAGE_BACKEND: str = "local"  # "local" or "azure"
+    AZURE_STORAGE_SAS_URL: str | None = None
+    LOCAL_STORAGE_ROOT: str = "./storage/resumes"
+
+    # Connection details for each provider the admin UI can point a task
+    # at (app/core/llm_provider_registry.py). Which provider+model a
+    # given task (resume_skills, jd_skills) actually uses lives in the
+    # llm_configs DB table now, not here -- these are only the
+    # credentials/endpoints a provider needs regardless of which model
+    # is selected, and still belong in the environment, not the DB.
+
+    # Needs the "Make calls to Inference Providers" permission from your
+    # HF account. Only required if a task's llm_configs row uses
+    # provider="huggingface".
+    HF_TOKEN: str | None = None
+
+    # Only required if a task's llm_configs row uses provider="openai".
+    OPENAI_API_KEY: str | None = None
+
+    GROQ_API_KEY: str | None = None
+    LLM_QUEUE_NAME: str = "llm"
+    LLM_TASK_RATE_LIMIT: str | None = None  # e.g. "20/m", per worker
+
+    # Redis / Celery (extraction queue)
+    REDIS_URL: str = "redis://localhost:6379/0"
+    CELERY_BROKER_URL: str | None = None
+    CELERY_RESULT_BACKEND: str | None = None
+
+    # --- Applicant matching score (app/core/semantic_match.py) ---
+    # "hf" = Hugging Face Inference API (needs HF_TOKEN); "local" =
+    # sentence-transformers in-process (pip install sentence-transformers).
+    EMBEDDING_PROVIDER: str = "hf"
+    EMBEDDING_MODEL: str = "sentence-transformers/all-MiniLM-L6-v2"
+
+    # Relative weights; a component the JD sets no requirement for (e.g. no
+    # minimum experience) is dropped and the rest renormalised.
+    MATCH_WEIGHT_SKILLS: float = 0.8
+    MATCH_WEIGHT_EXPERIENCE: float = 0.2
+
+    # Cosine similarity mapped to per-skill credit: <= LOW earns 0,
+    # >= HIGH earns 1, linear in between. An exact match after alias
+    # normalisation always earns 1 without calling the embedder.
+    MATCH_SIM_LOW: float = 0.40
+    MATCH_SIM_HIGH: float = 0.85
+
+    CORS_ORIGINS: list[str] = ["http://localhost:5173"]
+
+    model_config = SettingsConfigDict(
+        env_file=BASE_DIR / ".env",
+        env_file_encoding="utf-8",
+        extra="ignore",
+    )
+
+settings = Settings()
+
+===== backend\app\core\jd_skills_extraction_tasks.py =====
+
+"""
+Celery task for JD required-skills extraction.
+
+Mirrors app/core/skills_extraction_tasks.py's run_skills_extraction_task.
+Dispatched by app/api/routes/jobs.py's upload_jd() after the row (and the
+stored file's blob_path) is committed; this task is the "event queue ->
+LLM" leg: it downloads the stored JD file, locates the required-skills
+section, cleans it, calls the narrow LLM extractor, and validates the
+result.
+
+Locating uses app/core/jd_skills_locator.locate_jd_requirements(), which
+dispatches on file type (column-aware for PDFs, flat text for DOCX/TXT).
+If a job somehow has no stored file (legacy rows uploaded before blob
+storage existed), it falls back to scanning Job.jd_raw_text.
+
+Kept as its own task, separate from resume-side retries or failures, for
+the same isolation reason skills_extraction_tasks.py gives: it can be
+re-run on its own (e.g. after a locator/prompt change) without touching
+resume extraction at all.
+"""
+
+import logging
+from datetime import datetime, timezone
+
+from app.core.celery_app import celery_app
+from app.core.experience_calc import extract_min_experience
+from app.core.jd_skills_locator import locate_jd_requirements, locate_required_skills
+from app.core.jd_skills_llm_extract import JDSkillsExtractionError, extract_jd_skills_only
+from app.core.resume_storage import download_resume_blob
+from app.core.skills_text_prep import (
+    normalize_parentheses,
+    postprocess_skills,
+    strip_structural_labels,
+)
+from app.core.text_extract import EmptyExtractionError, UnsupportedFileTypeError
+from app.db.session import SessionLocal
+from app.models.job import Job, JobExtractionStatus
+from app.core.llm_provider_registry import LLMConfigError
+from app.core.matching_tasks import safe_dispatch_for_job
+
+logger = logging.getLogger(__name__)
+
+
+@celery_app.task(
+    name="jd_skills_extraction.run",
+    bind=True,
+    max_retries=2,
+    default_retry_delay=30,
+)
+def run_jd_skills_extraction_task(self, job_id: str) -> None:
+    db = SessionLocal()
+
+    try:
+        job = db.get(Job, job_id)
+
+        if job is None:
+            logger.warning(
+                "run_jd_skills_extraction_task: job %s no longer exists",
+                job_id,
+            )
+            return
+
+        job.skills_extraction_status = JobExtractionStatus.PROCESSING
+        job.skills_extraction_error = None
+        db.commit()
+
+        try:
+            if job.blob_path:
+                file_bytes = download_resume_blob(job.blob_path)
+                located = locate_jd_requirements(
+                    file_bytes, job.original_filename or ""
+                )
+            elif job.jd_raw_text and job.jd_raw_text.strip():
+                located = locate_required_skills(job.jd_raw_text)
+            else:
+                raise ValueError("Job has no stored JD file or extracted text.")
+
+            # Experience requirement is independent of the skills section:
+            # compute it before the "section not found" check so a JD with
+            # no locatable skills section still gets its experience value.
+            # The FAILED-path commit below persists it too.
+            exp_req = extract_min_experience(
+                located["section_text"] if located["found"] else None,
+                full_text=job.jd_raw_text,
+            )
+            job.min_experience_months = exp_req.min_months
+
+            if not located["found"] or not located["section_text"].strip():
+                raise ValueError(
+                    "Could not locate a required-skills section in this JD."
+                )
+
+            # Order matches skills_text_prep's documented order for the
+            # resume pipeline, minus strip_leading_dates -- JD
+            # required-skills sections don't carry embedded dates the
+            # way resume skills-under-a-role sections sometimes do.
+            prepared = normalize_parentheses(located["section_text"])
+            prepared = strip_structural_labels(prepared)
+
+            if not prepared.strip():
+                raise ValueError(
+                    "Required-skills section was located but contained "
+                    "no usable text."
+                )
+
+            raw_skills = extract_jd_skills_only(prepared)
+
+            # Validate against `prepared` -- the exact text the model
+            # saw -- not the original JD text. See postprocess_skills'
+            # docstring for why that distinction matters.
+            skills, hallucinated, dupes_removed = postprocess_skills(
+                raw_skills,
+                source_text=prepared,
+            )
+
+            if hallucinated:
+                logger.warning(
+                    "Job %s: dropped %d hallucinated skill(s) not "
+                    "found in source: %s",
+                    job_id, len(hallucinated), hallucinated,
+                )
+
+            if dupes_removed:
+                logger.info(
+                    "Job %s: removed %d exact duplicate skill(s).",
+                    job_id, dupes_removed,
+                )
+
+        except (
+            ValueError,
+            JDSkillsExtractionError,
+            UnsupportedFileTypeError,
+            EmptyExtractionError,
+            LLMConfigError,
+        ) as exc:
+            job.skills_extraction_status = JobExtractionStatus.FAILED
+            job.skills_extraction_error = str(exc)
+            db.commit()
+            safe_dispatch_for_job(db, job_id)
+            return
+
+        except Exception as exc:
+            if self.request.retries >= self.max_retries:
+                job.skills_extraction_status = JobExtractionStatus.FAILED
+                job.skills_extraction_error = (
+                    f"JD skills extraction failed after retries: {exc}"
+                )
+                db.commit()
+                return
+
+            logger.warning(
+                "JD skills extraction attempt failed for %s: %s", job_id, exc
+            )
+            job.skills_extraction_status = JobExtractionStatus.PENDING
+            db.commit()
+            raise self.retry(exc=exc, countdown=30 * 2 ** self.request.retries)
+
+        # -------------------------
+        # Persist extraction
+        # -------------------------
+
+        job.skills_result = skills
+        job.skills_section_heading = located["heading"]
+        job.skills_extraction_status = JobExtractionStatus.DONE
+        job.skills_extraction_error = None
+        job.skills_extracted_at = datetime.now(timezone.utc)
+
+        db.commit()
+
+        # Every applicant to this job can now be (re)scored against it.
+        safe_dispatch_for_job(db, job_id)
+
+    finally:
+        db.close()
+
+===== backend\app\core\skills_extraction_tasks.py =====
+
+"""
+Celery task for the standalone, separately-triggerable skills-only
+extraction path.
+
+Deliberately NOT called from inside extraction_tasks.run_extraction_task
+(full profile extraction). Keeping them as two independent tasks means:
+
+- triggering one never blocks on, retries because of, or gets marked
+  FAILED by a failure in the other
+- this path can be re-run on its own (e.g. after a prompt or
+  section-locator change) without re-running the full HF profile call
+  for every resume
+
+See app/api/routes/resumes.py's POST /resumes/{resume_id}/extract-skills
+for the trigger point, and app/core/skills_pdf_locator.py /
+app/core/skills_llm_extract.py / app/core/skills_text_prep.py for the
+three stages this task chains together.
+"""
+
+import logging
+from datetime import datetime, timezone
+
+from app.core.celery_app import celery_app
+from app.core.experience_calc import extract_resume_experience
+from app.core.resume_storage import download_resume_blob
+from app.core.skills_llm_extract import SkillsExtractionError, extract_skills_only
+from app.core.skills_pdf_locator import locate_skills_section
+from app.core.skills_text_prep import (
+    normalize_parentheses,
+    postprocess_skills,
+    strip_leading_dates,
+    strip_structural_labels,
+)
+from app.core.text_extract import (
+    EmptyExtractionError,
+    UnsupportedFileTypeError,
+    extract_text_from_bytes,
+    )
+from app.db.session import SessionLocal
+from app.models.resume import Resume, ResumeExtractionStatus
+from app.core.llm_provider_registry import LLMConfigError
+from app.core.matching_tasks import safe_dispatch_for_resume
+
+logger = logging.getLogger(__name__)
+
+
+def _store_experience(resume: Resume, file_bytes: bytes) -> None:
+    """Deterministic work-experience extraction, computed right after the
+    file is downloaded and BEFORE the skills-section check, so a resume
+    with no locatable skills section still gets its experience (the
+    FAILED-path commit persists it, same as the JD task). Never raises:
+    experience is independent of skills and must not fail or retry it."""
+    try:
+        text = extract_text_from_bytes(file_bytes, resume.original_filename)
+        result = extract_resume_experience(text)
+    except Exception:
+        logger.exception(
+            "Resume %s: experience extraction failed; skills extraction continues.",
+            resume.id,
+        )
+        return
+
+    resume.experience_months = result.months
+    resume.experience_entries = [
+        e.model_dump(exclude={"duration"}) for e in result.entries
+    ]
+
+
+@celery_app.task(
+    name="skills_extraction.run",
+    bind=True,
+    max_retries=2,
+    default_retry_delay=30,
+)
+def run_skills_extraction_task(self, resume_id: str) -> None:
+    db = SessionLocal()
+
+    try:
+        resume = db.get(Resume, resume_id)
+
+        if resume is None:
+            logger.warning(
+                "run_skills_extraction_task: resume %s no longer exists",
+                resume_id,
+            )
+            return
+
+        resume.skills_extraction_status = ResumeExtractionStatus.PROCESSING
+        resume.skills_extraction_error = None
+        db.commit()
+
+        try:
+            file_bytes = download_resume_blob(resume.blob_path)
+            _store_experience(resume, file_bytes)
+            located = locate_skills_section(file_bytes, resume.original_filename)
+
+            if not located["found"] or not located["section_text"].strip():
+                raise EmptyExtractionError(
+                    "Could not locate a skills section in this resume."
+                )
+
+            # Order matters: dates are stripped from the still-cased,
+            # still-grouped section text; normalize_parentheses then
+            # lowercases and expands any "AWS (ECS, S3)" style grouping;
+            # only after that do we strip bare category-label lines,
+            # since a label can itself sit inside a now-expanded line.
+            prepared = strip_leading_dates(located["section_text"])
+            prepared = normalize_parentheses(prepared)
+            prepared = strip_structural_labels(prepared)
+
+            if not prepared.strip():
+                raise EmptyExtractionError(
+                    "Skills section was located but contained no usable text."
+                )
+
+            raw_skills = extract_skills_only(prepared)
+
+            # Validate against `prepared` -- the exact text the model
+            # saw -- not the original PDF text. See postprocess_skills'
+            # docstring for why that distinction matters.
+            skills, hallucinated, dupes_removed = postprocess_skills(
+                raw_skills,
+                source_text=prepared,
+            )
+
+            if hallucinated:
+                logger.warning(
+                    "Resume %s: dropped %d hallucinated skill(s) not "
+                    "found in source: %s",
+                    resume_id, len(hallucinated), hallucinated,
+                )
+
+            if dupes_removed:
+                logger.info(
+                    "Resume %s: removed %d exact duplicate skill(s).",
+                    resume_id, dupes_removed,
+                )
+
+        except (
+            UnsupportedFileTypeError,
+            EmptyExtractionError,
+            SkillsExtractionError,
+            LLMConfigError,
+        ) as exc:
+            resume.skills_extraction_status = ResumeExtractionStatus.FAILED
+            resume.skills_extraction_error = str(exc)
+            db.commit()
+            safe_dispatch_for_resume(db, resume_id)
+            return
+
+        except Exception as exc:
+            if self.request.retries >= self.max_retries:
+                resume.skills_extraction_status = ResumeExtractionStatus.FAILED
+                resume.skills_extraction_error = (
+                    f"Skills extraction failed after retries: {exc}"
+                )
+                db.commit()
+                return
+
+            logger.warning(
+                "Skills extraction attempt failed for %s: %s", resume_id, exc
+            )
+            resume.skills_extraction_status = ResumeExtractionStatus.PENDING
+            db.commit()
+            raise self.retry(exc=exc, countdown=30 * 2 ** self.request.retries)
+
+        # -------------------------
+        # Persist extraction
+        # -------------------------
+
+        resume.skills_result = skills
+        resume.skills_section_heading = located["heading"]
+        resume.skills_extraction_status = ResumeExtractionStatus.DONE
+        resume.skills_extraction_error = None
+        resume.skills_extracted_at = datetime.now(timezone.utc)
+
+        db.commit()
+
+        # Applications pointing at this resume can now be (re)scored.
+        safe_dispatch_for_resume(db, resume_id)
+
+    finally:
+        db.close()
+
+===== backend\app\models\application.py =====
+
+import uuid
+from datetime import datetime
+from enum import Enum as PyEnum
+from sqlalchemy import Enum as SAEnum, Float, ForeignKey, Index, String, Text, UniqueConstraint, func
+from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.orm import Mapped, mapped_column, relationship
+from app.db.session import Base
+from typing import TYPE_CHECKING
+if TYPE_CHECKING:
+    from app.models.user import User
+    from app.models.job import Job
+    from app.models.resume import Resume
+
+class ApplicationStatus(str, PyEnum):
+    APPLIED = "applied"
+    UNDER_REVIEW = "under_review"
+    SHORTLISTED = "shortlisted"
+    REJECTED = "rejected"
+    HIRED = "hired"
+
+class Application(Base):
+    __tablename__ = "applications"
+    __table_args__ = (
+        # One application per user per job â€” re-applying is blocked at the DB
+        # level, not just in route logic.
+        UniqueConstraint("user_id", "job_id", name="uq_application_user_job"),
+        # Recruiter applicant list is "this job, best score first".
+        Index("ix_applications_job_score", "job_id", "match_score"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    job_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("jobs.id", ondelete="CASCADE"), nullable=False
+    )
+    resume_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("resumes.id", ondelete="SET NULL"), nullable=True)
+    status: Mapped[ApplicationStatus] = mapped_column(
+        SAEnum(ApplicationStatus, name="application_status"), default=ApplicationStatus.APPLIED, nullable=False
+    )
+    applied_at: Mapped[datetime] = mapped_column(server_default=func.now(), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+
+    # --- Match score (app/core/semantic_match.py, app/core/matching_tasks.py) ---
+    # NULL match_score = not scored yet. match_status: pending | done | failed.
+    match_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    match_status: Mapped[str] = mapped_column(String(16), default="pending", server_default="pending", nullable=False)
+    match_details: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    match_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    matched_at: Mapped[datetime | None] = mapped_column(nullable=True)
+
+    user: Mapped["User"] = relationship(back_populates="applications")
+    job: Mapped["Job"] = relationship(back_populates="applications")
+    resume: Mapped["Resume | None"] = relationship()
+
+===== backend\app\models\resume.py =====
+
+import uuid
+from datetime import datetime
+from enum import Enum as PyEnum
+from typing import TYPE_CHECKING
+
+from sqlalchemy import (
+    BigInteger,
+    Enum as SAEnum,
+    ForeignKey,
+    Integer,
+    String,
+    Text,
+    func,
+)
+from sqlalchemy.dialects.postgresql import JSONB, UUID
+from sqlalchemy.orm import Mapped, mapped_column, relationship
+
+from app.db.session import Base
+
+if TYPE_CHECKING:
+    from app.models.user import User
+
+
+class ResumeStatus(str, PyEnum):
+    UPLOADED = "UPLOADED"
+    FAILED = "FAILED"
+
+
+class ResumeExtractionStatus(str, PyEnum):
+    PENDING = "pending"
+    PROCESSING = "processing"
+    DONE = "done"
+    FAILED = "failed"
+
+
+class Resume(Base):
+    __tablename__ = "resumes"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        default=uuid.uuid4,
+    )
+
+    owner_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+
+    uploaded_by_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+
+    candidate_name: Mapped[str | None] = mapped_column(
+        String(255),
+        nullable=True,
+    )
+
+    candidate_email: Mapped[str | None] = mapped_column(
+        String(255),
+        nullable=True,
+    )
+
+    original_filename: Mapped[str] = mapped_column(
+        String(500),
+        nullable=False,
+    )
+
+    content_type: Mapped[str] = mapped_column(
+        String(255),
+        nullable=False,
+    )
+
+    size_bytes: Mapped[int] = mapped_column(
+        BigInteger,
+        nullable=False,
+    )
+
+    blob_path: Mapped[str] = mapped_column(
+        String(1000),
+        nullable=False,
+    )
+
+    status: Mapped[ResumeStatus] = mapped_column(
+        SAEnum(ResumeStatus, name="resume_status"),
+        nullable=False,
+    )
+
+    is_archived: Mapped[bool] = mapped_column(
+        default=False,
+        nullable=False,
+    )
+
+    # -------------------------
+    # Extraction
+    # -------------------------
+
+    raw_text: Mapped[str | None] = mapped_column(
+        Text,
+        nullable=True,
+    )
+
+    extraction_status: Mapped[ResumeExtractionStatus] = mapped_column(
+        SAEnum(
+            ResumeExtractionStatus,
+            name="resume_extraction_status",
+        ),
+        default=ResumeExtractionStatus.PENDING,
+        nullable=False,
+    )
+
+    extraction_error: Mapped[str | None] = mapped_column(
+        Text,
+        nullable=True,
+    )
+
+    extracted_at: Mapped[datetime | None] = mapped_column(
+        nullable=True,
+    )
+
+    extracted_skills: Mapped[list[str] | None] = mapped_column(
+        JSONB,
+        nullable=True,
+    )
+
+    # Explicit statement from the resume such as:
+    # "5+ years", "around seven years", "8 years".
+    extracted_stated_experience: Mapped[str | None] = mapped_column(
+        Text,
+        nullable=True,
+    )
+
+    # Derived from work_history by compute_experience_years().
+    extracted_experience_years: Mapped[int | None] = mapped_column(
+        Integer,
+        nullable=True,
+    )
+
+    extracted_education: Mapped[list | None] = mapped_column(
+        JSONB,
+        nullable=True,
+    )
+
+    extracted_certifications: Mapped[list | None] = mapped_column(
+        JSONB,
+        nullable=True,
+    )
+
+    extracted_profile: Mapped[dict | None] = mapped_column(
+        JSONB,
+        nullable=True,
+    )
+
+    # -------------------------
+    # Standalone skills-only extraction (separate from extracted_skills
+    # above, which belongs to the full-profile call). See
+    # app/core/skills_extraction_tasks.py -- own status lifecycle so a
+    # full-profile success/failure never fights this pipeline for the
+    # same column.
+    # -------------------------
+
+    skills_result: Mapped[list[str] | None] = mapped_column(
+        JSONB,
+        nullable=True,
+    )
+
+    skills_section_heading: Mapped[str | None] = mapped_column(
+        String(255),
+        nullable=True,
+    )
+
+    skills_extraction_status: Mapped[ResumeExtractionStatus] = mapped_column(
+        SAEnum(
+            ResumeExtractionStatus,
+            name="resume_extraction_status",
+        ),
+        default=ResumeExtractionStatus.PENDING,
+        nullable=False,
+    )
+
+    skills_extraction_error: Mapped[str | None] = mapped_column(
+        Text,
+        nullable=True,
+    )
+
+    skills_extracted_at: Mapped[datetime | None] = mapped_column(
+        nullable=True,
+    )
+
+    # Incremented only by the fault-handling sweep (never by the task
+    # itself on a normal run) each time it redispatches this row after
+    # finding it PENDING past the stale window or FAILED. Caps how many
+    # times a row can come back from failure on its own before it's left
+    # for a human / re-upload -- see extraction_retry_sweep.py.
+    skills_extraction_retry_count: Mapped[int] = mapped_column(
+        Integer,
+        default=0,
+        nullable=False,
+    )
+
+        # -------------------------
+    # Work experience, computed deterministically inside the skills
+    # extraction task (app/core/experience_calc.extract_resume_experience).
+    # experience_months NULL = no usable date range found.
+    # experience_entries = the date ranges that were counted.
+    # -------------------------
+
+    experience_months: Mapped[int | None] = mapped_column(
+        Integer,
+        nullable=True,
+    )
+
+    experience_entries: Mapped[list | None] = mapped_column(
+        JSONB,
+        nullable=True,
+    )
+
+    # -------------------------
+    # Lifecycle
+    # -------------------------
+
+    created_at: Mapped[datetime] = mapped_column(
+        server_default=func.now(),
+        nullable=False,
+    )
+
+    updated_at: Mapped[datetime] = mapped_column(
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
+
+    owner: Mapped["User | None"] = relationship(
+        foreign_keys=[owner_id],
+    )
+
+    uploaded_by: Mapped["User"] = relationship(
+        foreign_keys=[uploaded_by_id],
+    )
+
+===== backend\app\models\job.py =====
+
+import uuid
+from datetime import datetime
+from enum import Enum as PyEnum
+from typing import TYPE_CHECKING
+
+from sqlalchemy import (
+    BigInteger,
+    Enum as SAEnum,
+    ForeignKey,
+    Integer,
+    String,
+    Text,
+    func,
+)
+from sqlalchemy.dialects.postgresql import JSONB, UUID
+from sqlalchemy.orm import Mapped, mapped_column, relationship
+
+from app.db.session import Base
+
+if TYPE_CHECKING:
+    from app.models.application import Application
+    from app.models.user import User
+
+
+class JobStatus(str, PyEnum):
+    DRAFT = "draft"
+    PUBLISHED = "published"
+    CLOSED = "closed"
+
+
+class EmploymentType(str, PyEnum):
+    FULL_TIME = "full_time"
+    PART_TIME = "part_time"
+    CONTRACT = "contract"
+    INTERNSHIP = "internship"
+
+
+class SeniorityLevel(str, PyEnum):
+    ENTRY = "entry"
+    MID = "mid"
+    SENIOR = "senior"
+    LEAD = "lead"
+    EXECUTIVE = "executive"
+
+
+class RemoteType(str, PyEnum):
+    ONSITE = "onsite"
+    REMOTE = "remote"
+    HYBRID = "hybrid"
+
+
+class JobExtractionStatus(str, PyEnum):
+    PENDING = "pending"
+    PROCESSING = "processing"
+    DONE = "done"
+    FAILED = "failed"
+
+
+class Job(Base):
+    __tablename__ = "jobs"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        default=uuid.uuid4,
+    )
+
+    title: Mapped[str] = mapped_column(
+        String(255),
+        nullable=False,
+    )
+
+    description: Mapped[str] = mapped_column(
+        Text,
+        nullable=True,
+    )
+
+    jd_raw_text: Mapped[str | None] = mapped_column(
+        Text,
+        nullable=True,
+    )
+
+    # -------------------------
+    # JD file storage (mirrors Resume's blob_path/original_filename/
+    # content_type/size_bytes). Nullable, unlike Resume's non-null
+    # versions: a Job can exist and even be published today without a
+    # stored file (jd_raw_text-only), so this can't be made required
+    # without a backfill. Revisit once upload_jd() always populates it.
+    # -------------------------
+
+    blob_path: Mapped[str | None] = mapped_column(
+        String(1000),
+        nullable=True,
+    )
+
+    original_filename: Mapped[str | None] = mapped_column(
+        String(500),
+        nullable=True,
+    )
+
+    content_type: Mapped[str | None] = mapped_column(
+        String(255),
+        nullable=True,
+    )
+
+    size_bytes: Mapped[int | None] = mapped_column(
+        BigInteger,
+        nullable=True,
+    )
+
+    status: Mapped[JobStatus] = mapped_column(
+        SAEnum(JobStatus, name="job_status"),
+        default=JobStatus.DRAFT,
+        nullable=False,
+    )
+
+    # -------------------------
+    # Recruiter-managed fields
+    # -------------------------
+
+    location: Mapped[str | None] = mapped_column(
+        String(255),
+        nullable=True,
+    )
+
+    employment_type: Mapped[EmploymentType] = mapped_column(
+        SAEnum(EmploymentType, name="employment_type"),
+        default=EmploymentType.FULL_TIME,
+        nullable=False,
+    )
+
+    department: Mapped[str | None] = mapped_column(
+        String(255),
+        nullable=True,
+    )
+
+    seniority: Mapped[SeniorityLevel | None] = mapped_column(
+        SAEnum(SeniorityLevel, name="seniority_level"),
+        nullable=True,
+    )
+
+    remote_type: Mapped[RemoteType | None] = mapped_column(
+        SAEnum(RemoteType, name="remote_type"),
+        nullable=True,
+    )
+
+    salary_min: Mapped[int | None] = mapped_column(
+        Integer,
+        nullable=True,
+    )
+
+    salary_max: Mapped[int | None] = mapped_column(
+        Integer,
+        nullable=True,
+    )
+
+    # These remain recruiter-editable/manual matching fields.
+    required_skills: Mapped[list[str] | None] = mapped_column(
+        JSONB,
+        nullable=True,
+    )
+
+    min_experience_years: Mapped[int | None] = mapped_column(
+        Integer,
+        nullable=True,
+    )
+
+    max_experience_years: Mapped[int | None] = mapped_column(
+        Integer,
+        nullable=True,
+    )
+
+    education_requirement: Mapped[str | None] = mapped_column(
+        String(255),
+        nullable=True,
+    )
+
+    # -------------------------
+    # Extraction
+    # -------------------------
+
+    extraction_status: Mapped[JobExtractionStatus] = mapped_column(
+        SAEnum(
+            JobExtractionStatus,
+            name="job_extraction_status",
+        ),
+        default=JobExtractionStatus.PENDING,
+        nullable=False,
+    )
+
+    extraction_error: Mapped[str | None] = mapped_column(
+        Text,
+        nullable=True,
+    )
+
+    extracted_at: Mapped[datetime | None] = mapped_column(
+        nullable=True,
+    )
+
+    # All technically relevant skills found anywhere in the JD.
+    extracted_skills: Mapped[list[str] | None] = mapped_column(
+        JSONB,
+        nullable=True,
+    )
+
+    # Only explicitly compulsory/mandatory skills.
+    extracted_compulsory_skills: Mapped[list[str] | None] = mapped_column(
+        JSONB,
+        nullable=True,
+    )
+
+    extracted_min_experience_years: Mapped[int | None] = mapped_column(
+        Integer,
+        nullable=True,
+    )
+
+    extracted_max_experience_years: Mapped[int | None] = mapped_column(
+        Integer,
+        nullable=True,
+    )
+
+    extracted_education_requirement: Mapped[str | None] = mapped_column(
+        String(255),
+        nullable=True,
+    )
+
+    # Complete model output retained as source-of-truth JSON.
+    extracted_profile: Mapped[dict | None] = mapped_column(
+        JSONB,
+        nullable=True,
+    )
+
+    # -------------------------
+    # Standalone skills-only extraction (separate from extracted_skills/
+    # extracted_compulsory_skills above, which belong to the deleted
+    # full-profile call and are being phased out). Mirrors
+    # Resume.skills_result and friends -- own status lifecycle so this
+    # pipeline never fights the legacy extraction_status column for the
+    # same row. See app/core/jd_skills_extraction_tasks.py.
+    # -------------------------
+
+    skills_result: Mapped[list[str] | None] = mapped_column(
+        JSONB,
+        nullable=True,
+    )
+
+    skills_section_heading: Mapped[str | None] = mapped_column(
+        String(255),
+        nullable=True,
+    )
+
+    skills_extraction_status: Mapped[JobExtractionStatus] = mapped_column(
+        SAEnum(
+            JobExtractionStatus,
+            name="job_extraction_status",
+        ),
+        default=JobExtractionStatus.PENDING,
+        nullable=False,
+    )
+
+    skills_extraction_error: Mapped[str | None] = mapped_column(
+        Text,
+        nullable=True,
+    )
+
+    skills_extracted_at: Mapped[datetime | None] = mapped_column(
+        nullable=True,
+    )
+
+    skills_extracted_at: Mapped[datetime | None] = mapped_column(
+        nullable=True,
+    )
+
+    # Minimum experience the JD demands, in months, computed
+    # deterministically by app/core/experience_calc.extract_min_experience()
+    # inside the JD skills extraction task. NULL = JD states no requirement;
+    # 0 = entry-level/fresher marker. Separate from the recruiter-editable
+    # min_experience_years and the legacy extracted_min_experience_years.
+    min_experience_months: Mapped[int | None] = mapped_column(
+        Integer,
+        nullable=True,
+    )
+
+    # See Resume.skills_extraction_retry_count -- same purpose, same
+    # convention: only the fault-handling sweep increments this.
+    skills_extraction_retry_count: Mapped[int] = mapped_column(
+        Integer,
+        default=0,
+        nullable=False,
+    )
+
+    # See Resume.skills_extraction_retry_count -- same purpose, same
+    # convention: only the fault-handling sweep increments this.
+    skills_extraction_retry_count: Mapped[int] = mapped_column(
+        Integer,
+        default=0,
+        nullable=False,
+    )
+
+    # -------------------------
+    # Lifecycle
+    # -------------------------
+
+    published_at: Mapped[datetime | None] = mapped_column(
+        nullable=True,
+    )
+
+    closes_at: Mapped[datetime | None] = mapped_column(
+        nullable=True,
+    )
+
+    created_by_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+
+    created_at: Mapped[datetime] = mapped_column(
+        server_default=func.now(),
+        nullable=False,
+    )
+
+    updated_at: Mapped[datetime] = mapped_column(
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
+
+    created_by: Mapped["User"] = relationship(
+        back_populates="jobs",
+    )
+
+    applications: Mapped[list["Application"]] = relationship(
+        back_populates="job",
+        cascade="all, delete-orphan",
+    )
+
+===== backend\app\schemas\extraction.py =====
+
+"""
+Pydantic schemas for Phase 4 structured extraction.
+
+These schemas are used for:
+1. generating the structured-output schema sent to the Hugging Face
+   Inference Provider, and
+2. validating the provider response before it is persisted.
+
+Extraction intentionally preserves source information. Normalization and
+matching happen separately.
+"""
+
+from pydantic import BaseModel, Field
+
+
+class EducationEntry(BaseModel):
+    degree: str | None = None
+    institution: str | None = None
+    year: int | None = None
+
+
+class WorkHistoryEntry(BaseModel):
+    company: str | None = None
+    title: str | None = None
+    start_date: str | None = None
+    end_date: str | None = None
+    duration: str | None = None
+
+
+class ProjectEntry(BaseModel):
+    name: str | None = None
+    description: str | None = None
+
+
+class CertificationEntry(BaseModel):
+    name: str | None = None
+    issuer: str | None = None
+    year: int | None = None
+
+
+class CandidateProfileExtraction(BaseModel):
+    """
+    Structured extraction result for a resume.
+
+    experience_years is intentionally derived separately from work_history
+    by the application. stated_experience preserves an explicit total-
+    experience statement from the resume such as "5+" or "around seven years".
+    """
+
+    skills: list[str] = Field(default_factory=list)
+
+    stated_experience: str | None = None
+
+    # Derived by compute_experience_years() after extraction.
+    experience_years: int | None = None
+
+    education: list[EducationEntry] = Field(default_factory=list)
+
+    certifications: list[CertificationEntry] = Field(default_factory=list)
+
+    work_history: list[WorkHistoryEntry] = Field(default_factory=list)
+
+    projects: list[ProjectEntry] = Field(default_factory=list)
+
+    candidate_name: str | None = None
+    candidate_email: str | None = None
+
+
+class JobRequirementsExtraction(BaseModel):
+    """
+    Structured extraction result for a job description.
+
+    skills:
+        All concrete technical skills/competencies mentioned anywhere.
+
+    compulsory_skills:
+        Only skills that the JD explicitly marks as mandatory/required.
+        This is the set used by the hard matching gate.
+    """
+
+    skills: list[str] = Field(default_factory=list)
+
+    compulsory_skills: list[str] = Field(default_factory=list)
+
+    min_experience_years: int | None = None
+
+    max_experience_years: int | None = None
+
+    education_requirement: str | None = None
+
+===== backend\tests\test_match_scoring.py =====
+
+"""
+Integration tests for applicant scoring: the Celery task run against real
+rows, the score-sorted applicant list, and the apply / rescore triggers.
+The embedder is faked; Redis is never touched (see conftest `dispatched`).
+"""
+
+import uuid
+from datetime import datetime, timezone
+
+import pytest
+from conftest import TestSessionLocal
+
+from app.models.application import Application
+from app.models.job import Job, JobExtractionStatus
+from app.models.resume import Resume, ResumeExtractionStatus, ResumeStatus
+from app.models.user import UserRole
+
+
+@pytest.fixture(autouse=True)
+def _task_env(monkeypatch):
+    """Point the task at the test DB and give it a deterministic embedder."""
+    from app.core import matching_tasks
+
+    monkeypatch.setattr(matching_tasks, "SessionLocal", TestSessionLocal)
+    # every distinct string gets its own axis -> only exact matches score
+    def embed(texts):
+        return [[1.0 if i == j else 0.0 for j in range(len(texts))] for i, _ in enumerate(texts)]
+    monkeypatch.setattr(matching_tasks, "embed", embed)
+    return matching_tasks
+
+
+def _job(db, recruiter, *, skills=("python", "sql"), min_months=24,
+         status=JobExtractionStatus.DONE):
+    job = Job(
+        title="Backend", description="x", created_by_id=recruiter.id,
+        skills_result=list(skills) if skills is not None else None,
+        skills_extraction_status=status, min_experience_months=min_months,
+    )
+    db.add(job)
+    db.commit()
+    db.refresh(job)
+    return job
+
+
+def _resume(db, owner, *, skills=("python", "sql"), months=24,
+            status=ResumeExtractionStatus.DONE):
+    r = Resume(
+        owner_id=owner.id, uploaded_by_id=owner.id, original_filename="r.pdf",
+        content_type="application/pdf", size_bytes=1, blob_path=f"{owner.id}/{uuid.uuid4()}.pdf",
+        status=ResumeStatus.UPLOADED, skills_result=list(skills),
+        experience_months=months, skills_extraction_status=status,
+    )
+    db.add(r)
+    db.commit()
+    db.refresh(r)
+    return r
+
+
+def _application(db, user, job, resume, applied_at=None):
+    a = Application(user_id=user.id, job_id=job.id, resume_id=resume.id)
+    if applied_at:
+        a.applied_at = applied_at
+    db.add(a)
+    db.commit()
+    db.refresh(a)
+    return a
+
+
+def _reload(db, application):
+    db.expire_all()
+    return db.get(Application, application.id)
+
+
+# --------------------------------------------------------------------- task
+
+def test_task_scores_and_stores_breakdown(_task_env, db, make_user):
+    recruiter, _ = make_user(role=UserRole.RECRUITER)
+    cand, _ = make_user()
+    job = _job(db, recruiter, skills=("python", "sql", "docker"), min_months=48)
+    a = _application(db, cand, job, _resume(db, cand, skills=("python", "sql"), months=24))
+
+    _task_env.score_application_task.run(str(a.id))
+
+    a = _reload(db, a)
+    assert a.match_status == "done"
+    # skills 2/3, experience 24/48 -> 0.8*0.667 + 0.2*0.5 = 0.633
+    assert a.match_score == pytest.approx(63.3, abs=0.1)
+    assert a.match_details["missing"] == ["docker"]
+    assert a.matched_at is not None and a.match_error is None
+
+
+def test_task_waits_while_job_skills_are_still_extracting(_task_env, db, make_user):
+    recruiter, _ = make_user(role=UserRole.RECRUITER)
+    cand, _ = make_user()
+    job = _job(db, recruiter, status=JobExtractionStatus.PENDING)
+    a = _application(db, cand, job, _resume(db, cand))
+
+    _task_env.score_application_task.run(str(a.id))
+
+    a = _reload(db, a)
+    assert a.match_status == "pending" and a.match_score is None
+
+
+def test_task_records_reason_when_jd_extraction_failed(_task_env, db, make_user):
+    recruiter, _ = make_user(role=UserRole.RECRUITER)
+    cand, _ = make_user()
+    job = _job(db, recruiter, status=JobExtractionStatus.FAILED)
+    a = _application(db, cand, job, _resume(db, cand))
+
+    _task_env.score_application_task.run(str(a.id))
+
+    a = _reload(db, a)
+    assert a.match_status == "failed"
+    assert "job description" in a.match_error.lower()
+
+
+def test_task_marks_failed_on_embedder_misconfiguration(_task_env, db, make_user, monkeypatch):
+    from app.core.llm_provider_registry import LLMConfigError
+
+    recruiter, _ = make_user(role=UserRole.RECRUITER)
+    cand, _ = make_user()
+    job = _job(db, recruiter, skills=("react",))  # not an exact match -> needs the embedder
+    a = _application(db, cand, job, _resume(db, cand, skills=("vue",)))
+
+    def boom(texts):
+        raise LLMConfigError("HF_TOKEN is not set")
+    monkeypatch.setattr(_task_env, "embed", boom)
+
+    _task_env.score_application_task.run(str(a.id))
+
+    a = _reload(db, a)
+    assert a.match_status == "failed" and "HF_TOKEN" in a.match_error
+
+
+def test_task_ignores_a_deleted_application(_task_env):
+    _task_env.score_application_task.run(str(uuid.uuid4()))  # must not raise
+
+
+# ---------------------------------------------------------------- fan-out
+
+def test_dispatch_for_job_queues_every_applicant(_task_env, db, make_user, dispatched):
+    recruiter, _ = make_user(role=UserRole.RECRUITER)
+    job = _job(db, recruiter)
+    ids = []
+    for _i in range(3):
+        cand, _ = make_user()
+        ids.append(str(_application(db, cand, job, _resume(db, cand)).id))
+
+    n = _task_env.dispatch_score_for_job(db, job.id)
+
+    assert n == 3
+    assert sorted(dispatched["score"]) == sorted(ids)
+
+
+def test_apply_queues_scoring(client, make_user, auth_headers, pdf_bytes, dispatched, db):
+    recruiter, _ = make_user(role=UserRole.RECRUITER)
+    cand, _ = make_user()
+    job = _job(db, recruiter)
+    job.status = "published"
+    db.commit()
+    _resume(db, cand)
+
+    resp = client.post("/api/applications", json={"job_id": str(job.id)}, headers=auth_headers(cand))
+
+    assert resp.status_code == 201
+    assert dispatched["score"] == [resp.json()["id"]]
+
+
+# ------------------------------------------------------------- listing/sort
+
+def _seed_three(db, make_user):
+    recruiter, _ = make_user(role=UserRole.RECRUITER)
+    job = _job(db, recruiter)
+    out = {}
+    for name, score, when in [("low", 20.0, 3), ("high", 90.0, 1), ("unscored", None, 2), ("mid", 55.0, 4)]:
+        cand, _ = make_user(email=f"{name}@test.com")
+        a = _application(db, cand, job, _resume(db, cand),
+                         applied_at=datetime(2026, 9, when, tzinfo=timezone.utc))
+        if score is not None:
+            a.match_score, a.match_status = score, "done"
+            db.commit()
+        out[name] = a
+    return recruiter, job, out
+
+
+def test_applicants_sorted_by_score_desc_unscored_last(client, db, make_user, auth_headers):
+    recruiter, job, _ = _seed_three(db, make_user)
+
+    resp = client.get(f"/api/applications/job/{job.id}", headers=auth_headers(recruiter))
+
+    assert resp.status_code == 200
+    assert [r["applicant_email"] for r in resp.json()] == [
+        "high@test.com", "mid@test.com", "low@test.com", "unscored@test.com",
+    ]
+    assert resp.json()[0]["match_score"] == 90.0
+
+
+def test_applicants_can_still_be_sorted_by_applied_date(client, db, make_user, auth_headers):
+    recruiter, job, _ = _seed_three(db, make_user)
+
+    resp = client.get(f"/api/applications/job/{job.id}?sort=applied_at", headers=auth_headers(recruiter))
+
+    assert [r["applicant_email"] for r in resp.json()] == [
+        "mid@test.com", "low@test.com", "unscored@test.com", "high@test.com",
+    ]
+
+
+def test_score_is_not_exposed_to_the_candidate(client, db, make_user, auth_headers):
+    recruiter, job, apps = _seed_three(db, make_user)
+    cand = apps["high"].user
+
+    resp = client.get("/api/applications/me", headers=auth_headers(cand))
+
+    assert resp.status_code == 200
+    assert "match_score" not in resp.json()[0]
+
+
+# ------------------------------------------------------------------ rescore
+
+def test_rescore_queues_all_and_returns_count(client, db, make_user, auth_headers, dispatched):
+    recruiter, job, apps = _seed_three(db, make_user)
+
+    resp = client.post(f"/api/applications/job/{job.id}/rescore", headers=auth_headers(recruiter))
+
+    assert resp.status_code == 202
+    assert resp.json() == {"queued": 4}
+    assert len(dispatched["score"]) == 4
+
+
+def test_rescore_forbidden_for_another_recruiter(client, db, make_user, auth_headers):
+    _, job, _ = _seed_three(db, make_user)
+    other, _ = make_user(role=UserRole.RECRUITER)
+
+    resp = client.post(f"/api/applications/job/{job.id}/rescore", headers=auth_headers(other))
+
+    assert resp.status_code == 403
+
+
+def test_rescore_forbidden_for_candidates(client, db, make_user, auth_headers):
+    _, job, apps = _seed_three(db, make_user)
+
+    resp = client.post(f"/api/applications/job/{job.id}/rescore", headers=auth_headers(apps["low"].user))
+
+    assert resp.status_code == 403
+
+
+===== backend\tests\test_semantic_match.py =====
+
+"""
+Pure tests for the applicant score (app/core/semantic_match.py).
+No DB, Redis or network: the embedder is a fake with hand-picked vectors so
+every expected number below is derivable by hand.
+"""
+
+import pytest
+
+from app.core.semantic_match import MatchWeights, compute_match, cosine, score_experience
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _prepare_test_database():
+    yield
+
+
+@pytest.fixture(autouse=True)
+def _clean_tables():
+    yield
+
+
+# 2-d "embedding space": frontend-ish words point one way, ops-ish the other.
+_VECS = {
+    "react": [1.0, 0.0],
+    "vue": [0.9, 0.436],       # cos(react, vue) ~= 0.90 -> full credit
+    "svelte": [0.7, 0.714],    # cos(react, svelte) ~= 0.70 -> partial credit
+    "terraform": [0.0, 1.0],   # cos(react, terraform) = 0 -> no credit
+    "python": [0.5, 0.5],
+    "sql": [0.6, 0.4],
+}
+
+
+def fake_embed(texts):
+    return [_VECS[t] for t in texts]
+
+
+def exploding_embed(texts):
+    raise AssertionError("embedder must not be called when everything matches exactly")
+
+
+def test_cosine_basics():
+    assert cosine([1, 0], [1, 0]) == pytest.approx(1.0)
+    assert cosine([1, 0], [0, 1]) == pytest.approx(0.0)
+    assert cosine([0, 0], [1, 0]) == 0.0
+
+
+def test_exact_match_after_alias_needs_no_embedding_call():
+    r = compute_match(
+        resume_skills=["Python", "K8s"],
+        resume_months=None,
+        jd_skills=["python", "kubernetes"],
+        jd_min_months=None,
+        embed=exploding_embed,
+    )
+    assert r.score == 100.0
+    assert r.missing == []
+    assert {m["jd_skill"] for m in r.matched} == {"python", "kubernetes"}
+
+
+def test_close_synonym_earns_full_credit_unrelated_earns_none():
+    r = compute_match(
+        resume_skills=["vue"],
+        resume_months=None,
+        jd_skills=["react", "terraform"],
+        jd_min_months=None,
+        embed=fake_embed,
+    )
+    # react ~1.0; terraform: cos(vue, terraform) = 0.436 -> credit 0.08, below the
+    # 'matched' cutoff so it is still reported as missing.
+    assert r.skills_score == pytest.approx((1.0 + 0.08) / 2, abs=0.02)
+    assert [m["jd_skill"] for m in r.matched] == ["react"]
+    assert r.matched[0]["resume_skill"] == "vue"
+    assert r.missing == ["terraform"]
+
+
+def test_partial_similarity_earns_partial_credit():
+    r = compute_match(
+        resume_skills=["svelte"], resume_months=None,
+        jd_skills=["react"], jd_min_months=None, embed=fake_embed,
+    )
+    # sim ~0.70 -> (0.70-0.40)/(0.85-0.40) ~= 0.67, counted as matched (>= .5)
+    assert 0.55 < r.skills_score < 0.75
+    assert r.matched and not r.missing
+
+
+def test_experience_ratio_and_cap():
+    assert score_experience(24, 48) == pytest.approx(0.5)
+    assert score_experience(96, 48) == 1.0
+
+
+def test_no_jd_minimum_drops_experience_and_renormalises():
+    r = compute_match(
+        resume_skills=["python"], resume_months=0,
+        jd_skills=["python"], jd_min_months=None, embed=exploding_embed,
+    )
+    assert r.experience_score is None
+    assert r.weights_used == {"skills": 1.0}
+    assert r.score == 100.0
+
+
+def test_fresher_marker_zero_months_required_is_not_scored():
+    assert score_experience(None, 0) is None
+
+
+def test_unknown_resume_experience_against_real_minimum_scores_zero():
+    assert score_experience(None, 36) == 0.0
+
+
+def test_blend_uses_configured_weights():
+    r = compute_match(
+        resume_skills=["python"], resume_months=12,
+        jd_skills=["python"], jd_min_months=48,   # skills 1.0, experience 0.25
+        embed=exploding_embed,
+        weights=MatchWeights(skills=0.5, experience=0.5),
+    )
+    assert r.score == pytest.approx(62.5)
+
+
+def test_no_resume_skills_scores_zero_without_calling_embedder():
+    r = compute_match(
+        resume_skills=[], resume_months=None,
+        jd_skills=["python"], jd_min_months=None, embed=exploding_embed,
+    )
+    assert r.score == 0.0
+    assert r.missing == ["python"]
+
+
+def test_jd_without_skills_and_without_minimum_scores_zero_not_crash():
+    r = compute_match(
+        resume_skills=["python"], resume_months=60,
+        jd_skills=[], jd_min_months=None, embed=exploding_embed,
+    )
+    assert r.score == 0.0
+    assert r.skills_score is None
+
+
+def test_duplicates_and_case_are_collapsed():
+    r = compute_match(
+        resume_skills=["Python", "python ", "PY"], resume_months=None,
+        jd_skills=["python", "Python"], jd_min_months=None, embed=exploding_embed,
+    )
+    assert r.score == 100.0
+    assert len(r.matched) == 1
+
+
+===== frontend\src\components\jobs\ApplicantsPanel.jsx =====
+
+import { Fragment, useEffect, useState } from 'react'
+import Spinner from '../ui/Spinner'
+import { useToast } from '../ui/Toast'
+import { fetchJobApplications, rescoreJobApplications, updateApplicationStatus } from '../../api/applications'
+import { formatEnumLabel, formatExperienceMonths } from '../../utils/format'
+import { openResumeFile } from '../../api/resumes'
+
+const APPLICATION_STATUS_OPTIONS = ['applied', 'under_review', 'shortlisted', 'rejected', 'hired']
+
+// Applicants are returned best-match first by the server (sort=score). The
+// score itself is computed asynchronously, so a row can be 'pending' for a
+// few seconds after applying / after a JD change.
+function ScoreBadge({ applicant }) {
+  const { match_status: state, match_score: score, match_error: err } = applicant
+  if (score == null) {
+    if (state === 'failed') {
+      return <span title={err || 'Could not be scored'} className="text-red-600 dark:text-red-400">Unavailable</span>
+    }
+    return <span className="text-slate-400 dark:text-slate-500">Scoringâ€¦</span>
+  }
+  const tone =
+    score >= 70
+      ? 'bg-emerald-100 text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-300'
+      : score >= 40
+        ? 'bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-300'
+        : 'bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300'
+  return (
+    <span className={`inline-block rounded px-2 py-0.5 font-semibold ${tone}`} title={state === 'pending' ? 'Re-scoringâ€¦' : undefined}>
+      {Math.round(score)}%
+    </span>
+  )
+}
+
+function MatchDetails({ details }) {
+  if (!details) return null
+  const matched = details.matched || []
+  const missing = details.missing || []
+  const have = formatExperienceMonths(details.resume_months)
+  const need = formatExperienceMonths(details.jd_min_months)
+  return (
+    <div className="space-y-2 text-xs text-slate-600 dark:text-slate-300">
+      <div>
+        <span className="mr-2 text-slate-400 dark:text-slate-500">Matched</span>
+        {matched.length === 0 ? 'â€”' : matched.map((m) => (
+          <span key={m.jd_skill} title={`${Math.round(m.similarity * 100)}% similar`} className="mr-1 inline-block rounded bg-emerald-50 px-1.5 py-0.5 text-emerald-800 dark:bg-emerald-900/30 dark:text-emerald-300">
+            {m.jd_skill}{m.resume_skill && m.resume_skill !== m.jd_skill ? ` â† ${m.resume_skill}` : ''}
+          </span>
+        ))}
+      </div>
+      <div>
+        <span className="mr-2 text-slate-400 dark:text-slate-500">Missing</span>
+        {missing.length === 0 ? 'â€”' : missing.map((s) => (
+          <span key={s} className="mr-1 inline-block rounded bg-red-50 px-1.5 py-0.5 text-red-700 dark:bg-red-900/30 dark:text-red-300">{s}</span>
+        ))}
+      </div>
+      <div>
+        <span className="mr-2 text-slate-400 dark:text-slate-500">Experience</span>
+        {need ? `${have ?? 'not stated'} (job asks for ${need})` : (have ?? 'not stated')}
+      </div>
+    </div>
+  )
+}
+
+// active=false skips fetching â€” used so a closed/hidden modal doesn't fire
+// a request, same intent as the old `open && canManage` guard it replaces.
+// fullPage=true drops the height cap / scroll box for use on a dedicated
+// applicants page instead of inside a cramped modal.
+export default function ApplicantsPanel({ job, active = true, fullPage = false }) {
+  const { showToast } = useToast()
+  const [applicants, setApplicants] = useState([])
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState(null)
+
+  useEffect(() => {
+    if (!active || !job) {
+      setApplicants([])
+      return
+    }
+    setLoading(true)
+    setError(null)
+    fetchJobApplications(job.id)
+      .then(setApplicants)
+      .catch(() => setError('Could not load applicants.'))
+      .finally(() => setLoading(false))
+  }, [active, job])
+
+  const [openingResumeId, setOpeningResumeId] = useState(null)
+  const [expandedId, setExpandedId] = useState(null)
+  const [rescoring, setRescoring] = useState(false)
+
+  // While any row is still being scored, quietly re-fetch every few seconds
+  // (max ~1 min) so scores appear and the list re-sorts without a reload.
+  const anyPending = applicants.some((a) => a.match_status === 'pending')
+  useEffect(() => {
+    if (!active || !job || !anyPending) return undefined
+    let tries = 0
+    const timer = setInterval(() => {
+      tries += 1
+      fetchJobApplications(job.id).then(setApplicants).catch(() => {})
+      if (tries >= 12) clearInterval(timer)
+    }, 5000)
+    return () => clearInterval(timer)
+  }, [active, job, anyPending])
+
+  const handleRescore = async () => {
+    setRescoring(true)
+    try {
+      await rescoreJobApplications(job.id)
+      setApplicants((prev) => prev.map((a) => ({ ...a, match_status: 'pending' })))
+      showToast('Re-scoring applicantsâ€¦', 'success')
+    } catch {
+      showToast('Could not start re-scoring.', 'error')
+    } finally {
+      setRescoring(false)
+    }
+  }
+
+  const handleViewResume = async (applicationId, resumeId) => {
+    setOpeningResumeId(applicationId)
+    try {
+      await openResumeFile(resumeId)
+    } catch {
+      showToast('Could not open that resume.', 'error')
+    } finally {
+      setOpeningResumeId(null)
+    }
+  }
+
+  const handleStatusChange = async (applicationId, status) => {
+    setApplicants((prev) => prev.map((a) => (a.id === applicationId ? { ...a, status } : a)))
+    try {
+      await updateApplicationStatus(applicationId, status)
+      showToast('Applicant status updated.', 'success')
+    } catch (err) {
+      showToast('Could not update applicant status.', 'error')
+      if (job) fetchJobApplications(job.id).then(setApplicants).catch(() => {})
+    }
+  }
+
+  return (
+    <div>
+      <dt className="mb-2 flex items-center justify-between text-xs text-slate-400 dark:text-slate-500">
+        <span>Applicants ({applicants.length}) Â· best match first</span>
+        {applicants.length > 0 && (
+          <button onClick={handleRescore} disabled={rescoring} className="font-medium text-slate-600 underline hover:no-underline disabled:opacity-50 dark:text-slate-300">
+            {rescoring ? 'Queuingâ€¦' : 'Re-score'}
+          </button>
+        )}
+      </dt>
+      {loading ? (
+        <div className="flex justify-center py-4"><Spinner size="sm" label="Loading applicants" /></div>
+      ) : error ? (
+        <p className="text-xs text-red-600 dark:text-red-400">{error}</p>
+      ) : applicants.length === 0 ? (
+        <p className="text-xs text-slate-400 dark:text-slate-500">No applications yet.</p>
+      ) : (
+        <div className={`rounded border border-slate-100 dark:border-slate-700 ${fullPage ? '' : 'max-h-52 overflow-y-auto'}`}>
+          <table className="w-full text-left text-xs">
+            <thead className="bg-slate-50 text-slate-400 dark:bg-slate-800 dark:text-slate-500">
+              <tr>
+                <th className="px-3 py-2 font-medium">Applicant</th>
+                <th className="px-3 py-2 font-medium">Match</th>
+                <th className="px-3 py-2 font-medium">Applied</th>
+                <th className="px-3 py-2 font-medium">Resume</th>
+                <th className="px-3 py-2 font-medium">Status</th>
+              </tr>
+            </thead>
+            <tbody>
+              {applicants.map((a) => (
+                <Fragment key={a.id}>
+                <tr className="border-t border-slate-100 dark:border-slate-800">
+                  <td className="px-3 py-2 text-slate-700 dark:text-slate-300">
+                    {a.applicant_name || a.applicant_email}
+                  </td>
+                  <td className="px-3 py-2">
+                    <ScoreBadge applicant={a} />
+                    {a.match_details && (
+                      <button onClick={() => setExpandedId(expandedId === a.id ? null : a.id)} className="ml-2 text-slate-500 underline hover:no-underline dark:text-slate-400">
+                        {expandedId === a.id ? 'Hide' : 'Why?'}
+                      </button>
+                    )}
+                  </td>
+                  <td className="px-3 py-2 text-slate-500 dark:text-slate-400">
+                    {new Date(a.applied_at).toLocaleDateString()}
+                  </td>
+                  <td className="px-3 py-2">
+                    {a.resume_id ? (
+                      <button onClick={() => handleViewResume(a.id, a.resume_id)} disabled={openingResumeId === a.id} className="font-medium text-slate-700 underline hover:no-underline disabled:opacity-50 dark:text-slate-300">
+                        {openingResumeId === a.id ? 'Openingâ€¦' : 'View'}
+                      </button>
+                    ) : (
+                      <span className="text-slate-400 dark:text-slate-500">No resume</span>
+                    )}
+                  </td>
+                  <td className="px-3 py-2">
+                    <select
+                      value={a.status}
+                      onChange={(e) => handleStatusChange(a.id, e.target.value)}
+                      className="rounded border border-slate-200 bg-white px-2 py-1 text-xs dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100"
+                    >
+                      {APPLICATION_STATUS_OPTIONS.map((s) => (
+                        <option key={s} value={s}>{formatEnumLabel(s)}</option>
+                      ))}
+                    </select>
+                  </td>
+                </tr>
+                {expandedId === a.id && (
+                  <tr className="bg-slate-50/60 dark:bg-slate-800/40">
+                    <td colSpan={5} className="px-3 py-2"><MatchDetails details={a.match_details} /></td>
+                  </tr>
+                )}
+                </Fragment>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  )
+}
+
+===== requirements.txt =====
+
+fastapi>=0.115
+uvicorn[standard]>=0.31
+sqlalchemy>=2.0.36
+psycopg[binary]>=3.2
+alembic>=1.13
+pydantic>=2.10
+pydantic-settings>=2.6
+python-jose[cryptography]>=3.3
+pwdlib[bcrypt]>=0.2.0
+python-multipart>=0.0.12
+azure-storage-blob>=12.24.0
+pypdf>=6.16.2
+pdfplumber>=0.11
+python-docx>=1.2.0
+pytest>=8.3
+httpx>=0.27.0
+email-validator>=2.0.0
+requests>=2.34
+reportlab>=4.2
+huggingface_hub>=0.26
+celery[redis]>=5.4
+python-dateutil>=2.9.0
+langchain-core>=1.6
+langchain-openai>=1.6
+pdfplumber>=0.11
+langchain-groq>=1.1

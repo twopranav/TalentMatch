@@ -45,13 +45,17 @@ class Settings(BaseSettings):
     # --- Applicant matching score (app/core/semantic_match.py) ---
     # "hf" = Hugging Face Inference API (needs HF_TOKEN); "local" =
     # sentence-transformers in-process (pip install sentence-transformers).
-    EMBEDDING_PROVIDER: str = "hf"
+    EMBEDDING_PROVIDER: str = "local"
     EMBEDDING_MODEL: str = "sentence-transformers/all-MiniLM-L6-v2"
 
-    # Relative weights; a component the JD sets no requirement for (e.g. no
-    # minimum experience) is dropped and the rest renormalised.
-    MATCH_WEIGHT_SKILLS: float = 0.8
-    MATCH_WEIGHT_EXPERIENCE: float = 0.2
+    # Final score = 100 x (W_SKILLS * skills_score + W_EXPERIENCE * experience_score)
+    # The two weights are normalised, so only their ratio matters.
+    #   experience_score = 1 - exp(-months / SCALE)
+    # SCALE is the curve speed in months; at 48, 3 yrs is ~0.53 of the way,
+    # 8 yrs ~0.86, 12 yrs ~0.95. Unknown experience scores 0.
+    MATCH_WEIGHT_SKILLS: float = 0.55
+    MATCH_WEIGHT_EXPERIENCE: float = 0.45
+    MATCH_EXPERIENCE_SCALE_MONTHS: int = 48
 
     # Cosine similarity mapped to per-skill credit: <= LOW earns 0,
     # >= HIGH earns 1, linear in between. An exact match after alias
