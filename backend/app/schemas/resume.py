@@ -53,6 +53,7 @@ class ResumeRead(BaseModel):
     # -------------------------
 
     skills_result: list[str] | None = None
+    skills_by_source: dict[str, list[str]] | None = None
     skills_section_heading: str | None = None
     skills_extraction_status: ResumeExtractionStatus
     skills_extraction_error: str | None = None

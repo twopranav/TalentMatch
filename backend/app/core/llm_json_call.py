@@ -1,6 +1,9 @@
 """
 Shared retry/parse/validate machinery behind the two standalone
 skills-extraction calls (skills_llm_extract.py, jd_skills_llm_extract.py).
+A call returns either one flat list of skills (JD) or, when
+source_keys is given, one list per key (resume: skills section / work
+experience / projects).
 Kept separate from those two files so each keeps its own exception type,
 prompt, and llm_configs task -- a resume-skills failure or model change
 can never get confused with a JD-skills one.
@@ -12,8 +15,9 @@ Two different kinds of failure are retried, on separate budgets:
     If the provider asks for a wait longer than _MAX_WAIT_SECONDS we give up
     immediately instead of parking a worker; the caller marks the resume
     FAILED and the retry sweep / a manual re-run picks it up later.
-  * Bad output (empty, not JSON, wrong shape): the model answered, badly.
-    Re-ask once, no waiting.
+  * Bad output (empty, not JSON, wrong shape, or Groq's 400
+    "json_validate_failed"): the model answered, badly. Re-ask once, no
+    waiting.
 
 Anything else (400, 401, 413 "request too large", ...) can never succeed
 by repeating it, so it fails on the first attempt.
@@ -52,6 +56,21 @@ _OUTPUT_FORMAT_NOTE = (
     "Put the array you would otherwise return under the \"skills\" key. "
     "Return nothing else."
 )
+
+
+def _schema_for_sources(source_keys: tuple[str, ...]) -> dict:
+    """One string array per source, all required. The prompt itself
+    describes this shape, so no output-format note is appended."""
+    return {
+        "type": "object",
+        "properties": {k: {"type": "array", "items": {"type": "string"}} for k in source_keys},
+        "required": list(source_keys),
+        "additionalProperties": False,
+    }
+
+
+def _is_string_list(value) -> bool:
+    return isinstance(value, list) and all(isinstance(i, str) for i in value)
 
 
 def content_to_text(content) -> str:
@@ -125,6 +144,27 @@ def _wait_seconds(exc: Exception, retry_number: int) -> float | None:
     return hinted
 
 
+_EST_OUTPUT_TOKENS = 600  # throttle's guess for one call's output size
+_WINDOW: list[tuple[float, int]] = []  # (timestamp, tokens) of calls in the last 60s
+
+
+def _throttle(est_tokens: int, rpm_limit: int, tpm_limit: int) -> None:
+    while True:
+        now = time.monotonic()
+        _WINDOW[:] = [(t, k) for t, k in _WINDOW if now - t < 60]
+        used = sum(k for _, k in _WINDOW)
+        if not _WINDOW or (
+            len(_WINDOW) < rpm_limit * 0.8 and used + est_tokens <= tpm_limit * 0.8
+        ):
+            return
+        wait = 60 - (now - _WINDOW[0][0]) + 0.5
+        logger.info(
+            "throttle: %d req / %d tok in last 60s -> waiting %.0fs",
+            len(_WINDOW), used, wait,
+        )
+        time.sleep(max(wait, 1))
+
+
 def call_skills_model(
     *,
     task: str,
@@ -132,14 +172,23 @@ def call_skills_model(
     document_text: str,
     schema_name: str,
     error_cls: type[Exception],
-) -> tuple[list[str], dict]:
-    llm = get_chat_model_for_task(task).bind(
+    source_keys: tuple[str, ...] | None = None,
+    model_overrides: dict | None = None,
+    rate_limits: tuple[int, int] | None = None,  # (rpm, tpm)
+) -> tuple[list[str] | dict[str, list[str]], dict]:
+    """Returns (skills, meta). skills is a flat list, or -- when
+    source_keys is given -- a dict with exactly those keys."""
+    schema = _schema_for_sources(source_keys) if source_keys else _SKILLS_JSON_SCHEMA
+    system_content = system_prompt if source_keys else system_prompt + _OUTPUT_FORMAT_NOTE
+
+    llm = get_chat_model_for_task(task, **(model_overrides or {})).bind(
         response_format={
             "type": "json_schema",
-            "json_schema": {"name": schema_name, "schema": _SKILLS_JSON_SCHEMA, "strict": True},
+            "json_schema": {"name": schema_name, "schema": schema, "strict": True},
         }
     )
 
+    est = (len(system_content) + len(document_text)) // 4 + _EST_OUTPUT_TOKENS
     last_error: Exception | None = None
     start = time.monotonic()
     attempts = 0
@@ -148,17 +197,33 @@ def call_skills_model(
 
     while True:
         attempts += 1
+        if rate_limits:
+            _throttle(est, *rate_limits)
 
         try:
             response = llm.invoke(
                 [
-                    {"role": "system", "content": system_prompt + _OUTPUT_FORMAT_NOTE},
+                    {"role": "system", "content": system_content},
                     {"role": "user", "content": document_text},
                 ]
             )
         except Exception as exc:
+            if rate_limits:
+                _WINDOW.append((time.monotonic(), est))
             last_error = exc
             code = _status_code(exc)
+
+            # Groq rejects malformed model JSON with a 400. That is the
+            # model answering badly, not a bad request: re-ask once.
+            if code == 400 and "json_validate_failed" in str(exc):
+                bad_output_retries += 1
+                logger.warning(
+                    "%s call returned unusable output on attempt %d: %s",
+                    schema_name, attempts, exc,
+                )
+                if bad_output_retries > _RETRIES:
+                    break
+                continue
 
             if not _is_transient(exc):
                 logger.warning(
@@ -196,18 +261,31 @@ def call_skills_model(
                 raise ValueError("Model returned empty content.")
 
             parsed = json.loads(content)
-            if isinstance(parsed, dict):
-                parsed = parsed.get("skills")
-            if not isinstance(parsed, list) or not all(isinstance(i, str) for i in parsed):
-                raise ValueError("Model did not return a JSON array of strings.")
+            if source_keys:
+                if not isinstance(parsed, dict) or not all(
+                    _is_string_list(parsed.get(k)) for k in source_keys
+                ):
+                    raise ValueError(
+                        "Model did not return one JSON array of strings per source."
+                    )
+                parsed = {k: parsed[k] for k in source_keys}
+            else:
+                if isinstance(parsed, dict):
+                    parsed = parsed.get("skills")
+                if not _is_string_list(parsed):
+                    raise ValueError("Model did not return a JSON array of strings.")
 
             usage = response.response_metadata.get("token_usage", {})
+            if rate_limits:
+                _WINDOW.append((time.monotonic(), usage.get("total_tokens") or est))
+            details = usage.get("completion_tokens_details") or {}
             meta = {
                 "task": task,
                 "elapsed": time.monotonic() - start,
                 "prompt_tokens": usage.get("prompt_tokens"),
                 "completion_tokens": usage.get("completion_tokens"),
                 "attempts": attempts,
+                "reasoning_tokens": details.get("reasoning_tokens"),
             }
             # One line per successful call: this is how you learn the real
             # per-resume token cost on the free tier.

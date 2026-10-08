@@ -37,6 +37,14 @@ def ok(skills=("python", "sql")):
     )
 
 
+def ok_sources(**lists):
+    body = {"skills_section": [], "work_experience": [], "projects": [], **lists}
+    return SimpleNamespace(
+        content=json.dumps(body),
+        response_metadata={"token_usage": {"prompt_tokens": 200, "completion_tokens": 30}},
+    )
+
+
 def junk():
     return SimpleNamespace(content="not json at all", response_metadata={})
 
@@ -59,9 +67,9 @@ class FakeLLM:
 
 @pytest.fixture
 def run(monkeypatch):
-    """run(script) -> (result_or_exception, llm, sleeps)"""
+    """run(script, **call_kwargs) -> (result_or_exception, llm, sleeps)"""
 
-    def _run(script):
+    def _run(script, **call_kwargs):
         llm = FakeLLM(script)
         sleeps: list[float] = []
         monkeypatch.setattr(llm_json_call, "get_chat_model_for_task", lambda task: llm)
@@ -69,7 +77,7 @@ def run(monkeypatch):
         try:
             result = llm_json_call.call_skills_model(
                 task="t", system_prompt="p", document_text="d",
-                schema_name="skills", error_cls=BoomError,
+                schema_name="skills", error_cls=BoomError, **call_kwargs,
             )
         except BoomError as exc:
             result = exc
@@ -132,3 +140,35 @@ def test_bad_output_twice_raises(run):
     result, llm, sleeps = run([junk(), junk(), ok()])
     assert isinstance(result, BoomError)
     assert llm.calls == 2 and sleeps == []
+
+
+_KEYS = ("skills_section", "work_experience", "projects")
+
+
+def test_source_keys_returns_one_list_per_source(run):
+    (skills, meta), llm, _ = run([ok_sources(projects=["fastapi"])], source_keys=_KEYS)
+    assert skills == {"skills_section": [], "work_experience": [], "projects": ["fastapi"]}
+    assert meta["prompt_tokens"] == 200 and llm.calls == 1
+
+
+def test_source_keys_missing_a_key_is_bad_output(run):
+    partial = SimpleNamespace(content=json.dumps({"skills_section": []}), response_metadata={})
+    (skills, _), llm, _ = run([partial, ok_sources()], source_keys=_KEYS)
+    assert llm.calls == 2 and set(skills) == set(_KEYS)
+
+
+def test_groq_json_validate_failed_400_is_re_asked_once(run):
+    bad = FakeAPIError(400)
+    bad.args = ("Error code: 400 - json_validate_failed",)
+    (skills, _), llm, sleeps = run([bad, ok()])
+    assert skills == ["python", "sql"] and llm.calls == 2 and sleeps == []
+
+
+def test_groq_json_validate_failed_twice_raises(run):
+    def bad():
+        exc = FakeAPIError(400)
+        exc.args = ("json_validate_failed",)
+        return exc
+
+    result, llm, _ = run([bad(), bad(), ok()])
+    assert isinstance(result, BoomError) and llm.calls == 2

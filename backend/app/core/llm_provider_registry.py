@@ -44,35 +44,38 @@ def _require(value: str | None, env_name: str, provider: str) -> str:
     return value
 
 
-def _groq(model: str) -> BaseChatModel:
-    # pip install langchain-groq
+def _groq(model: str, **overrides) -> BaseChatModel:
     from langchain_groq import ChatGroq
+
+    extra = {}
+    if overrides.get("max_tokens"):
+        extra["max_tokens"] = overrides["max_tokens"]
+    if overrides.get("reasoning_effort") and "gpt-oss" in model:
+        extra["reasoning_effort"] = overrides["reasoning_effort"]
 
     return ChatGroq(
         model=model,
         temperature=0,
         api_key=_require(settings.GROQ_API_KEY, "GROQ_API_KEY", "groq"),
-        timeout=_TIMEOUT_SECONDS,
+        timeout=overrides.get("timeout", _TIMEOUT_SECONDS),
         max_retries=0,
+        **extra,
     )
 
 
-def _openai(model: str) -> BaseChatModel:
-    # pip install langchain-openai
+def _openai(model: str, **overrides) -> BaseChatModel:
     from langchain_openai import ChatOpenAI
 
     return ChatOpenAI(
         api_key=_require(settings.OPENAI_API_KEY, "OPENAI_API_KEY", "openai"),
         model=model,
         temperature=0,
-        timeout=_TIMEOUT_SECONDS,
+        timeout=overrides.get("timeout", _TIMEOUT_SECONDS),
         max_retries=0,
     )
 
 
-def _huggingface(model: str) -> BaseChatModel:
-    # HF Inference Providers router is OpenAI-compatible. Pick the
-    # backend by suffixing the model id ("repo/model:provider").
+def _huggingface(model: str, **overrides) -> BaseChatModel:
     from langchain_openai import ChatOpenAI
 
     return ChatOpenAI(
@@ -80,7 +83,7 @@ def _huggingface(model: str) -> BaseChatModel:
         api_key=_require(settings.HF_TOKEN, "HF_TOKEN", "huggingface"),
         model=model,
         temperature=0,
-        timeout=_TIMEOUT_SECONDS,
+        timeout=overrides.get("timeout", _TIMEOUT_SECONDS),
         max_retries=0,
     )
 

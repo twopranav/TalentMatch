@@ -167,6 +167,14 @@ class Resume(Base):
         nullable=True,
     )
 
+    # skills_result is the merged, de-duplicated list matching uses; this
+    # keeps where each skill came from: {"skills_section": [...],
+    # "work_experience": [...], "projects": [...]}.
+    skills_by_source: Mapped[dict | None] = mapped_column(
+        JSONB,
+        nullable=True,
+    )
+
     skills_section_heading: Mapped[str | None] = mapped_column(
         String(255),
         nullable=True,

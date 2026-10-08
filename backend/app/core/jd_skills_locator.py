@@ -40,6 +40,7 @@ Known, deliberate quirks (kept so the tests can pin them):
 
 import os
 import re
+from app.core.jd_requirements_extractor import _leading_boundary, is_strong_jd_heading
 
 _NOT_FOUND = {"found": False, "heading": None, "section_text": ""}
 
@@ -162,7 +163,7 @@ def _requirements_heading_score(line: str) -> int:
 
     n = _norm(s)
 
-    if n in REQUIREMENT_HEADINGS:
+    if n in REQUIREMENT_HEADINGS or is_strong_jd_heading(s):
         return 2
 
     if _REQUIREMENT_HEADING_RE.match(n):
@@ -188,7 +189,7 @@ def is_section_boundary(line: str) -> bool:
 
     n = _norm(s)
 
-    if n in BOUNDARY_HEADINGS:
+    if n in BOUNDARY_HEADINGS or _leading_boundary(s) is not None:
         return True
 
     return bool(_ABOUT_PREFIX_RE.match(n)) and len(n.split()) <= 5

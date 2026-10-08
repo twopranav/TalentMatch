@@ -25,7 +25,7 @@ class UnknownProviderError(LLMConfigError):
     admin UI)."""
 
 
-def get_chat_model_for_task(task: str):
+def get_chat_model_for_task(task: str, **overrides):
     db = SessionLocal()
     try:
         row = db.query(LLMConfig).filter(LLMConfig.task == task).first()
@@ -46,4 +46,4 @@ def get_chat_model_for_task(task: str):
             f"task via PUT /api/admin/llm-config/{task} before it can run."
         )
 
-    return build(row.model)
+    return build(row.model, **overrides)

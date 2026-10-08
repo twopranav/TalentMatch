@@ -754,6 +754,11 @@ def _is_continuation(previous: str, line: str, has_bullets: bool) -> bool:
     if _CONTINUATION_TAIL_RE.search(previous):
         return True
 
+    # A short label that wrapped onto its own line ("Domain Knowledge:")
+    # takes the line below it as its content.
+    if previous.endswith(":") and len(previous.split()) <= 4:
+        return True
+
         # A short Title Case sub-heading ("Management Skills") is a new
     # item, not the wrapped tail of the bullet above it.
     if (
@@ -1024,12 +1029,17 @@ def _word_column(word: dict, boundary: float | None) -> str:
     return "single"
 
 
+def _tidy_spacing(text: str) -> str:
+    text = re.sub(r"\s+([,;:)\]])", r"\1", text)
+    return re.sub(r"([(\[])\s+", r"\1", text)
+
+
 def _make_segment(words: list[dict], column: str) -> dict:
     dominant = max(words, key=lambda item: len(item["text"]))
     fontname = dominant.get("fontname") or ""
 
     return {
-        "text": " ".join(word["text"] for word in words),
+        "text": _tidy_spacing(" ".join(word["text"] for word in words)),
         "top": min(word["top"] for word in words),
         "bottom": max(word["bottom"] for word in words),
         "x0": min(word["x0"] for word in words),

@@ -27,6 +27,9 @@ _PROMPT_PATH = (
     Path(__file__).resolve().parents[1] / "prompts" / "jd_skills_extraction_prompt.txt"
 )
 _JD_SKILLS_SYSTEM_PROMPT = _PROMPT_PATH.read_text(encoding="utf-8")
+# Run settings from the JD extraction notebook.
+_JD_MODEL_OVERRIDES = {"reasoning_effort": "low", "max_tokens": 4000, "timeout": 60}
+_JD_RATE_LIMITS = (30, 8000)  # (RPM, TPM)
 
 
 class JDSkillsExtractionError(Exception):
@@ -38,23 +41,21 @@ class JDSkillsExtractionError(Exception):
     """
 
 
-def extract_jd_skills_only(prepared_text: str) -> list[str]:
-    """
-    prepared_text must already be through jd_text_prep's cleanup
-    (normalize_parentheses -> strip_structural_labels).
-
-    Returns the raw list the model produced, BEFORE
-    postprocess_skills() -- callers apply that themselves so they can
-    log/inspect what got dropped as hallucinated or duplicate.
-    """
+def extract_jd_skills_with_meta(prepared_text: str) -> tuple[list[str], dict]:
     if not prepared_text or not prepared_text.strip():
         raise JDSkillsExtractionError("Required-skills section text is empty.")
 
-    skills, _meta = call_skills_model(
+    return call_skills_model(
         task="jd_skills",
         system_prompt=_JD_SKILLS_SYSTEM_PROMPT,
         document_text=prepared_text,
         schema_name="jd_skills",
         error_cls=JDSkillsExtractionError,
+        model_overrides=_JD_MODEL_OVERRIDES,
+        rate_limits=_JD_RATE_LIMITS,
     )
+
+
+def extract_jd_skills_only(prepared_text: str) -> list[str]:
+    skills, _meta = extract_jd_skills_with_meta(prepared_text)
     return skills

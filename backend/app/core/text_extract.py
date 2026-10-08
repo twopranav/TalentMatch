@@ -70,18 +70,18 @@ def _clean_extracted_text(text: str) -> str:
     replacements that could alter legitimate words.
     """
     replacements = {
-        "(cid:127)": " ",
-        "â†’": "→",
-        "â€“": "–",
-        "â€”": "—",
-        "â€˜": "‘",
-        "â€™": "’",
-        "â€œ": "“",
-        "â€": "”",
-        "â€¢": "•",
-        "\ufeff": "",
-        "\u00a0": " ",
-    }
+    "(cid:127)": " ",
+    "â†’": "→",
+    "â€“": "–",
+    "â€”": "—",
+    "â€˜": "‘",
+    "â€™": "’",
+    "â€œ": "“",
+    "â€•": "•",
+    "â€": "”",
+    "\ufeff": "",
+    "\u00a0": " ",
+}
 
     for old, new in replacements.items():
         text = text.replace(old, new)

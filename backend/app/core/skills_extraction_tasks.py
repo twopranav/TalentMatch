@@ -1,6 +1,8 @@
 """
 Celery task for the standalone, separately-triggerable skills-only
-extraction path.
+extraction path. Reads three sources from the resume -- Skills section,
+Work Experience, Projects -- and stores skills per source plus one
+merged list (Resume.skills_result) for matching.
 
 Deliberately NOT called from inside extraction_tasks.run_extraction_task
 (full profile extraction). Keeping them as two independent tasks means:
@@ -23,13 +25,14 @@ from datetime import datetime, timezone
 from app.core.celery_app import celery_app
 from app.core.experience_calc import extract_resume_experience
 from app.core.resume_storage import download_resume_blob
-from app.core.skills_llm_extract import SkillsExtractionError, extract_skills_only
-from app.core.skills_pdf_locator import locate_skills_section
+from app.core.skills_llm_extract import SkillsExtractionError, extract_skills_by_source
+from app.core.skills_pdf_locator import locate_resume_sections
 from app.core.skills_text_prep import (
-    normalize_parentheses,
+    SOURCE_KEYS,
+    build_skill_blocks,
+    merge_source_skills,
     postprocess_skills,
-    strip_leading_dates,
-    strip_structural_labels,
+    reroute_leaks,
 )
 from app.core.text_extract import (
     EmptyExtractionError,
@@ -92,49 +95,49 @@ def run_skills_extraction_task(self, resume_id: str) -> None:
         try:
             file_bytes = download_resume_blob(resume.blob_path)
             _store_experience(resume, file_bytes)
-            located = locate_skills_section(file_bytes, resume.original_filename)
+            located = locate_resume_sections(file_bytes, resume.original_filename)
 
-            if not located["found"] or not located["section_text"].strip():
+            # Deterministic prep per source (see build_skill_blocks for the
+            # skills-block cleanup order). A resume with no skills section
+            # can still be extracted from its experience / projects.
+            blocks = build_skill_blocks(located)
+
+            if not any(blocks.values()):
                 raise EmptyExtractionError(
-                    "Could not locate a skills section in this resume."
+                    "Could not locate a skills, experience or projects "
+                    "section in this resume."
                 )
 
-            # Order matters: dates are stripped from the still-cased,
-            # still-grouped section text; normalize_parentheses then
-            # lowercases and expands any "AWS (ECS, S3)" style grouping;
-            # only after that do we strip bare category-label lines,
-            # since a label can itself sit inside a now-expanded line.
-            prepared = strip_leading_dates(located["section_text"])
-            prepared = normalize_parentheses(prepared)
-            prepared = strip_structural_labels(prepared)
+            raw = extract_skills_by_source(blocks)
 
-            if not prepared.strip():
-                raise EmptyExtractionError(
-                    "Skills section was located but contained no usable text."
+            # A skill the model filed under the wrong source moves to the
+            # block it literally appears in; then each list is validated
+            # against the exact text the model saw for that block -- not
+            # the original PDF text. See postprocess_skills' docstring
+            # for why that distinction matters.
+            routed = reroute_leaks(raw, blocks)
+            by_source: dict[str, list[str]] = {}
+
+            for key in SOURCE_KEYS:
+                by_source[key], hallucinated, dupes_removed = postprocess_skills(
+                    routed[key],
+                    source_text=blocks[key],
                 )
 
-            raw_skills = extract_skills_only(prepared)
+                if hallucinated:
+                    logger.warning(
+                        "Resume %s: dropped %d hallucinated skill(s) from %s "
+                        "not found in source: %s",
+                        resume_id, len(hallucinated), key, hallucinated,
+                    )
 
-            # Validate against `prepared` -- the exact text the model
-            # saw -- not the original PDF text. See postprocess_skills'
-            # docstring for why that distinction matters.
-            skills, hallucinated, dupes_removed = postprocess_skills(
-                raw_skills,
-                source_text=prepared,
-            )
+                if dupes_removed:
+                    logger.info(
+                        "Resume %s: removed %d exact duplicate skill(s) from %s.",
+                        resume_id, dupes_removed, key,
+                    )
 
-            if hallucinated:
-                logger.warning(
-                    "Resume %s: dropped %d hallucinated skill(s) not "
-                    "found in source: %s",
-                    resume_id, len(hallucinated), hallucinated,
-                )
-
-            if dupes_removed:
-                logger.info(
-                    "Resume %s: removed %d exact duplicate skill(s).",
-                    resume_id, dupes_removed,
-                )
+            skills = merge_source_skills(by_source)
 
         except (
             UnsupportedFileTypeError,
@@ -169,7 +172,8 @@ def run_skills_extraction_task(self, resume_id: str) -> None:
         # -------------------------
 
         resume.skills_result = skills
-        resume.skills_section_heading = located["heading"]
+        resume.skills_by_source = by_source
+        resume.skills_section_heading = located["skills"]["heading"]
         resume.skills_extraction_status = ResumeExtractionStatus.DONE
         resume.skills_extraction_error = None
         resume.skills_extracted_at = datetime.now(timezone.utc)
@@ -180,4 +184,4 @@ def run_skills_extraction_task(self, resume_id: str) -> None:
         safe_dispatch_for_resume(db, resume_id)
 
     finally:
-        db.close()
+        db.close()
