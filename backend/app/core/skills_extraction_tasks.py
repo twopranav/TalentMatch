@@ -30,6 +30,7 @@ from app.core.skills_pdf_locator import locate_resume_sections
 from app.core.skills_text_prep import (
     SOURCE_KEYS,
     build_skill_blocks,
+    fill_source_occurrences,
     merge_source_skills,
     postprocess_skills,
     reroute_leaks,
@@ -136,6 +137,12 @@ def run_skills_extraction_task(self, resume_id: str) -> None:
                         "Resume %s: removed %d exact duplicate skill(s) from %s.",
                         resume_id, dupes_removed, key,
                     )
+
+            # The model works block by block and can miss a skill's second or
+            # third home. Add it wherever it literally appears, so each list
+            # holds every skill mentioned in that section -- scoring weighs a
+            # skill by the best section it shows up in.
+            by_source = fill_source_occurrences(by_source, blocks)
 
             skills = merge_source_skills(by_source)
 

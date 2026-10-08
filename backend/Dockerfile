@@ -15,11 +15,13 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cpu
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Bake the local embedding model into the image so the worker doesn't
-# download it on first use. Must match EMBEDDING_MODEL in .env.
-ENV HF_HOME=/opt/hf-cache
-RUN python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('sentence-transformers/all-MiniLM-L6-v2')"
+# Local embedding model, exported once to models/all-MiniLM-L6-v2 and copied
+# in, so neither the build nor the containers contact Hugging Face.
+# Must match EMBEDDING_MODEL in .env (/opt/models/all-MiniLM-L6-v2).
 ENV HF_HUB_OFFLINE=1
+COPY models/all-MiniLM-L6-v2 /opt/models/all-MiniLM-L6-v2
+# Fails the build if the exported model is incomplete.
+RUN python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('/opt/models/all-MiniLM-L6-v2')"
 
 # Only the backend/ subtree -- .dockerignore at the repo root keeps
 # frontend/, scripts/, testing files/, backend/storage/ (local resume

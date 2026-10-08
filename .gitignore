@@ -25,3 +25,6 @@ dist/
 .DS_Store
 .vscode/
 .idea/
+
+#Don't commit cache
+hf-cache/

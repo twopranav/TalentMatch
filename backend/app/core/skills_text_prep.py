@@ -429,6 +429,49 @@ def reroute_leaks(
     return routed
 
 
+def fill_source_occurrences(
+    by_source: dict[str, list[str]], blocks: dict[str, str]
+) -> dict[str, list[str]]:
+    """
+    Make each source list complete: a skill the model listed under one
+    source is also added to every other source whose text literally
+    contains it (whole-word match). The model works block by block and can
+    miss the second or third place a skill shows up; scoring needs to know
+    every place, because a skill used in work or a project counts for more
+    than one that is only listed.
+
+    Only skills already in the lists are looked for, so nothing is invented.
+    Existing order is kept; additions go at the end of that source's list.
+    """
+    text = {k: _normalize(blocks.get(k, "").replace("\n", " ")) for k in by_source}
+
+    universe: dict[str, str] = {}
+    for key in SOURCE_KEYS:
+        for skill in by_source.get(key, []):
+            universe.setdefault(_normalize(skill), skill)
+
+    filled: dict[str, list[str]] = {}
+    for key in by_source:
+        have = {_normalize(s) for s in by_source[key]}
+        extra = [
+            skill
+            for norm, skill in universe.items()
+            if norm not in have and _contains_word(text[key], norm)
+        ]
+        filled[key] = list(by_source[key]) + extra
+
+    return filled
+
+
+def _contains_word(text_norm: str, skill_norm: str) -> bool:
+    """Whole-word containment that survives skills like c++, c#, node.js:
+    the skill must not be glued to a letter, digit, + or # on either side."""
+    if not skill_norm:
+        return False
+    pattern = r"(?<![a-z0-9+#])" + re.escape(skill_norm) + r"(?![a-z0-9+#])"
+    return re.search(pattern, text_norm) is not None
+
+
 def merge_source_skills(by_source: dict[str, list[str]]) -> list[str]:
     """One flat, de-duplicated list (first appearance wins, source order
     follows SOURCE_KEYS) for consumers that match on skills alone."""

@@ -63,6 +63,20 @@ class Settings(BaseSettings):
     MATCH_SIM_LOW: float = 0.40
     MATCH_SIM_HIGH: float = 0.85
 
+    # Where a resume skill appears sets how much it counts (best source wins):
+    # work experience > projects > skills-section mentions.
+    MATCH_TIER_WORK: float = 1.0
+    MATCH_TIER_PROJECTS: float = 0.70
+    MATCH_TIER_MENTION: float = 0.35
+    # Share of the 2nd-best supporting skill added on top of the best one.
+    MATCH_SUPPORT_RHO: float = 0.25
+    # Smoothing for the balance factor (a JD skill with no evidence).
+    MATCH_BALANCE_EPS: float = 0.10
+    # skills_score = blend of coverage / proof rate / balance (normalised).
+    MATCH_BLEND_COVERAGE: float = 0.50
+    MATCH_BLEND_PROOF: float = 0.25
+    MATCH_BLEND_BALANCE: float = 0.25
+
     CORS_ORIGINS: list[str] = ["http://localhost:5173"]
 
     model_config = SettingsConfigDict(

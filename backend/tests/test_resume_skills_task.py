@@ -245,3 +245,37 @@ def test_task_ignores_a_deleted_resume(task_env):
     tasks.run_skills_extraction_task.run("resume-1")  # must not raise
 
     assert "llm_input" not in seen
+
+def test_task_lists_a_skill_under_every_section_it_appears_in(task_env):
+    resume = _fake_resume()
+    lines = [
+        "Jane Doe",
+        "EXPERIENCE",
+        "Acme Corp - Backend Engineer",
+        "Built services in Python and deployed them with Docker.",
+        "PROJECTS",
+        "Resume Matcher: FastAPI, Python",
+        "SKILLS",
+        "Python, SQL, Docker",
+        "EDUCATION",
+        "BSc Computer Science",
+    ]
+    # The LLM only reports each skill once, under the section it noticed first.
+    tasks, _ = task_env(
+        resume,
+        _resume_pdf(lines),
+        llm=lambda blocks: {
+            "skills_section": ["python", "sql", "docker"],
+            "work_experience": [],
+            "projects": ["fastapi"],
+        },
+    )
+
+    tasks.run_skills_extraction_task.run("resume-1")
+
+    by = resume.skills_by_source
+    assert set(by["skills_section"]) == {"python", "sql", "docker"}
+    assert set(by["work_experience"]) == {"python", "docker"}
+    assert set(by["projects"]) == {"fastapi", "python"}
+    # the merged list is unchanged: same skills, no duplicates
+    assert sorted(resume.skills_result) == ["docker", "fastapi", "python", "sql"]

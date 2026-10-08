@@ -43,11 +43,16 @@ def _job(db, recruiter, *, skills=("python", "sql"), min_months=24,
 
 
 def _resume(db, owner, *, skills=("python", "sql"), months=24,
-            status=ResumeExtractionStatus.DONE):
+            status=ResumeExtractionStatus.DONE, source="work_experience"):
     r = Resume(
         owner_id=owner.id, uploaded_by_id=owner.id, original_filename="r.pdf",
         content_type="application/pdf", size_bytes=1, blob_path=f"{owner.id}/{uuid.uuid4()}.pdf",
         status=ResumeStatus.UPLOADED, skills_result=list(skills),
+        skills_by_source={
+            "work_experience": list(skills) if source == "work_experience" else [],
+            "projects": list(skills) if source == "projects" else [],
+            "skills_section": list(skills) if source == "skills_section" else [],
+        },
         experience_months=months, skills_extraction_status=status,
     )
     db.add(r)
@@ -83,11 +88,16 @@ def test_task_scores_and_stores_breakdown(_task_env, db, make_user):
 
     a = _reload(db, a)
     assert a.match_status == "done"
-    # skills 2/3 = 0.667; 24 months -> experience 1-exp(-0.5) = 0.393
-    # -> 100 * (0.55 * 0.667 + 0.45 * 0.393) = 54.4
-    assert a.match_score == pytest.approx(54.4, abs=0.1)
+    # python + sql proven in work, docker absent:
+    #   coverage 2/3, proof 2/3, balance 0.395 -> skills 0.599
+    # 24 months -> experience 1-exp(-0.5) = 0.393
+    # -> 100 * (0.55 * 0.599 + 0.45 * 0.393) = 50.6
+    assert a.match_score == pytest.approx(50.6, abs=0.1)
     assert a.match_details["missing"] == ["docker"]
-    assert a.match_details["skills_score"] == pytest.approx(0.667, abs=0.001)
+    assert a.match_details["skills_score"] == pytest.approx(0.599, abs=0.001)
+    assert a.match_details["coverage"] == pytest.approx(0.667, abs=0.001)
+    assert a.match_details["proof_rate"] == pytest.approx(0.667, abs=0.001)
+    assert a.match_details["skills_basis"] == "by_source"
     assert a.match_details["experience_score"] == pytest.approx(0.393, abs=0.001)
     assert a.match_details["weights_used"] == {"skills": 0.55, "experience": 0.45}
     assert a.match_details["meets_min_experience"] is False

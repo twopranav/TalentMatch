@@ -2,7 +2,7 @@
 Celery tasks that compute Application.match_score.
 
     score_application_task(application_id)
-        resume (skills + experience_months) vs job (skills)
+        resume (skills per section + experience_months) vs job (skills)
         -> semantic_match.compute_match -> written onto the Application row.
 
 Triggers (all best-effort; the sweep below is the safety net):
@@ -48,6 +48,14 @@ def _weights() -> MatchWeights:
         sim_low=settings.MATCH_SIM_LOW,
         sim_high=settings.MATCH_SIM_HIGH,
         experience_scale_months=settings.MATCH_EXPERIENCE_SCALE_MONTHS,
+        tier_work=settings.MATCH_TIER_WORK,
+        tier_projects=settings.MATCH_TIER_PROJECTS,
+        tier_mention=settings.MATCH_TIER_MENTION,
+        support_rho=settings.MATCH_SUPPORT_RHO,
+        balance_eps=settings.MATCH_BALANCE_EPS,
+        blend_coverage=settings.MATCH_BLEND_COVERAGE,
+        blend_proof=settings.MATCH_BLEND_PROOF,
+        blend_balance=settings.MATCH_BLEND_BALANCE,
     )
 
 
@@ -97,6 +105,7 @@ def score_application_task(self, application_id: str) -> None:
         # --- score -----------------------------------------------------
         try:
             result = compute_match(
+                resume_skills_by_source=resume.skills_by_source,
                 resume_skills=resume.skills_result,
                 resume_months=resume.experience_months,
                 jd_skills=job.skills_result,
