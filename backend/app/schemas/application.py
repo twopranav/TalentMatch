@@ -60,6 +60,10 @@ class ApplicationWithApplicant(ApplicationRead):
     submitted_by_email: str | None = None
     resume_filename: str | None = None
     match_score: float | None = None
+    # Recruiter-entered, optional. Separate from match_score (the AI score).
+    # Only on this recruiter-facing schema, never on ApplicationRead /
+    # ApplicationWithJob, which candidates receive.
+    manual_score: float | None = None
     match_status: str = "pending"
     match_details: dict | None = None
     match_error: str | None = None

@@ -4,10 +4,12 @@ from fastapi.middleware.cors import CORSMiddleware
 from app import models  # noqa: F401
 from app.api.routes import (
     applications,
+    audit,
     auth,
     health,
     jobs,
     llm_config,
+    recruiter_actions,
     resumes,
     users,
 )
@@ -30,6 +32,9 @@ app.include_router(auth.router, prefix="/api/auth", tags=["auth"])
 app.include_router(jobs.router, prefix="/api/jobs", tags=["jobs"])
 app.include_router(users.router, prefix="/api/users", tags=["users"])
 app.include_router(applications.router, prefix="/api/applications", tags=["applications"])
+# Notes + manual score share the /api/applications prefix; separate module.
+app.include_router(recruiter_actions.router, prefix="/api/applications", tags=["applications"])
+app.include_router(audit.router, prefix="/api/audit", tags=["audit"])
 app.include_router(resumes.router, prefix="/api/resumes", tags=["resumes"])
 app.include_router(llm_config.router, prefix="/api/admin/llm-config", tags=["admin"])
 

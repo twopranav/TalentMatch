@@ -48,3 +48,23 @@ export function fetchJobApplicationsPage(jobId, filterParams, limit, offset) {
     total: Number(res.headers['x-total-count'] ?? res.data.length),
   }))
 }
+
+// --- Recruiter-only: notes and the optional manual score (shortlist tab) ---
+
+// Every note on one application, newest first.
+export function fetchApplicationNotes(applicationId) {
+  return apiClient.get(`/applications/${applicationId}/notes`).then((res) => res.data)
+}
+
+// Returns the saved note (with author and timestamp from the server).
+export function addApplicationNote(applicationId, body) {
+  return apiClient.post(`/applications/${applicationId}/notes`, { body }).then((res) => res.data)
+}
+
+// The recruiter's own score, 0-100. Pass null to clear it. This never changes
+// the AI score (match_score), which only the scoring worker writes.
+export function updateManualScore(applicationId, manualScore) {
+  return apiClient
+    .patch(`/applications/${applicationId}/manual-score`, { manual_score: manualScore })
+    .then((res) => res.data)
+}

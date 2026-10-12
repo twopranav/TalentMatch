@@ -318,7 +318,7 @@ def _to_applicant(a: Application) -> ApplicationWithApplicant:
         applicant_email=email, applicant_name=name,
         submitted_by_email=a.submitted_by.email if a.submitted_by else None,
         resume_filename=a.resume.original_filename if a.resume else None,
-        match_score=a.match_score, match_status=a.match_status,
+        match_score=a.match_score, manual_score=a.manual_score, match_status=a.match_status,
         match_details=a.match_details, match_error=a.match_error,
     )
 

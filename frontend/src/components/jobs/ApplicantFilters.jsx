@@ -103,11 +103,11 @@ export default function ApplicantFilters({ value, onChange, jdSkills = [], mode 
 
           <div className="flex flex-wrap gap-6">
             <div>
-              <span className={label}>Match score (%)</span>
+              <span className={label}>AI score (%)</span>
               <div className="flex items-center gap-1.5">
-                <input type="number" min="0" max="100" placeholder="Min" value={draft.minScore} onChange={(e) => push({ ...draft, minScore: e.target.value }, false)} className={`${input} w-16`} aria-label="Minimum score" />
+                <input type="number" min="0" max="100" placeholder="Min" value={draft.minScore} onChange={(e) => push({ ...draft, minScore: e.target.value }, false)} className={`${input} w-16`} aria-label="Minimum AI score" />
                 <span className="text-xs text-slate-400">to</span>
-                <input type="number" min="0" max="100" placeholder="Max" value={draft.maxScore} onChange={(e) => push({ ...draft, maxScore: e.target.value }, false)} className={`${input} w-16`} aria-label="Maximum score" />
+                <input type="number" min="0" max="100" placeholder="Max" value={draft.maxScore} onChange={(e) => push({ ...draft, maxScore: e.target.value }, false)} className={`${input} w-16`} aria-label="Maximum AI score" />
               </div>
             </div>
             <div>

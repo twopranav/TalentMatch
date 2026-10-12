@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime
 from enum import Enum as PyEnum
-from sqlalchemy import DateTime, Enum as SAEnum, Float, ForeignKey, Index, String, Text, UniqueConstraint, func, text
+from sqlalchemy import CheckConstraint, DateTime, Enum as SAEnum, Float, ForeignKey, Index, String, Text, UniqueConstraint, func, text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -34,6 +34,12 @@ class Application(Base):
         # One application per user per job — re-applying is blocked at the DB
         # level, not just in route logic.
         UniqueConstraint("user_id", "job_id", name="uq_application_user_job"),
+        # A recruiter-entered score is a 0-100 percentage like the AI score.
+        # Enforced here too so no code path can store a nonsense value.
+        CheckConstraint(
+            "manual_score IS NULL OR (manual_score >= 0 AND manual_score <= 100)",
+            name="ck_applications_manual_score_range",
+        ),
         # Recruiter applicant list is "this job, best score first".
         Index("ix_applications_job_score", "job_id", "match_score"),
         # Shortlist tab: "this job, this status".
@@ -86,6 +92,14 @@ class Application(Base):
     match_details: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     match_error: Mapped[str | None] = mapped_column(Text, nullable=True)
     matched_at: Mapped[datetime | None] = mapped_column(nullable=True)
+
+    # --- Manual score (recruiter-entered, optional) ---
+    # Deliberately a SEPARATE column from match_score: the AI score is only
+    # ever written by the scoring worker, and a recruiter's opinion is only
+    # ever written by the manual-score endpoint, so a re-score can never
+    # erase a human judgement. NULL = the recruiter hasn't entered one.
+    # Recruiter-facing only: never put this on a candidate-facing schema.
+    manual_score: Mapped[float | None] = mapped_column(Float, nullable=True)
 
     # Two FKs point at users now, so every relationship has to say which.
     user: Mapped["User | None"] = relationship(back_populates="applications", foreign_keys=[user_id])

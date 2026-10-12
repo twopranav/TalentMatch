@@ -5,6 +5,7 @@ import {
   fetchJobApplicationsPage,
   rescoreJobApplications,
   updateApplicationStatus,
+  updateManualScore,
   updateShortlistStage,
 } from '../../api/applications'
 import {
@@ -21,6 +22,7 @@ import { countActiveFilters, EMPTY_FILTERS, filtersToParams } from '../../utils/
 import Pagination from '../ui/Pagination'
 import ApplicantFilters from './ApplicantFilters'
 import ScoreExplanation from './ScoreExplanation'
+import ApplicantNotesModal from './ApplicantNotesModal'
 import { openResumeFile } from '../../api/resumes'
 
 const PAGE_SIZE = 10
@@ -46,6 +48,134 @@ function ScoreBadge({ applicant }) {
     <span className={`inline-block rounded-full px-2.5 py-0.5 font-semibold tabular-nums ${tone}`} title={state === 'pending' ? 'Re-scoring…' : undefined}>
       {Math.round(score)}%
     </span>
+  )
+}
+
+// 1 decimal place at most, and no trailing ".0": 82.5 -> "82.5", 90 -> "90".
+function formatManualScore(value) {
+  return String(Math.round(value * 10) / 10)
+}
+
+// The recruiter's own optional score for one shortlisted applicant. Separate
+// from the AI score shown beside it: saving or clearing this never changes
+// the AI score. Shows the score (or "Set score"); clicking opens a small
+// inline editor.
+function ManualScoreCell({ applicant, onSaved }) {
+  const { showToast } = useToast()
+  const [editing, setEditing] = useState(false)
+  const [value, setValue] = useState('')
+  const [saving, setSaving] = useState(false)
+  const current = applicant.manual_score
+  const name = applicant.applicant_name || applicant.applicant_email
+
+  const startEditing = () => {
+    setValue(current == null ? '' : String(current))
+    setEditing(true)
+  }
+
+  const save = async (next) => {
+    setSaving(true)
+    try {
+      await updateManualScore(applicant.id, next)
+      onSaved(applicant.id, next)
+      setEditing(false)
+      showToast(next == null ? 'Manual score cleared.' : 'Manual score saved.', 'success')
+    } catch (err) {
+      showToast(getErrorMessage(err, 'Could not save the manual score.'), 'error')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const handleSave = () => {
+    const number = Number(value)
+    // Number('') is 0, so a blank box has to be rejected explicitly or it
+    // would quietly save a score of zero.
+    if (value.trim() === '' || !Number.isFinite(number) || number < 0 || number > 100) {
+      showToast('Enter a score from 0 to 100.', 'error')
+      return
+    }
+    save(number)
+  }
+
+  const handleKeyDown = (e) => {
+    if (e.key === 'Enter') {
+      e.preventDefault()
+      handleSave()
+    } else if (e.key === 'Escape') {
+      // Cancel the edit only; don't let Escape also close a parent popup.
+      e.stopPropagation()
+      setEditing(false)
+    }
+  }
+
+  if (!editing) {
+    return (
+      <div className="flex items-center gap-2 whitespace-nowrap">
+        {current != null && (
+          <span
+            className="inline-block rounded-full border border-indigo-200 px-2.5 py-0.5 font-semibold tabular-nums text-indigo-700 dark:border-indigo-800 dark:text-indigo-300"
+            title="Entered by a recruiter"
+          >
+            {formatManualScore(current)}%
+          </span>
+        )}
+        <button
+          type="button"
+          onClick={startEditing}
+          aria-label={`${current == null ? 'Set' : 'Edit'} manual score for ${name}`}
+          className="text-slate-500 underline hover:no-underline dark:text-slate-400"
+        >
+          {current == null ? 'Set score' : 'Edit'}
+        </button>
+      </div>
+    )
+  }
+
+  return (
+    <div className="flex flex-wrap items-center gap-1.5">
+      <input
+        type="number"
+        min="0"
+        max="100"
+        step="any"
+        inputMode="decimal"
+        autoFocus
+        value={value}
+        onChange={(e) => setValue(e.target.value)}
+        onKeyDown={handleKeyDown}
+        disabled={saving}
+        placeholder="0-100"
+        aria-label={`Manual score for ${name}, 0 to 100`}
+        className="w-16 rounded border border-slate-200 bg-white px-2 py-1 text-xs dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100"
+      />
+      <button
+        type="button"
+        onClick={handleSave}
+        disabled={saving}
+        className="rounded bg-indigo-600 px-2.5 py-1 text-xs font-medium text-white hover:bg-indigo-700 disabled:opacity-50"
+      >
+        {saving ? 'Saving…' : 'Save'}
+      </button>
+      <button
+        type="button"
+        onClick={() => setEditing(false)}
+        disabled={saving}
+        className="rounded px-2 py-1 text-xs font-medium text-slate-600 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-slate-800"
+      >
+        Cancel
+      </button>
+      {current != null && (
+        <button
+          type="button"
+          onClick={() => save(null)}
+          disabled={saving}
+          className="rounded px-2 py-1 text-xs font-medium text-red-600 hover:bg-red-50 dark:text-red-400 dark:hover:bg-red-900/20"
+        >
+          Clear
+        </button>
+      )}
+    </div>
   )
 }
 
@@ -111,6 +241,7 @@ export default function ApplicantsPanel({ job, active = true, fullPage = false, 
   const [openingResumeId, setOpeningResumeId] = useState(null)
   const [expandedId, setExpandedId] = useState(null)
   const [rescoring, setRescoring] = useState(false)
+  const [notesFor, setNotesFor] = useState(null) // the applicant whose notes popup is open (shortlist tab)
 
   // While any row on this page is still being scored, quietly re-fetch every
   // few seconds (max ~1 min) so scores appear and the list re-sorts.
@@ -142,6 +273,10 @@ export default function ApplicantsPanel({ job, active = true, fullPage = false, 
     } finally {
       setRescoring(false)
     }
+  }
+
+  const handleManualScoreSaved = (applicationId, manualScore) => {
+    setApplicants((prev) => prev.map((a) => (a.id === applicationId ? { ...a, manual_score: manualScore } : a)))
   }
 
   const handleViewResume = async (applicationId, resumeId) => {
@@ -218,6 +353,8 @@ export default function ApplicantsPanel({ job, active = true, fullPage = false, 
     }
   }
 
+  // Shortlist tab has two extra columns (manual score, notes) on top of the usual six.
+  const columnCount = isShortlist ? 8 : 6
   const offset = (page - 1) * PAGE_SIZE
   const shownFrom = total === 0 ? 0 : offset + 1
   const shownTo = offset + applicants.length
@@ -226,7 +363,7 @@ export default function ApplicantsPanel({ job, active = true, fullPage = false, 
     <div>
       <dt className="mb-2 flex items-center justify-between text-xs text-slate-400 dark:text-slate-500">
         <span>
-          {isShortlist ? 'Shortlisted' : 'Applicants'} ({total}){filtersActive ? ' matching filters' : ''} · best match first, ties by earliest applied
+          {isShortlist ? 'Shortlisted' : 'Applicants'} ({total}){filtersActive ? ' matching filters' : ''} · best AI score first, ties by earliest applied
         </span>
         {total > 0 && (
           <button onClick={handleRescore} disabled={rescoring} className="font-medium text-slate-600 underline hover:no-underline disabled:opacity-50 dark:text-slate-300">
@@ -253,23 +390,31 @@ export default function ApplicantsPanel({ job, active = true, fullPage = false, 
         </p>
       ) : (
         <>
-          <div className={`rounded border border-slate-100 dark:border-slate-700 ${fullPage ? '' : 'max-h-52 overflow-y-auto'} ${loading ? 'opacity-60' : ''}`}>
+          <div className={`rounded border border-slate-100 dark:border-slate-700 ${fullPage ? 'overflow-x-auto' : 'max-h-52 overflow-auto'} ${loading ? 'opacity-60' : ''}`}>
             <table className="w-full text-left text-xs">
               <thead className="bg-slate-50 text-slate-400 dark:bg-slate-800 dark:text-slate-500">
                 <tr>
                   <th className="w-8 px-3 py-2 font-medium">#</th>
                   <th className="px-3 py-2 font-medium">Applicant</th>
-                  <th className="px-3 py-2 font-medium">Match</th>
+                  <th className="px-3 py-2 font-medium">AI score</th>
+                  {isShortlist && <th className="px-3 py-2 font-medium">Manual score</th>}
                   <th className="px-3 py-2 font-medium">Applied</th>
                   <th className="px-3 py-2 font-medium">Resume</th>
-                  <th className="px-3 py-2 font-medium">Status</th>
+                  {!isShortlist && <th className="px-3 py-2 font-medium">Status</th>}
                   {isShortlist && <th className="px-3 py-2 font-medium">Stage</th>}
+                  {isShortlist && <th className="px-3 py-2 font-medium">Notes</th>}
                 </tr>
               </thead>
               <tbody>
                 {applicants.map((a, idx) => (
                   <Fragment key={a.id}>
-                    <tr className="border-t border-slate-100 transition hover:bg-slate-50 dark:border-slate-800 dark:hover:bg-slate-800/50">
+                    <tr
+                      className={`border-t transition ${
+                        isShortlist && a.shortlist_stage === 'rejected'
+                          ? 'border-red-200 bg-red-50 hover:bg-red-100 dark:border-red-900/50 dark:bg-red-900/20 dark:hover:bg-red-900/30'
+                          : 'border-slate-100 hover:bg-slate-50 dark:border-slate-800 dark:hover:bg-slate-800/50'
+                      }`}
+                    >
                       <td className={`px-3 py-2 font-semibold tabular-nums ${offset + idx === 0 && a.match_score != null ? 'text-indigo-600 dark:text-indigo-400' : 'text-slate-400 dark:text-slate-500'}`}>
                         {offset + idx + 1}
                       </td>
@@ -284,6 +429,11 @@ export default function ApplicantsPanel({ job, active = true, fullPage = false, 
                           </button>
                         )}
                       </td>
+                      {isShortlist && (
+                        <td className="px-3 py-2">
+                          <ManualScoreCell applicant={a} onSaved={handleManualScoreSaved} />
+                        </td>
+                      )}
                       <td className="px-3 py-2 text-slate-500 dark:text-slate-400">
                         {new Date(a.applied_at).toLocaleDateString()}
                       </td>
@@ -296,17 +446,19 @@ export default function ApplicantsPanel({ job, active = true, fullPage = false, 
                           <span className="text-slate-400 dark:text-slate-500">No resume</span>
                         )}
                       </td>
-                      <td className="px-3 py-2">
-                        <select
-                          value={a.status}
-                          onChange={(e) => handleStatusChange(a.id, e.target.value)}
-                          className="rounded border border-slate-200 bg-white px-2 py-1 text-xs dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100"
-                        >
-                          {statusOptionsFor(a.status).map((s) => (
-                            <option key={s} value={s}>{statusLabel(s)}</option>
-                          ))}
-                        </select>
-                      </td>
+                      {!isShortlist && (
+                        <td className="px-3 py-2">
+                          <select
+                            value={a.status}
+                            onChange={(e) => handleStatusChange(a.id, e.target.value)}
+                            className="rounded border border-slate-200 bg-white px-2 py-1 text-xs dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100"
+                          >
+                            {statusOptionsFor(a.status).map((s) => (
+                              <option key={s} value={s}>{statusLabel(s)}</option>
+                            ))}
+                          </select>
+                        </td>
+                      )}
                       {isShortlist && (
                         <td className="px-3 py-2">
                           <select
@@ -333,10 +485,22 @@ export default function ApplicantsPanel({ job, active = true, fullPage = false, 
                           )}
                         </td>
                       )}
+                      {isShortlist && (
+                        <td className="px-3 py-2">
+                          <button
+                            type="button"
+                            onClick={() => setNotesFor(a)}
+                            aria-label={`Notes for ${a.applicant_name || a.applicant_email}`}
+                            className="font-medium text-slate-700 underline hover:no-underline dark:text-slate-300"
+                          >
+                            Notes
+                          </button>
+                        </td>
+                      )}
                     </tr>
                     {isShortlist && schedulingId === a.id && (
                       <tr className="bg-slate-50/60 dark:bg-slate-800/40">
-                        <td colSpan={7} className="px-4 py-3">
+                        <td colSpan={columnCount} className="px-4 py-3">
                           <div className="flex flex-wrap items-center gap-2">
                             <label htmlFor={`interview-${a.id}`} className="text-xs font-medium text-slate-600 dark:text-slate-300">
                               Interview date &amp; time
@@ -370,7 +534,7 @@ export default function ApplicantsPanel({ job, active = true, fullPage = false, 
                     )}
                     {expandedId === a.id && (
                       <tr className="bg-slate-50/60 dark:bg-slate-800/40">
-                        <td colSpan={isShortlist ? 7 : 6} className="px-4 py-3"><ScoreExplanation details={a.match_details} /></td>
+                        <td colSpan={columnCount} className="px-4 py-3"><ScoreExplanation details={a.match_details} /></td>
                       </tr>
                     )}
                   </Fragment>
@@ -384,6 +548,7 @@ export default function ApplicantsPanel({ job, active = true, fullPage = false, 
           <Pagination page={page} totalPages={totalPages} onPageChange={setPage} disabled={loading} />
         </>
       )}
+      {isShortlist && <ApplicantNotesModal applicant={notesFor} onClose={() => setNotesFor(null)} />}
     </div>
   )
 }
