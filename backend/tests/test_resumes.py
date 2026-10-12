@@ -107,14 +107,92 @@ def test_candidate_sees_only_own_resume(client, make_user, auth_headers, pdf_byt
     assert len(listing) == 1
     assert listing[0]["original_filename"] == "c1.pdf"
 
-def test_recruiter_sees_every_resume(client, make_user, auth_headers, pdf_bytes):
-    c1, _ = make_user(role=UserRole.USER)
-    c2, _ = make_user(role=UserRole.USER)
-    recruiter, _ = make_user(role=UserRole.RECRUITER)
-    client.post("/api/resumes", files={"file": ("c1.pdf", pdf_bytes("c1"), "application/pdf")}, headers=auth_headers(c1))
-    client.post("/api/resumes", files={"file": ("c2.pdf", pdf_bytes("c2"), "application/pdf")}, headers=auth_headers(c2))
-    listing = client.get("/api/resumes", headers=auth_headers(recruiter)).json()
-    assert len(listing) == 2
+def _bulk_upload(client, auth_headers, uploader, pdf_bytes, names):
+    files = [("files", (n, pdf_bytes(f"Resume {n}"), "application/pdf")) for n in names]
+    resp = client.post("/api/resumes/bulk", files=files, headers=auth_headers(uploader))
+    assert resp.status_code == 200
+    return {r["original_filename"]: r["resume"]["id"] for r in resp.json() if r["success"]}
+
+def test_recruiter_library_only_shows_own_uploads(client, make_user, auth_headers, pdf_bytes):
+    candidate, _ = make_user(role=UserRole.USER)
+    r1, _ = make_user(role=UserRole.RECRUITER)
+    r2, _ = make_user(role=UserRole.RECRUITER)
+    client.post("/api/resumes", files={"file": ("cand.pdf", pdf_bytes("cand"), "application/pdf")}, headers=auth_headers(candidate))
+    _bulk_upload(client, auth_headers, r1, pdf_bytes, ["r1-a.pdf", "r1-b.pdf"])
+    _bulk_upload(client, auth_headers, r2, pdf_bytes, ["r2-a.pdf"])
+
+    names1 = sorted(r["original_filename"] for r in client.get("/api/resumes", headers=auth_headers(r1)).json())
+    names2 = sorted(r["original_filename"] for r in client.get("/api/resumes", headers=auth_headers(r2)).json())
+    assert names1 == ["r1-a.pdf", "r1-b.pdf"]
+    assert names2 == ["r2-a.pdf"]
+
+def test_superuser_and_admin_see_every_resume(client, make_user, auth_headers, pdf_bytes):
+    candidate, _ = make_user(role=UserRole.USER)
+    r1, _ = make_user(role=UserRole.RECRUITER)
+    r2, _ = make_user(role=UserRole.RECRUITER)
+    superuser, _ = make_user(role=UserRole.SUPERUSER)
+    admin, _ = make_user(role=UserRole.ADMIN)
+    client.post("/api/resumes", files={"file": ("cand.pdf", pdf_bytes("cand"), "application/pdf")}, headers=auth_headers(candidate))
+    _bulk_upload(client, auth_headers, r1, pdf_bytes, ["r1-a.pdf"])
+    _bulk_upload(client, auth_headers, r2, pdf_bytes, ["r2-a.pdf"])
+    for viewer in (superuser, admin):
+        listing = client.get("/api/resumes", headers=auth_headers(viewer)).json()
+        assert len(listing) == 3
+
+def test_recruiter_can_view_own_upload_but_not_unrelated_resumes(client, make_user, auth_headers, pdf_bytes):
+    candidate, _ = make_user(role=UserRole.USER)
+    r1, _ = make_user(role=UserRole.RECRUITER)
+    r2, _ = make_user(role=UserRole.RECRUITER)
+    cand_resume = client.post(
+        "/api/resumes", files={"file": ("resume.pdf", pdf_bytes("r"), "application/pdf")}, headers=auth_headers(candidate),
+    ).json()["id"]
+    mine = _bulk_upload(client, auth_headers, r1, pdf_bytes, ["mine.pdf"])["mine.pdf"]
+    theirs = _bulk_upload(client, auth_headers, r2, pdf_bytes, ["theirs.pdf"])["theirs.pdf"]
+
+    assert client.get(f"/api/resumes/{mine}", headers=auth_headers(r1)).status_code == 200
+    for rid in (cand_resume, theirs):
+        assert client.get(f"/api/resumes/{rid}", headers=auth_headers(r1)).status_code == 404
+        assert client.get(f"/api/resumes/{rid}/file", headers=auth_headers(r1)).status_code == 404
+
+def test_recruiter_can_view_resume_of_applicant_to_their_job(client, make_user, auth_headers, pdf_bytes):
+    """The applicants page opens each applicant's resume, so a recruiter must
+    reach candidate resumes attached to applications on jobs they created
+    (and only those)."""
+    from conftest import TestSessionLocal
+    from app.models.resume import Resume, ResumeExtractionStatus
+
+    candidate, _ = make_user(role=UserRole.USER)
+    owner, _ = make_user(role=UserRole.RECRUITER)
+    other, _ = make_user(role=UserRole.RECRUITER)
+    job_id = client.post(
+        "/api/jobs", json={"title": "Job", "description": "Do the work"}, headers=auth_headers(owner),
+    ).json()["id"]
+    client.post(f"/api/jobs/{job_id}/jd", files={"file": ("jd.pdf", pdf_bytes("JD text"), "application/pdf")}, headers=auth_headers(owner))
+    client.patch(f"/api/jobs/{job_id}", json={"status": "published"}, headers=auth_headers(owner))
+    resume_id = client.post(
+        "/api/resumes", files={"file": ("resume.pdf", pdf_bytes("r"), "application/pdf")}, headers=auth_headers(candidate),
+    ).json()["id"]
+    session = TestSessionLocal()
+    try:
+        session.query(Resume).filter(Resume.owner_id == candidate.id).update(
+            {"skills_extraction_status": ResumeExtractionStatus.DONE}
+        )
+        session.commit()
+    finally:
+        session.close()
+
+    assert client.get(f"/api/resumes/{resume_id}/file", headers=auth_headers(owner)).status_code == 404
+    assert client.post("/api/applications", json={"job_id": job_id}, headers=auth_headers(candidate)).status_code == 201
+    assert client.get(f"/api/resumes/{resume_id}/file", headers=auth_headers(owner)).status_code == 200
+    assert client.get(f"/api/resumes/{resume_id}/file", headers=auth_headers(other)).status_code == 404
+
+def test_superuser_can_view_any_resume(client, make_user, auth_headers, pdf_bytes):
+    owner, _ = make_user(role=UserRole.USER)
+    superuser, _ = make_user(role=UserRole.SUPERUSER)
+    resume_id = client.post(
+        "/api/resumes", files={"file": ("resume.pdf", pdf_bytes("r"), "application/pdf")}, headers=auth_headers(owner),
+    ).json()["id"]
+    assert client.get(f"/api/resumes/{resume_id}", headers=auth_headers(superuser)).status_code == 200
 
 def test_archived_resume_excluded_by_default(client, make_user, auth_headers, pdf_bytes):
     candidate, _ = make_user(role=UserRole.USER)
@@ -151,14 +229,6 @@ def test_other_candidate_cannot_view_resume(client, make_user, auth_headers, pdf
     resp = client.get(f"/api/resumes/{resume_id}", headers=auth_headers(other))
     assert resp.status_code == 404
 
-def test_recruiter_can_view_any_resume(client, make_user, auth_headers, pdf_bytes):
-    owner, _ = make_user(role=UserRole.USER)
-    recruiter, _ = make_user(role=UserRole.RECRUITER)
-    resume_id = client.post(
-        "/api/resumes", files={"file": ("resume.pdf", pdf_bytes("r"), "application/pdf")}, headers=auth_headers(owner),
-    ).json()["id"]
-    resp = client.get(f"/api/resumes/{resume_id}", headers=auth_headers(recruiter))
-    assert resp.status_code == 200
 
 def test_download_file_returns_original_bytes(client, make_user, auth_headers, pdf_bytes):
     candidate, _ = make_user(role=UserRole.USER)

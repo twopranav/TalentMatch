@@ -2,6 +2,7 @@
 import { useState } from 'react'
 import Spinner from '../ui/Spinner'
 import { formatEnumLabel } from '../../utils/format'
+import { useAuth } from '../../context/AuthContext'
 
 const STATUS_STYLES = {
   draft: 'bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-300',
@@ -16,7 +17,9 @@ const TOGGLE_BUTTON_CLASSES = (active) =>
       : 'border-slate-200 bg-white text-slate-600 hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300 dark:hover:bg-slate-800'
   }`
 
-function JobRow({ job, onOpenDetails, isApplicant, myApplication, onApply, onWithdraw, applying }) {
+function JobRow({ job, onOpenDetails, onUploadJD, isApplicant, myApplication, onApply, onWithdraw, applying }) {
+  const { user } = useAuth()
+  const canManage = user?.role === 'admin' || user?.role === 'superuser' || (user?.role === 'recruiter' && job.created_by_id === user?.id)
   const [expanded, setExpanded] = useState(null) // 'description' | 'jd' | null
 
   const toggle = (section) => (e) => {
@@ -88,9 +91,23 @@ function JobRow({ job, onOpenDetails, isApplicant, myApplication, onApply, onWit
       {expanded === 'jd' && (
         <div className="border-t border-slate-100 bg-slate-50 px-4 py-3 text-sm text-slate-600 dark:border-slate-800 dark:bg-slate-800/40 dark:text-slate-300">
           {job.jd_raw_text ? (
-            <p className="max-h-48 overflow-y-auto whitespace-pre-wrap">{job.jd_raw_text}</p>
+            <>
+              <p>Job description file uploaded.</p>
+              {canManage && (
+                <button onClick={() => onUploadJD?.(job)} className="mt-3 text-xs font-medium text-indigo-600 underline hover:no-underline dark:text-indigo-400">
+                  Replace JD
+                </button>
+              )}
+            </>
           ) : (
-            'No job description file uploaded yet.'
+            <div className="flex flex-wrap items-center gap-3">
+              <span>No job description file uploaded yet.</span>
+              {canManage && (
+                <button onClick={() => onUploadJD?.(job)} className="shrink-0 rounded bg-slate-800 px-3 py-1.5 text-xs font-medium text-white dark:bg-slate-700">
+                  Upload JD
+                </button>
+              )}
+            </div>
           )}
         </div>
       )}
@@ -99,7 +116,7 @@ function JobRow({ job, onOpenDetails, isApplicant, myApplication, onApply, onWit
 }
 
 export default function JobList({
-  jobs, loading, error, onRetry, onSelectJob,
+  jobs, loading, error, onRetry, onSelectJob, onUploadJD,
   isApplicant, myApplicationsByJob = {}, onApply, onWithdraw, applyingJobId,
 }) {
   if (loading) {
@@ -136,6 +153,7 @@ export default function JobList({
           key={job.id}
           job={job}
           onOpenDetails={onSelectJob}
+          onUploadJD={onUploadJD}
           isApplicant={isApplicant}
           myApplication={myApplicationsByJob[job.id]}
           onApply={onApply}

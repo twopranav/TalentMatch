@@ -77,6 +77,12 @@ class Settings(BaseSettings):
     MATCH_BLEND_PROOF: float = 0.25
     MATCH_BLEND_BALANCE: float = 0.25
 
+    # Client-side throttle for LLM extraction calls (see llm_json_call._throttle).
+    # Defaults are Groq's free tier; raise them in .env when moving to a
+    # paid tier or another provider.
+    LLM_RPM_LIMIT: int = 30
+    LLM_TPM_LIMIT: int = 8000
+
     CORS_ORIGINS: list[str] = ["http://localhost:5173"]
 
     model_config = SettingsConfigDict(

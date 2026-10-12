@@ -14,10 +14,10 @@ export default function JobCard({ job, onClick }) {
   return (
     <button
       onClick={() => onClick?.(job)}
-      className="w-full rounded-lg border border-slate-200 bg-white p-5 text-left shadow-sm transition hover:border-slate-300 hover:shadow dark:border-slate-800 dark:bg-slate-900 dark:hover:border-slate-700"
+      className="group w-full rounded-lg border border-slate-200 bg-white p-5 text-left shadow-sm transition duration-200 hover:-translate-y-0.5 hover:border-indigo-300 hover:shadow-md dark:border-slate-800 dark:bg-slate-900 dark:hover:border-indigo-500/50"
     >
       <div className="flex items-start justify-between gap-3">
-        <h3 className="text-base font-semibold text-slate-900 dark:text-slate-100">{job.title}</h3>
+        <h3 className="text-base font-semibold text-slate-900 transition-colors group-hover:text-indigo-700 dark:text-slate-100 dark:group-hover:text-indigo-300">{job.title}</h3>
         <span className={`shrink-0 rounded-full px-2.5 py-0.5 text-xs font-medium capitalize ${STATUS_STYLES[job.status]}`}>
           {job.status}
         </span>

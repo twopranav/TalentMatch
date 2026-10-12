@@ -16,7 +16,7 @@ export default function Modal({ open, onClose, title, children, footer }) {
   return (
     <div className="fixed inset-0 z-40 flex items-center justify-center p-4">
       <div
-        className="absolute inset-0 bg-slate-900/50 dark:bg-slate-950/70"
+        className="animate-fade absolute inset-0 bg-slate-900/40 backdrop-blur-sm dark:bg-slate-950/70"
         onClick={onClose}
         aria-hidden="true"
       />
@@ -28,7 +28,7 @@ export default function Modal({ open, onClose, title, children, footer }) {
         role="dialog"
         aria-modal="true"
         aria-labelledby="modal-title"
-        className="relative z-10 flex max-h-[90vh] w-full max-w-lg flex-col rounded-lg bg-white shadow-xl dark:bg-slate-900"
+        className="animate-pop relative z-10 flex max-h-[90vh] w-full max-w-lg flex-col rounded-2xl bg-white shadow-2xl ring-1 ring-slate-900/5 dark:bg-slate-900 dark:ring-white/10"
       >
         <div className="flex shrink-0 items-center justify-between border-b border-slate-200 px-6 py-4 dark:border-slate-700">
           <h2 id="modal-title" className="text-lg font-semibold text-slate-900 dark:text-slate-100">
@@ -37,7 +37,7 @@ export default function Modal({ open, onClose, title, children, footer }) {
           <button
             onClick={onClose}
             aria-label="Close"
-            className="rounded p-1 text-slate-400 hover:bg-slate-100 hover:text-slate-600 focus:outline-none focus:ring-2 focus:ring-slate-400 dark:hover:bg-slate-800 dark:hover:text-slate-200"
+            className="rounded-lg px-2 py-0.5 text-xl leading-none text-slate-400 hover:bg-slate-100 hover:text-slate-600 focus:outline-none focus:ring-2 focus:ring-slate-400 dark:hover:bg-slate-800 dark:hover:text-slate-200"
           >
             ×
           </button>

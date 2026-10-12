@@ -2,6 +2,7 @@
 import { useState } from 'react'
 import Modal from '../ui/Modal'
 import Spinner from '../ui/Spinner'
+import FilePicker from '../ui/FilePicker'
 import { uploadResume } from '../../api/resumes'
 import { useToast } from '../ui/Toast'
 import { getErrorMessage } from '../../utils/format'
@@ -58,12 +59,7 @@ export default function ResumeUploadModal({ open, onClose, currentResume, onUplo
         <label className="mb-1 block text-sm font-medium text-slate-700 dark:text-slate-300">
           File (PDF or DOCX, max 10MB)
         </label>
-        <input
-          type="file"
-          accept=".pdf,.docx"
-          onChange={(e) => setFile(e.target.files?.[0] ?? null)}
-          className="w-full text-sm text-slate-600 dark:text-slate-300"
-        />
+        <FilePicker files={file ? [file] : []} onChange={(fs) => setFile(fs[0] ?? null)} accept=".pdf,.docx" disabled={submitting} />
         {currentResume && (
           <p className="mt-3 text-xs text-slate-400 dark:text-slate-500">
             You already have a resume on file ({currentResume.original_filename}) — uploading a new one replaces it.

@@ -74,5 +74,7 @@ class User(Base):
     avatar_blob_path: Mapped[str | None] = mapped_column(String(1000), nullable=True)
 
     created_at: Mapped[datetime] = mapped_column(server_default=func.now(), nullable=False)
-    applications: Mapped[list["Application"]] = relationship(back_populates="user", cascade="all, delete-orphan")   
+    applications: Mapped[list["Application"]] = relationship(
+        back_populates="user", cascade="all, delete-orphan", foreign_keys="Application.user_id"
+    )   
     jobs: Mapped[list["Job"]] = relationship(back_populates="created_by", cascade="all, delete-orphan")

@@ -4,8 +4,8 @@ import { createContext, useCallback, useContext, useState } from 'react'
 const ToastContext = createContext(null)
 
 const VARIANT_STYLES = {
-  success: 'border-emerald-600 bg-emerald-50 text-emerald-900 dark:bg-emerald-950 dark:text-emerald-200',
-  error: 'border-red-600 bg-red-50 text-red-900 dark:bg-red-950 dark:text-red-200',
+  success: 'border-emerald-500 bg-emerald-50 text-emerald-900 dark:bg-emerald-950 dark:text-emerald-200',
+  error: 'border-red-500 bg-red-50 text-red-900 dark:bg-red-950 dark:text-red-200',
   info: 'border-slate-600 bg-slate-50 text-slate-900 dark:bg-slate-800 dark:text-slate-200',
 }
 
@@ -43,7 +43,7 @@ export function ToastProvider({ children }) {
           <div
             key={toast.id}
             role="alert"
-            className={`flex items-start justify-between gap-3 rounded border-l-4 px-4 py-3 shadow-md ${VARIANT_STYLES[toast.variant]}`}
+            className={`flex items-start justify-between gap-3 animate-toast rounded-lg border-l-4 px-4 py-3 shadow-lg ring-1 ring-black/5 ${VARIANT_STYLES[toast.variant]}`}
           >
             <p className="text-sm">{toast.message}</p>
             <button

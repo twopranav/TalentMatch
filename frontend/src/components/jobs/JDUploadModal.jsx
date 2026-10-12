@@ -2,6 +2,7 @@
 import { useState } from 'react'
 import Modal from '../ui/Modal'
 import Spinner from '../ui/Spinner'
+import FilePicker from '../ui/FilePicker'
 import { uploadJobDescription } from '../../api/jobs'
 import { useToast } from '../ui/Toast'
 import { getErrorMessage } from '../../utils/format'
@@ -56,11 +57,7 @@ export default function JDUploadModal({ open, onClose, job, onUploaded }) {
     >
       <form onSubmit={handleSubmit}>
         <label className="mb-1 block text-sm font-medium text-slate-700 dark:text-slate-300">File</label>
-        <input
-          type="file"
-          onChange={(e) => setFile(e.target.files?.[0] ?? null)}
-          className="w-full text-sm text-slate-600 dark:text-slate-300"
-        />
+        <FilePicker files={file ? [file] : []} onChange={(fs) => setFile(fs[0] ?? null)} disabled={submitting} />
         {job?.jd_raw_text && (
           <p className="mt-3 text-xs text-slate-400 dark:text-slate-500">
             This job already has an extracted JD on file — uploading a new one replaces it.

@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, field_validator
 
 from app.models.job import (
     EmploymentType,
@@ -127,3 +127,33 @@ class JobRead(BaseModel):
     min_experience_months: int | None = None
 
     model_config = ConfigDict(from_attributes=True)
+
+
+class JobSkillsUpdate(BaseModel):
+    """Recruiter's corrected version of the JD's extracted skill list.
+    Replaces Job.skills_result wholesale (add = new list has it, remove =
+    new list lacks it), so the client always sends the full final list."""
+
+    skills: list[str]
+
+    @field_validator("skills")
+    @classmethod
+    def _clean_skills(cls, value: list[str]) -> list[str]:
+        cleaned: list[str] = []
+        seen: set[str] = set()
+        for raw in value:
+            skill = " ".join(raw.split())  # trim + collapse inner whitespace
+            if not skill:
+                continue
+            if len(skill) > 100:
+                raise ValueError("A skill must be 100 characters or fewer.")
+            key = skill.casefold()
+            if key in seen:
+                continue
+            seen.add(key)
+            cleaned.append(skill)
+        if not cleaned:
+            raise ValueError("A job needs at least one skill to match against.")
+        if len(cleaned) > 100:
+            raise ValueError("A job can have at most 100 skills.")
+        return cleaned

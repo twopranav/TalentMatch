@@ -32,8 +32,9 @@ from app.models.job import (
     SeniorityLevel,
 )
 from app.models.user import User, UserRole
-from app.schemas.job import JobCreate, JobRead, JobUpdate
+from app.schemas.job import JobCreate, JobRead, JobSkillsUpdate, JobUpdate
 from app.core.dispatch import dispatch_extraction
+from app.core.matching_tasks import safe_dispatch_for_job
 
 logger = logging.getLogger(__name__)
 
@@ -222,7 +223,12 @@ _ALLOWED_STATUS_TRANSITIONS: dict[
     JobStatus.PUBLISHED: {
         JobStatus.CLOSED,
     },
-    JobStatus.CLOSED: set(),
+    # A closed job can be reopened. The publish prerequisites (title,
+    # description, JD file) are re-checked below, and published_at keeps
+    # its original value. Closed -> draft is not allowed.
+    JobStatus.CLOSED: {
+        JobStatus.PUBLISHED,
+    },
 }
 
 
@@ -524,5 +530,88 @@ def trigger_jd_skills_extraction(
     # After commit, same reason as upload_jd: the worker reads the row in
     # its own session.
     dispatch_extraction(run_jd_skills_extraction_task, job.id)
+
+    return job
+
+
+@router.put(
+    "/{job_id}/skills",
+    response_model=JobRead,
+)
+def update_job_skills(
+    job_id: uuid.UUID,
+    payload: JobSkillsUpdate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_recruiter_or_admin),
+):
+    """Recruiter correction of the LLM-extracted skill list.
+
+    Replaces Job.skills_result with the submitted list. That column is
+    exactly what applicant scoring reads (matching_tasks.score_application_task),
+    so removed skills stop counting and added ones start counting.
+
+    - Rejected with 409 while extraction is queued/running, because the
+      worker would overwrite the edit moments later.
+    - If extraction FAILED, saving a list here rescues the job: it is
+      marked DONE so applicants can be scored against the manual list.
+    - Existing applicants are re-queued for scoring so the ranking never
+      mixes scores computed against two different skill lists.
+    - A later re-extraction (new JD upload or POST /extract-skills)
+      replaces manual edits with fresh LLM output.
+    """
+    job = _get_owned_job(
+        job_id,
+        db,
+        current_user,
+    )
+
+    has_jd = bool(job.blob_path or (job.jd_raw_text and job.jd_raw_text.strip()))
+    extraction_in_flight = (
+        job.skills_extraction_status == JobExtractionStatus.PROCESSING
+        or (
+            job.skills_extraction_status == JobExtractionStatus.PENDING
+            and has_jd
+        )
+    )
+    if extraction_in_flight:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                "Skills are still being extracted from the job description. "
+                "Try again once extraction has finished."
+            ),
+        )
+
+    before = {
+        "skills_result": job.skills_result,
+        "skills_extraction_status": job.skills_extraction_status.value,
+    }
+
+    job.skills_result = payload.skills
+    if job.skills_extraction_status != JobExtractionStatus.DONE:
+        job.skills_extraction_status = JobExtractionStatus.DONE
+        job.skills_extraction_error = None
+
+    record_audit(
+        db,
+        actor=current_user,
+        action="update",
+        resource_type="job",
+        resource_id=job.id,
+        before=before,
+        after={
+            "skills_result": job.skills_result,
+            "skills_extraction_status": job.skills_extraction_status.value,
+            "trigger": "manual_skills_edit",
+        },
+    )
+
+    db.commit()
+    db.refresh(job)
+
+    # After commit (the worker reads in its own session). Best-effort; the
+    # sweep only covers 'pending' rows, so a lost message here means an
+    # applicant keeps their old score until the recruiter hits /rescore.
+    safe_dispatch_for_job(db, job.id)
 
     return job

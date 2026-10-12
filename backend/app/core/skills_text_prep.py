@@ -96,6 +96,9 @@ def remove_structural_prefix(base: str) -> str:
     return base
 
 
+# Longest parenthetical base (in words) that is still treated as a skill name.
+_MAX_EXPANSION_BASE_WORDS = 4
+
 _PAREN_GROUP_RE = re.compile(r"([^()\n,:|]+?)\s*\(([^()]*)\)")
 
 
@@ -143,6 +146,15 @@ def normalize_parentheses(raw_text: str) -> str:
         leading = raw_base[: len(raw_base) - len(raw_base.lstrip())]
 
         if not original_base or not contents:
+            return match.group(0)
+
+        # Expansion is for short skill-list entries ("AWS (ECS, S3)"). In a
+        # prose sentence the regex's "base" swallows everything back to the
+        # previous comma/newline, so expanding would duplicate that whole
+        # run of text and corrupt the model's input. Leave long or
+        # multi-sentence bases untouched; the prompt already tells the
+        # model how to read "category (examples)" on its own.
+        if len(original_base.split()) > _MAX_EXPANSION_BASE_WORDS or re.search(r"[.!?]\s", original_base):
             return match.group(0)
 
         base = remove_structural_prefix(original_base)

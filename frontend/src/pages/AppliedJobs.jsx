@@ -85,7 +85,6 @@ export default function AppliedJobs() {
         onClose={() => { setSelectedJob(null); setSelectedApplication(null) }}
         job={selectedJob}
         onEdit={() => {}}
-        onUploadJD={() => {}}
         onChanged={() => {}}
         onDeleted={() => {}}
         myApplication={selectedApplication}

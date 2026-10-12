@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime
 from enum import Enum as PyEnum
-from sqlalchemy import Enum as SAEnum, Float, ForeignKey, Index, String, Text, UniqueConstraint, func
+from sqlalchemy import DateTime, Enum as SAEnum, Float, ForeignKey, Index, String, Text, UniqueConstraint, func, text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -19,6 +19,15 @@ class ApplicationStatus(str, PyEnum):
     REJECTED = "rejected"
     HIRED = "hired"
 
+class ShortlistStage(str, PyEnum):
+    """Sub-state of an application whose status is SHORTLISTED. NULL on the
+    application whenever its status is anything else."""
+    SHORTLISTED = "shortlisted"  # default on entering the shortlist
+    REVIEW = "review"
+    INTERVIEW_SCHEDULED = "interview_scheduled"  # requires Application.interview_at
+    REJECTED = "rejected"
+
+
 class Application(Base):
     __tablename__ = "applications"
     __table_args__ = (
@@ -27,11 +36,30 @@ class Application(Base):
         UniqueConstraint("user_id", "job_id", name="uq_application_user_job"),
         # Recruiter applicant list is "this job, best score first".
         Index("ix_applications_job_score", "job_id", "match_score"),
+        # Shortlist tab: "this job, this status".
+        Index("ix_applications_job_status", "job_id", "status"),
+        # Recruiter-submitted applications have user_id NULL (the candidate
+        # has no account), and NULLs never collide in uq_application_user_job
+        # above. This partial index is what stops the same resume being
+        # applied to the same job twice in that case.
+        Index(
+            "uq_application_job_resume_unowned",
+            "job_id",
+            "resume_id",
+            unique=True,
+            postgresql_where=text("user_id IS NULL"),
+        ),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    user_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    # NULL = applied on behalf of a candidate who has no account, by a
+    # recruiter/admin/superuser from their resume library (see
+    # routes/applications.py bulk_apply_resumes). submitted_by_id says who.
+    user_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=True
+    )
+    submitted_by_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )
     job_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("jobs.id", ondelete="CASCADE"), nullable=False
@@ -40,6 +68,12 @@ class Application(Base):
     status: Mapped[ApplicationStatus] = mapped_column(
         SAEnum(ApplicationStatus, name="application_status"), default=ApplicationStatus.APPLIED, nullable=False
     )
+    # Only set while status == SHORTLISTED (see routes/applications.py).
+    shortlist_stage: Mapped[ShortlistStage | None] = mapped_column(
+        SAEnum(ShortlistStage, name="shortlist_stage"), nullable=True
+    )
+    # Only set while shortlist_stage == INTERVIEW_SCHEDULED. Timezone-aware.
+    interview_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     applied_at: Mapped[datetime] = mapped_column(server_default=func.now(), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(
         server_default=func.now(), onupdate=func.now(), nullable=False
@@ -53,6 +87,8 @@ class Application(Base):
     match_error: Mapped[str | None] = mapped_column(Text, nullable=True)
     matched_at: Mapped[datetime | None] = mapped_column(nullable=True)
 
-    user: Mapped["User"] = relationship(back_populates="applications")
+    # Two FKs point at users now, so every relationship has to say which.
+    user: Mapped["User | None"] = relationship(back_populates="applications", foreign_keys=[user_id])
+    submitted_by: Mapped["User | None"] = relationship(foreign_keys=[submitted_by_id])
     job: Mapped["Job"] = relationship(back_populates="applications")
     resume: Mapped["Resume | None"] = relationship()

@@ -63,8 +63,7 @@ export default function JobDashboard() {
     refetch()
   }
 
-  const handleUploaded = (updated) => {
-    setSelectedJob(updated)
+  const handleUploaded = () => {
     refetch()
   }
 
@@ -138,6 +137,7 @@ export default function JobDashboard() {
         error={error}
         onRetry={refetch}
         onSelectJob={setSelectedJob}
+        onUploadJD={setUploadJob}
         isApplicant={isApplicant}
         myApplicationsByJob={myApplicationsByJob}
         onApply={handleApply}
@@ -150,7 +150,6 @@ export default function JobDashboard() {
         onClose={() => setSelectedJob(null)}
         job={selectedJob}
         onEdit={openEdit}
-        onUploadJD={(job) => { setSelectedJob(null); setUploadJob(job) }}
         onChanged={handleChanged}
         onDeleted={refetch}
         myApplication={selectedJob ? myApplicationsByJob[selectedJob.id] : null}

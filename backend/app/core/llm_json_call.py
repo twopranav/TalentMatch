@@ -144,7 +144,7 @@ def _wait_seconds(exc: Exception, retry_number: int) -> float | None:
     return hinted
 
 
-_EST_OUTPUT_TOKENS = 600  # throttle's guess for one call's output size
+_EST_OUTPUT_TOKENS = 1500  # throttle's guess for one call's output size (reasoning models use well over 1k)
 _WINDOW: list[tuple[float, int]] = []  # (timestamp, tokens) of calls in the last 60s
 
 
@@ -154,7 +154,7 @@ def _throttle(est_tokens: int, rpm_limit: int, tpm_limit: int) -> None:
         _WINDOW[:] = [(t, k) for t, k in _WINDOW if now - t < 60]
         used = sum(k for _, k in _WINDOW)
         if not _WINDOW or (
-            len(_WINDOW) < rpm_limit * 0.8 and used + est_tokens <= tpm_limit * 0.8
+            len(_WINDOW) < rpm_limit * 0.9 and used + est_tokens <= tpm_limit * 0.9
         ):
             return
         wait = 60 - (now - _WINDOW[0][0]) + 0.5

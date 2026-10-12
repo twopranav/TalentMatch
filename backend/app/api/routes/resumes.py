@@ -11,6 +11,8 @@ from app.core.skills_extraction_tasks import run_skills_extraction_task
 from app.db.session import get_db
 from app.models.resume import Resume, ResumeExtractionStatus, ResumeStatus
 from app.models.user import User, UserRole
+from app.models.application import Application
+from app.models.job import Job
 from app.schemas.resume import ResumeBulkUploadResult, ResumeRead, ResumeReadWithUrl
 from app.core.dispatch import dispatch_extraction
 
@@ -166,12 +168,31 @@ async def upload_resumes_bulk(
     return results
 
 
+def _applied_to_recruiters_job(resume_id: uuid.UUID, db: Session, recruiter_id: uuid.UUID) -> bool:
+    """True if this resume is attached to an application on a job the
+    recruiter created. Lets a recruiter open the resumes of their own
+    applicants (candidate self-uploads included) without being able to
+    browse the rest of the library."""
+    return (
+        db.query(Application.id)
+        .join(Job, Job.id == Application.job_id)
+        .filter(Application.resume_id == resume_id, Job.created_by_id == recruiter_id)
+        .first()
+        is not None
+    )
+
+
 def _get_visible_resume(resume_id: uuid.UUID, db: Session, current_user: User) -> Resume:
     resume = db.get(Resume, resume_id)
-    is_privileged = current_user.role in (UserRole.RECRUITER, UserRole.ADMIN, UserRole.SUPERUSER)
-    if resume is None or (not is_privileged and resume.owner_id != current_user.id):
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Resume not found")
-    return resume
+    if resume is not None:
+        if current_user.role in (UserRole.ADMIN, UserRole.SUPERUSER):
+            return resume
+        if current_user.role == UserRole.RECRUITER:
+            if resume.uploaded_by_id == current_user.id or _applied_to_recruiters_job(resume.id, db, current_user.id):
+                return resume
+        elif resume.owner_id == current_user.id:
+            return resume
+    raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Resume not found")
 
 
 def _get_manageable_resume(resume_id: uuid.UUID, db: Session, current_user: User) -> Resume:
@@ -205,6 +226,10 @@ def list_resumes(
     query = db.query(Resume).options(joinedload(Resume.owner), joinedload(Resume.uploaded_by))
     if current_user.role == UserRole.USER:
         query = query.filter(Resume.owner_id == current_user.id)
+    elif current_user.role == UserRole.RECRUITER:
+        # A recruiter's library is what they uploaded themselves. Admins and
+        # superusers see everything.
+        query = query.filter(Resume.uploaded_by_id == current_user.id)    
     if not include_archived:
         query = query.filter(Resume.is_archived.is_(False))
     resumes = query.order_by(Resume.created_at.desc()).offset(offset).limit(limit).all()

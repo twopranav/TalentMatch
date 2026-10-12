@@ -3,7 +3,8 @@ import Modal from '../ui/Modal'
 import ConfirmDialog from '../ui/ConfirmDialog'
 import { useAuth } from '../../context/AuthContext'
 import { useToast } from '../ui/Toast'
-import { updateJob, deleteJob, fetchJob, reextractJobSkills } from '../../api/jobs'
+import { updateJob, deleteJob, fetchJob, reextractJobSkills, updateJobSkills } from '../../api/jobs'
+import SkillTagsEditor from './SkillTagsEditor'
 import { formatEnumLabel, formatExperienceMonths, getErrorMessage } from '../../utils/format'
 import { ExtractionStatusBadge } from '../resume/ResumeExtractionModal'
 
@@ -39,7 +40,7 @@ function Chips({ items }) {
   )
 }
 
-export default function JobDetailsModal({ open, onClose, job, onEdit, onUploadJD, onChanged, onDeleted, myApplication, onApplicationChanged }) {
+export default function JobDetailsModal({ open, onClose, job, onEdit, onChanged, onDeleted, myApplication, onApplicationChanged }) {
   const { user } = useAuth()
   const { showToast } = useToast()
   const [confirmDelete, setConfirmDelete] = useState(false)
@@ -112,6 +113,12 @@ export default function JobDetailsModal({ open, onClose, job, onEdit, onUploadJD
     }
   }
 
+  const handleSaveSkills = async (skills) => {
+    const updated = await updateJobSkills(job.id, skills)
+    setLive(updated)
+    onChanged(updated)
+  }
+
   const handleDelete = async () => {
     setBusy(true)
     try {
@@ -138,9 +145,6 @@ export default function JobDetailsModal({ open, onClose, job, onEdit, onUploadJD
               <button onClick={() => setConfirmDelete(true)} disabled={busy} className="rounded px-4 py-2 text-sm font-medium text-red-600 hover:bg-red-50 dark:text-red-400 dark:hover:bg-red-950">
                 Delete
               </button>
-              <button onClick={() => onUploadJD(job)} disabled={busy} className="rounded px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-slate-800">
-                Upload JD
-              </button>
               <button
                 onClick={() => window.open(`/jobs/${job.id}/applicants`, '_blank', 'noopener,noreferrer')}
                 disabled={busy}
@@ -151,6 +155,11 @@ export default function JobDetailsModal({ open, onClose, job, onEdit, onUploadJD
               {job.status === 'draft' && (
                 <button onClick={() => setStatus('published')} disabled={busy} className="rounded bg-emerald-600 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-700 disabled:opacity-60">
                   Publish
+                </button>
+              )}
+              {job.status === 'closed' && (
+                <button onClick={() => setStatus('published')} disabled={busy} className="rounded bg-emerald-600 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-700 disabled:opacity-60">
+                  Reopen
                 </button>
               )}
               {job.status === 'published' && (
@@ -247,10 +256,18 @@ export default function JobDetailsModal({ open, onClose, job, onEdit, onUploadJD
                 </div>
               )}
 
-              {skillsStatus === 'done' && (
+              {(skillsStatus === 'done' || (canManage && skillsStatus === 'failed')) && (
                 <div>
-                  <dt className="mb-1 text-xs text-slate-400 dark:text-slate-500">Required skills (extracted)</dt>
-                  <dd><Chips items={view.skills_result} /></dd>
+                  <dt className="mb-1 text-xs text-slate-400 dark:text-slate-500">
+                    Required skills {canManage ? '(extracted · editable — changes re-score applicants)' : '(extracted)'}
+                  </dt>
+                  <dd>
+                    {canManage ? (
+                      <SkillTagsEditor skills={view.skills_result ?? undefined} editable onSave={handleSaveSkills} />
+                    ) : (
+                      <Chips items={view.skills_result} />
+                    )}
+                  </dd>
                   {!isApplicant && view.skills_section_heading && (
                     <p className="mt-1 text-xs text-slate-400 dark:text-slate-500">
                       Found under "{view.skills_section_heading}"
@@ -274,14 +291,6 @@ export default function JobDetailsModal({ open, onClose, job, onEdit, onUploadJD
             </div>
           )}
 
-          {job.jd_raw_text && (
-            <div>
-              <dt className="text-xs text-slate-400 dark:text-slate-500">Extracted JD text</dt>
-              <p className="mt-1 max-h-40 overflow-y-auto whitespace-pre-wrap rounded border border-slate-100 bg-slate-50 p-3 text-xs text-slate-600 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300">
-                {job.jd_raw_text}
-              </p>
-            </div>
-          )}
         </div>
       </Modal>
 

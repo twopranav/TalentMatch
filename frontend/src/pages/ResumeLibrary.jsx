@@ -1,7 +1,8 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useState } from 'react'
 import { fetchResumes, uploadResumesBulk, archiveResume, deleteResume, openResumeFile } from '../api/resumes'
 import ConfirmDialog from '../components/ui/ConfirmDialog'
 import Spinner from '../components/ui/Spinner'
+import FilePicker from '../components/ui/FilePicker'
 import { useToast } from '../components/ui/Toast'
 import { getErrorMessage } from '../utils/format'
 import ResumeExtractionModal, { ExtractionStatusBadge } from '../components/resume/ResumeExtractionModal'
@@ -21,7 +22,6 @@ function BulkUpload({ onDone }) {
   const [files, setFiles] = useState([])
   const [submitting, setSubmitting] = useState(false)
   const [results, setResults] = useState(null)
-  const fileInputRef = useRef(null)
   const { showToast } = useToast()
 
   const handleSubmit = async () => {
@@ -40,7 +40,6 @@ function BulkUpload({ onDone }) {
         failed === 0 ? 'success' : 'error',
       )
       setFiles([])
-      if (fileInputRef.current) fileInputRef.current.value = ''
       onDone()
     } catch (err) {
       showToast(getErrorMessage(err, 'Could not upload those files.'), 'error')
@@ -56,29 +55,7 @@ function BulkUpload({ onDone }) {
         Source resumes for candidates who don't have an account yet. One bad file in the batch won't stop the rest.
       </p>
       <div className="flex flex-wrap items-center gap-3">
-        <input
-          ref={fileInputRef}
-          type="file"
-          accept=".pdf,.docx"
-          multiple
-          onChange={(e) => setFiles(Array.from(e.target.files ?? []))}
-          className="hidden"
-        />
-        <button
-          type="button"
-          onClick={() => fileInputRef.current?.click()}
-          disabled={submitting}
-          className="rounded bg-red-600 px-4 py-2 text-sm font-medium text-white shadow-sm hover:bg-red-700 disabled:opacity-60 dark:bg-red-700 dark:hover:bg-red-600"
-        >
-          Choose resume file
-        </button>
-        <span className="max-w-xs truncate text-sm text-slate-500 dark:text-slate-400">
-          {files.length === 0
-            ? 'No file chosen'
-            : files.length === 1
-              ? files[0].name
-              : `${files.length} files selected`}
-        </span>
+        <FilePicker files={files} onChange={setFiles} accept=".pdf,.docx" multiple disabled={submitting} label="Choose resume files" />
         <button
           onClick={handleSubmit}
           disabled={files.length === 0 || submitting}

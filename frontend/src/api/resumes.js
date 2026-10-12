@@ -55,3 +55,9 @@ export async function openResumeFile(resumeId) {
   window.open(url, '_blank', 'noopener,noreferrer')
   setTimeout(() => window.URL.revokeObjectURL(url), 30000)
 }
+
+// Larger page than the library default (50) so the bulk-apply picker can
+// offer every resume in one list. 200 is the backend's per-request cap.
+export function fetchAllResumes() {
+  return apiClient.get('/resumes', { params: { limit: 200 } }).then((res) => res.data)
+}

@@ -192,14 +192,33 @@ def test_publish_succeeds_with_title_description_and_jd(client, make_user, auth_
     assert body["status"] == "published"
     assert body["published_at"] is not None
 
-def test_closed_job_cannot_transition_further(client, make_user, auth_headers, pdf_bytes):
-    """CLOSED has an empty allowed-transitions set — it's terminal."""
+def test_closed_job_can_be_reopened(client, make_user, auth_headers, pdf_bytes):
+    """CLOSED -> PUBLISHED is allowed; published_at keeps its original value."""
+    recruiter, _ = make_user(role=UserRole.RECRUITER)
+    job_id = _make_publishable_job(client, auth_headers, recruiter, pdf_bytes)
+    first = client.patch(f"/api/jobs/{job_id}", json={"status": "published"}, headers=auth_headers(recruiter)).json()
+    client.patch(f"/api/jobs/{job_id}", json={"status": "closed"}, headers=auth_headers(recruiter))
+    resp = client.patch(f"/api/jobs/{job_id}", json={"status": "published"}, headers=auth_headers(recruiter))
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "published"
+    assert resp.json()["published_at"] == first["published_at"]
+
+def test_closed_job_cannot_go_back_to_draft(client, make_user, auth_headers, pdf_bytes):
     recruiter, _ = make_user(role=UserRole.RECRUITER)
     job_id = _make_publishable_job(client, auth_headers, recruiter, pdf_bytes)
     client.patch(f"/api/jobs/{job_id}", json={"status": "published"}, headers=auth_headers(recruiter))
     client.patch(f"/api/jobs/{job_id}", json={"status": "closed"}, headers=auth_headers(recruiter))
-    resp = client.patch(f"/api/jobs/{job_id}", json={"status": "published"}, headers=auth_headers(recruiter))
+    resp = client.patch(f"/api/jobs/{job_id}", json={"status": "draft"}, headers=auth_headers(recruiter))
     assert resp.status_code == 400
+
+def test_non_owner_cannot_reopen_closed_job(client, make_user, auth_headers, pdf_bytes):
+    owner, _ = make_user(role=UserRole.RECRUITER)
+    other, _ = make_user(role=UserRole.RECRUITER)
+    job_id = _make_publishable_job(client, auth_headers, owner, pdf_bytes)
+    client.patch(f"/api/jobs/{job_id}", json={"status": "published"}, headers=auth_headers(owner))
+    client.patch(f"/api/jobs/{job_id}", json={"status": "closed"}, headers=auth_headers(owner))
+    resp = client.patch(f"/api/jobs/{job_id}", json={"status": "published"}, headers=auth_headers(other))
+    assert resp.status_code in (403, 404)
 
 def test_draft_can_go_straight_to_closed(client, make_user, auth_headers):
     """DRAFT's allowed set includes CLOSED directly, skipping PUBLISHED —
@@ -402,4 +421,85 @@ def test_candidate_cannot_trigger_extract_skills(client, make_user, auth_headers
     candidate, _ = make_user(role=UserRole.USER)
     job_id = client.post("/api/jobs", json={"title": "Job"}, headers=auth_headers(recruiter)).json()["id"]
     resp = client.post(f"/api/jobs/{job_id}/extract-skills", headers=auth_headers(candidate))
+    assert resp.status_code == 403
+
+
+# ---------------------------------------------------------------------------
+# PUT /jobs/{id}/skills -- recruiter edits to the extracted skill list
+# ---------------------------------------------------------------------------
+
+def _job_with_extracted_skills(client, make_user, auth_headers, pdf_bytes, db, skills):
+    recruiter, _ = make_user(role=UserRole.RECRUITER)
+    headers = auth_headers(recruiter)
+    job_id = client.post("/api/jobs", json={"title": "Job"}, headers=headers).json()["id"]
+    files = {"file": ("jd.pdf", pdf_bytes("We need a backend engineer."), "application/pdf")}
+    client.post(f"/api/jobs/{job_id}/jd", files=files, headers=headers)
+    job = db.get(Job, uuid.UUID(job_id))
+    job.skills_result = skills
+    job.skills_extraction_status = JobExtractionStatus.DONE
+    db.commit()
+    return recruiter, headers, job_id
+
+
+def test_update_skills_replaces_list_and_dedupes(client, make_user, auth_headers, pdf_bytes, db):
+    _, headers, job_id = _job_with_extracted_skills(
+        client, make_user, auth_headers, pdf_bytes, db, ["python", "fastapi"],
+    )
+    resp = client.put(
+        f"/api/jobs/{job_id}/skills",
+        json={"skills": ["Python", "  Docker  ", "python", "", "Node  JS"]},
+        headers=headers,
+    )
+    assert resp.status_code == 200
+    assert resp.json()["skills_result"] == ["Python", "Docker", "Node JS"]
+    assert resp.json()["skills_extraction_status"] == "done"
+
+
+def test_update_skills_rejects_empty_list(client, make_user, auth_headers, pdf_bytes, db):
+    _, headers, job_id = _job_with_extracted_skills(
+        client, make_user, auth_headers, pdf_bytes, db, ["python"],
+    )
+    resp = client.put(f"/api/jobs/{job_id}/skills", json={"skills": ["  ", ""]}, headers=headers)
+    assert resp.status_code == 422
+
+
+def test_update_skills_rejected_while_extraction_pending(client, make_user, auth_headers, pdf_bytes, db):
+    _, headers, job_id = _job_with_extracted_skills(
+        client, make_user, auth_headers, pdf_bytes, db, ["python"],
+    )
+    job = db.get(Job, uuid.UUID(job_id))
+    job.skills_extraction_status = JobExtractionStatus.PENDING
+    db.commit()
+    resp = client.put(f"/api/jobs/{job_id}/skills", json={"skills": ["go"]}, headers=headers)
+    assert resp.status_code == 409
+
+
+def test_update_skills_rescues_failed_extraction(client, make_user, auth_headers, pdf_bytes, db):
+    _, headers, job_id = _job_with_extracted_skills(
+        client, make_user, auth_headers, pdf_bytes, db, None,
+    )
+    job = db.get(Job, uuid.UUID(job_id))
+    job.skills_extraction_status = JobExtractionStatus.FAILED
+    job.skills_extraction_error = "boom"
+    db.commit()
+    resp = client.put(f"/api/jobs/{job_id}/skills", json={"skills": ["go"]}, headers=headers)
+    assert resp.status_code == 200
+    assert resp.json()["skills_extraction_status"] == "done"
+    assert resp.json()["skills_extraction_error"] is None
+
+
+def test_update_skills_on_others_job_is_404(client, make_user, auth_headers, pdf_bytes, db):
+    _, _, job_id = _job_with_extracted_skills(
+        client, make_user, auth_headers, pdf_bytes, db, ["python"],
+    )
+    other, _ = make_user(role=UserRole.RECRUITER)
+    resp = client.put(f"/api/jobs/{job_id}/skills", json={"skills": ["go"]}, headers=auth_headers(other))
+    assert resp.status_code == 404
+
+
+def test_candidate_cannot_update_skills(client, make_user, auth_headers):
+    candidate, _ = make_user(role=UserRole.USER)
+    resp = client.put(
+        f"/api/jobs/{uuid.uuid4()}/skills", json={"skills": ["go"]}, headers=auth_headers(candidate),
+    )
     assert resp.status_code == 403

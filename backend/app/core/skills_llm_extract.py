@@ -18,6 +18,7 @@ the admin UI without touching the JD skills task.
 import logging
 from pathlib import Path
 
+from app.core.config import settings
 from app.core.llm_json_call import call_skills_model
 from app.core.skills_text_prep import SOURCE_KEYS
 
@@ -27,6 +28,13 @@ _PROMPT_PATH = (
     Path(__file__).resolve().parents[1] / "prompts" / "skills_extraction_prompt.txt"
 )
 _SKILLS_SYSTEM_PROMPT = _PROMPT_PATH.read_text(encoding="utf-8")
+
+# Same run settings as the JD call (jd_skills_llm_extract.py): low reasoning
+# so reasoning models don't burn their output budget before writing the JSON,
+# and a client-side throttle so bulk uploads don't hit the provider's TPM limit.
+# The registry drops any override the active model doesn't support.
+_RESUME_MODEL_OVERRIDES = {"reasoning_effort": "low", "max_tokens": 4000, "timeout": 60}
+_RESUME_RATE_LIMITS = (settings.LLM_RPM_LIMIT, settings.LLM_TPM_LIMIT)  # (RPM, TPM)
 
 # Marker line that introduces each block in the user message; the prompt
 # describes these exact strings.
@@ -69,5 +77,7 @@ def extract_skills_by_source(blocks: dict[str, str]) -> dict[str, list[str]]:
         schema_name="skills",
         error_cls=SkillsExtractionError,
         source_keys=SOURCE_KEYS,
+        model_overrides=_RESUME_MODEL_OVERRIDES,
+        rate_limits=_RESUME_RATE_LIMITS,
     )
     return skills

@@ -19,6 +19,7 @@ and run through jd_text_prep's cleanup.
 import logging
 from pathlib import Path
 
+from app.core.config import settings
 from app.core.llm_json_call import call_skills_model
 
 logger = logging.getLogger(__name__)
@@ -29,7 +30,7 @@ _PROMPT_PATH = (
 _JD_SKILLS_SYSTEM_PROMPT = _PROMPT_PATH.read_text(encoding="utf-8")
 # Run settings from the JD extraction notebook.
 _JD_MODEL_OVERRIDES = {"reasoning_effort": "low", "max_tokens": 4000, "timeout": 60}
-_JD_RATE_LIMITS = (30, 8000)  # (RPM, TPM)
+_JD_RATE_LIMITS = (settings.LLM_RPM_LIMIT, settings.LLM_TPM_LIMIT)  # (RPM, TPM)
 
 
 class JDSkillsExtractionError(Exception):

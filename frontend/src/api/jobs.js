@@ -45,3 +45,9 @@ export function uploadJobDescription(jobId, file) {
 export function reextractJobSkills(jobId) {
   return apiClient.post(`/jobs/${jobId}/extract-skills`).then((res) => res.data)
 }
+
+// Recruiter correction of the extracted skills. Sends the FULL final list;
+// resolves with the updated job. Scoring for existing applicants is re-queued.
+export function updateJobSkills(jobId, skills) {
+  return apiClient.put(`/jobs/${jobId}/skills`, { skills }).then((res) => res.data)
+}
