@@ -13,6 +13,7 @@ const navClass = ({ isActive }) =>
 export default function AppLayout({ children }) {
   const { user, logout } = useAuth()
   const canViewUsers = ['recruiter', 'admin', 'superuser'].includes(user?.role)
+  const isAdmin = ['admin', 'superuser'].includes(user?.role)
   const isApplicant = user?.role === 'user'
 
   return (
@@ -36,6 +37,8 @@ export default function AppLayout({ children }) {
               {canViewUsers && <NavLink to="/my-jobs" className={navClass}>My Jobs</NavLink>}
               {canViewUsers && <NavLink to="/resumes" className={navClass}>Resumes</NavLink>}
               {canViewUsers && <NavLink to="/users" className={navClass}>Users</NavLink>}
+              {canViewUsers && <NavLink to="/audit" className={navClass}>Audit</NavLink>}
+              {isAdmin && <NavLink to="/admin/llm" className={navClass}>LLM</NavLink>}
             </nav>
           </div>
 

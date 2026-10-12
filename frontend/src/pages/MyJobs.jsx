@@ -1,4 +1,5 @@
 import { useMemo, useState } from 'react'
+import { Link } from 'react-router-dom'
 import { useAuth } from '../context/AuthContext'
 import { useJobs } from '../hooks/useJobs'
 import { updateJob } from '../api/jobs'
@@ -117,6 +118,12 @@ export default function MyJobs() {
                 >
                   Edit
                 </button>
+                <Link
+                  to={`/audit?job_id=${job.id}`}
+                  className="rounded border border-slate-200 bg-white px-3 py-1.5 text-xs font-medium text-slate-600 hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300 dark:hover:bg-slate-800"
+                >
+                  History
+                </Link>
                 <button
                   onClick={() => openApplicants(job)}
                   className="rounded bg-slate-800 px-3 py-1.5 text-xs font-medium text-white hover:bg-slate-900 dark:bg-slate-700 dark:hover:bg-slate-600"

@@ -11,6 +11,8 @@ import MyJobs from './pages/MyJobs'
 import AppliedJobs from './pages/AppliedJobs'
 import JobApplicants from './pages/JobApplicants'
 import ResumeLibrary from './pages/ResumeLibrary'
+import AuditHistory from './pages/AuditHistory'
+import LLMSettings from './pages/LLMSettings'
 
 function LoginRoute() {
   const { isAuthenticated } = useAuth()
@@ -98,6 +100,28 @@ function App() {
             <ProtectedRoute>
               <RequireRole roles={['recruiter', 'admin', 'superuser']}>
                 <UserManagement />
+              </RequireRole>
+            </ProtectedRoute>
+          }
+        />
+
+        <Route
+          path="/audit"
+          element={
+            <ProtectedRoute>
+              <RequireRole roles={['recruiter', 'admin', 'superuser']}>
+                <AuditHistory />
+              </RequireRole>
+            </ProtectedRoute>
+          }
+        />
+
+        <Route
+          path="/admin/llm"
+          element={
+            <ProtectedRoute>
+              <RequireRole roles={['admin', 'superuser']}>
+                <LLMSettings />
               </RequireRole>
             </ProtectedRoute>
           }
