@@ -5,7 +5,8 @@ from sqlalchemy import Text, and_, cast, func, or_
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, contains_eager, joinedload
 from app.core.audit import record_audit, snapshot
-from app.core.deps import get_current_user, require_recruiter_or_admin
+from app.core.deps import get_current_user, rate_limit_user, require_recruiter_or_admin
+from app.core.upload_safety import read_capped
 from app.db.session import get_db
 from app.models.application import Application, ApplicationStatus, ShortlistStage
 from app.models.resume import Resume, ResumeExtractionStatus
@@ -27,7 +28,7 @@ from app.core.dispatch import dispatch_extraction
 from app.core.matching_tasks import dispatch_score_for_job, score_application_task
 from app.core.resume_storage import delete_resume_blob
 from app.core.skills_extraction_tasks import run_skills_extraction_task
-from app.api.routes.resumes import _store_one, _validate_upload
+from app.api.routes.resumes import _MAX_RESUME_UPLOAD_BYTES, _store_one, _validate_upload
 
 router = APIRouter()
 
@@ -421,7 +422,11 @@ def bulk_apply_resumes(
     return results
 
 
-@router.post("/job/{job_id}/bulk-upload", response_model=list[BulkApplyResult])
+@router.post(
+    "/job/{job_id}/bulk-upload",
+    response_model=list[BulkApplyResult],
+    dependencies=[Depends(rate_limit_user("upload", 30, 60))],
+)
 async def bulk_upload_and_apply(
     job_id: uuid.UUID,
     files: list[UploadFile] = File(...),
@@ -447,11 +452,11 @@ async def bulk_upload_and_apply(
     results: list[BulkApplyResult] = []
     stored: list[uuid.UUID] = []
     for file in files:
-        contents = await file.read()
         blob_path = None
         try:
+            contents = await read_capped(file, _MAX_RESUME_UPLOAD_BYTES, "Resume file")
             with db.begin_nested():
-                _validate_upload(file.content_type, len(contents))
+                _validate_upload(file.content_type, contents)
                 resume = _store_one(contents, file.filename, file.content_type, None, current_user, db)
                 blob_path = resume.blob_path
                 application = _add_unowned_application(db, job, resume, current_user)

@@ -2,6 +2,7 @@ import uuid
 from fastapi import Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
 from sqlalchemy.orm import Session
+from app.core.rate_limit import enforce
 from app.core.security import decode_access_token
 from app.core.token_blacklist import is_token_blacklisted
 from app.db.session import get_db
@@ -70,3 +71,10 @@ require_recruiter_or_admin = require_role(UserRole.RECRUITER, UserRole.ADMIN, Us
 require_admin_or_superuser = require_role(UserRole.ADMIN, UserRole.SUPERUSER)
 require_superuser = require_role(UserRole.SUPERUSER)
 require_any_authenticated = get_current_user
+
+
+def rate_limit_user(name: str, limit: int, window_seconds: int):
+    """Per-authenticated-user limit (used on upload routes)."""
+    def checker(current_user: User = Depends(get_current_user)) -> None:
+        enforce(f"{name}:user:{current_user.id}", limit, window_seconds)
+    return checker

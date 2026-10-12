@@ -6,7 +6,8 @@ from sqlalchemy.orm import Session
 from app.core.audit import record_audit, snapshot
 from app.core.config import settings
 from app.core.resume_storage import build_blob_name, delete_resume_blob, get_resume_download_url, upload_resume_blob
-from app.core.deps import get_current_user, require_recruiter_or_admin, require_admin_or_superuser, require_superuser
+from app.core.deps import get_current_user, rate_limit_user, require_recruiter_or_admin, require_admin_or_superuser, require_superuser
+from app.core.upload_safety import check_magic, read_capped
 from app.db.session import get_db
 from app.models.job import Job
 from app.models.user import User, UserRole
@@ -49,17 +50,20 @@ def update_me(
     db.refresh(current_user)
     return _serialize_user(current_user)
 
-@router.post("/me/avatar", response_model=UserRead)
+@router.post(
+    "/me/avatar",
+    response_model=UserRead,
+    dependencies=[Depends(rate_limit_user("upload", 30, 60))],
+)
 async def upload_avatar(file: UploadFile = File(...), db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     if file.content_type not in _ALLOWED_AVATAR_CONTENT_TYPES:
         raise HTTPException(status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE, detail="Avatar must be a JPEG, PNG, or WebP image.")
-    contents = await file.read()
-    if len(contents) > _MAX_AVATAR_UPLOAD_BYTES:
-        raise HTTPException(status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, detail="Avatar file must be under 5 MB.")
+    contents = await read_capped(file, _MAX_AVATAR_UPLOAD_BYTES, "Avatar file")
+    check_magic(file.content_type, contents)
     if current_user.avatar_blob_path:
         delete_resume_blob(current_user.avatar_blob_path)
     before = snapshot(current_user, "user")
-    blob_name = build_blob_name(current_user.id, file.filename)
+    blob_name = build_blob_name(current_user.id, file.filename, file.content_type)
     current_user.avatar_blob_path = upload_resume_blob(contents, blob_name, file.content_type)
     record_audit(db, actor=current_user, action="update", resource_type="user", resource_id=current_user.id, before=before, after=snapshot(current_user, "user"))
     db.commit(); db.refresh(current_user)
@@ -79,7 +83,7 @@ def get_avatar_file(user_id: uuid.UUID, db: Session = Depends(get_db)):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Avatar file is missing from storage.")
     ext = target.avatar_blob_path.rsplit(".", 1)[-1].lower()
     media_type = {"jpg":"image/jpeg","jpeg":"image/jpeg","png":"image/png","webp":"image/webp"}.get(ext, "application/octet-stream")
-    return Response(content=contents, media_type=media_type)
+    return Response(content=contents, media_type=media_type, headers={"X-Content-Type-Options": "nosniff"})
 
 @router.get("")
 def list_users(

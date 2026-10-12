@@ -88,6 +88,17 @@ def _reset_login_throttle():
 
 
 @pytest.fixture(autouse=True)
+def _rate_limit_defaults(monkeypatch):
+    """Per-IP / per-user limiter is off by default so unrelated tests never
+    trip it; hardening tests switch it on explicitly."""
+    from app.core import rate_limit
+    monkeypatch.setattr(settings, "RATE_LIMIT_BACKEND", "off")
+    rate_limit._memory_hits.clear()
+    yield
+    rate_limit._memory_hits.clear()
+
+
+@pytest.fixture(autouse=True)
 def _isolated_storage_root(tmp_path, monkeypatch):
     """Redirects local-disk blob storage (resumes + avatars both go through
     app.core.storage.local_disk, which reads settings.LOCAL_STORAGE_ROOT at

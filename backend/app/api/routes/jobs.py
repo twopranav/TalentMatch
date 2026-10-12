@@ -16,11 +16,13 @@ from starlette.concurrency import run_in_threadpool
 
 from app.core.audit import record_audit, snapshot
 from app.core.deps import (
+    rate_limit_user,
     get_current_user,
     require_recruiter_or_admin,
 )
 from app.core.jd_skills_extraction_tasks import run_jd_skills_extraction_task
 from app.core.resume_storage import build_blob_name, upload_resume_blob
+from app.core.upload_safety import check_magic, read_capped
 from app.core.text_extract import extract_text_from_upload
 from app.db.session import get_db
 from app.models.job import (
@@ -369,6 +371,7 @@ _MAX_JD_UPLOAD_BYTES = 10 * 1024 * 1024
 @router.post(
     "/{job_id}/jd",
     response_model=JobRead,
+    dependencies=[Depends(rate_limit_user("upload", 30, 60))],
 )
 async def upload_jd(
     job_id: uuid.UUID,
@@ -388,13 +391,8 @@ async def upload_jd(
             detail="Job description must be a PDF or DOCX file.",
         )
 
-    contents = await file.read()
-
-    if len(contents) > _MAX_JD_UPLOAD_BYTES:
-        raise HTTPException(
-            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
-            detail="Job description file must be under 10 MB.",
-        )
+    contents = await read_capped(file, _MAX_JD_UPLOAD_BYTES, "Job description file")
+    check_magic(file.content_type, contents)
 
     await file.seek(0)
 
@@ -414,7 +412,7 @@ async def upload_jd(
     # resume_storage.py -- these wrappers were built generic from the
     # start (see azure_blob.py / local_disk.py docstrings), so no
     # JD-specific storage module is needed here.
-    blob_name = build_blob_name(job.created_by_id, file.filename)
+    blob_name = build_blob_name(job.created_by_id, file.filename, file.content_type)
 
     try:
         blob_path = await run_in_threadpool(

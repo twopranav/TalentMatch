@@ -4,6 +4,7 @@ from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy.orm import Session
 from app.core.audit import record_audit, snapshot
 from app.core.deps import get_current_user, oauth2_scheme
+from app.core.rate_limit import limit_by_ip
 from app.core.security import (
     hash_password,
     verify_password,
@@ -20,7 +21,12 @@ from app.schemas.user import UserCreate, UserRead, Token, ChangePassword
 
 router = APIRouter()
 
-@router.post("/register", response_model=UserRead, status_code=status.HTTP_201_CREATED)
+@router.post(
+    "/register",
+    response_model=UserRead,
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(limit_by_ip("register", 10, 3600))],
+)
 def register(payload: UserCreate, db: Session = Depends(get_db)) -> User:
     existing = db.query(User).filter(User.email == payload.email).first()
     if existing:
@@ -49,7 +55,11 @@ def register(payload: UserCreate, db: Session = Depends(get_db)) -> User:
     db.refresh(user)  # pulls back server-generated fields: id (default=uuid4 fired here), created_at
     return user
 
-@router.post("/login", response_model=Token)
+@router.post(
+    "/login",
+    response_model=Token,
+    dependencies=[Depends(limit_by_ip("login", 20, 60))],
+)
 def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)) -> Token:
     email = form_data.username
     # OAuth2PasswordRequestForm always calls the field "username" — we're

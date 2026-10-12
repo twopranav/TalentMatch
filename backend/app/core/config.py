@@ -1,4 +1,5 @@
 from pathlib import Path
+from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 BASE_DIR = Path(__file__).resolve().parents[2]
@@ -83,6 +84,13 @@ class Settings(BaseSettings):
     LLM_RPM_LIMIT: int = 30
     LLM_TPM_LIMIT: int = 8000
 
+    # "redis" (shared, default) | "memory" (per process) | "off" (tests)
+    RATE_LIMIT_BACKEND: str = "redis"
+
+    # Request body ceilings, enforced before any parsing (see request_limits.py).
+    MAX_REQUEST_BYTES: int = 12 * 1024 * 1024
+    MAX_BULK_REQUEST_BYTES: int = 256 * 1024 * 1024
+
     CORS_ORIGINS: list[str] = ["http://localhost:5173"]
 
     model_config = SettingsConfigDict(
@@ -90,5 +98,26 @@ class Settings(BaseSettings):
         env_file_encoding="utf-8",
         extra="ignore",
     )
+
+    @property
+    def IS_PRODUCTION(self) -> bool:
+        return self.ENV.strip().lower() == "production"
+
+    @model_validator(mode="after")
+    def _production_guardrails(self):
+        """Refuse to boot a production instance with unsafe settings."""
+        if not self.IS_PRODUCTION:
+            return self
+        problems = []
+        if self.DEBUG:
+            problems.append("DEBUG must be false")
+        if self.JWT_SECRET_KEY == "change-me-in-env" or len(self.JWT_SECRET_KEY) < 32:
+            problems.append("JWT_SECRET_KEY must be a random value of at least 32 characters")
+        if "*" in self.CORS_ORIGINS:
+            problems.append("CORS_ORIGINS must list explicit origins, not '*'")
+        if problems:
+            raise ValueError("Unsafe production configuration: " + "; ".join(problems))
+        return self
+
 
 settings = Settings()

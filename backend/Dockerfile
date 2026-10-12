@@ -33,4 +33,6 @@ COPY backend/ .
 EXPOSE 8000
 
 # docker-compose overrides this CMD for the worker service.
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+# --proxy-headers makes the rate limiter see the real client IP behind a
+# reverse proxy; set --forwarded-allow-ips to your proxy's address if you can.
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--proxy-headers", "--forwarded-allow-ips", "*"]

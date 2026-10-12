@@ -5,7 +5,8 @@ from fastapi.responses import Response
 from sqlalchemy.orm import Session, joinedload
 from app.core.audit import record_audit, snapshot
 from app.core.config import settings
-from app.core.deps import get_current_user, require_recruiter_or_admin
+from app.core.deps import get_current_user, rate_limit_user, require_recruiter_or_admin
+from app.core.upload_safety import check_magic, content_disposition, read_capped
 from app.core.resume_storage import build_blob_name, delete_resume_blob, download_resume_blob, get_resume_download_url, upload_resume_blob
 from app.core.skills_extraction_tasks import run_skills_extraction_task
 from app.db.session import get_db
@@ -27,17 +28,21 @@ _ALLOWED_CONTENT_TYPES = {
 _MAX_RESUME_UPLOAD_BYTES = 10 * 1024 * 1024
 
 
-def _validate_upload(content_type: str, size: int) -> None:
+MAX_RESUMES_BULK = 50
+
+
+def _validate_upload(content_type: str, contents: bytes) -> None:
     if content_type not in _ALLOWED_CONTENT_TYPES:
         raise HTTPException(
             status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
             detail="Resume must be a PDF or DOCX file.",
         )
-    if size > _MAX_RESUME_UPLOAD_BYTES:
+    if len(contents) > _MAX_RESUME_UPLOAD_BYTES:
         raise HTTPException(
             status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
             detail="Resume file must be under 10 MB.",
         )
+    check_magic(content_type, contents)
 
 
 def _store_one(
@@ -52,7 +57,7 @@ def _store_one(
     run_skills_extraction_task after their own commit succeeds. A resume
     row created here always starts at its default
     skills_extraction_status (PENDING)."""
-    blob_name = build_blob_name(owner_id, filename)
+    blob_name = build_blob_name(owner_id, filename, content_type)
     try:
         blob_path = upload_resume_blob(file_bytes, blob_name, content_type)
         upload_status = ResumeStatus.UPLOADED
@@ -80,7 +85,12 @@ def _store_one(
     return resume
 
 
-@router.post("", response_model=ResumeRead, status_code=status.HTTP_201_CREATED)
+@router.post(
+    "",
+    response_model=ResumeRead,
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(rate_limit_user("upload", 30, 60))],
+)
 async def upload_resume(
     file: UploadFile = File(...),
     db: Session = Depends(get_db),
@@ -98,8 +108,13 @@ async def upload_resume(
     only checks that status (see applications._require_ready_resume); it
     never triggers extraction itself.
     """
-    contents = await file.read()
-    _validate_upload(file.content_type, len(contents))
+    if file.content_type not in _ALLOWED_CONTENT_TYPES:
+        raise HTTPException(
+            status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
+            detail="Resume must be a PDF or DOCX file.",
+        )
+    contents = await read_capped(file, _MAX_RESUME_UPLOAD_BYTES, "Resume file")
+    _validate_upload(file.content_type, contents)
 
     existing = (
         db.query(Resume)
@@ -137,19 +152,28 @@ async def upload_resume(
     return resume
 
 
-@router.post("/bulk", response_model=list[ResumeBulkUploadResult])
+@router.post(
+    "/bulk",
+    response_model=list[ResumeBulkUploadResult],
+    dependencies=[Depends(rate_limit_user("upload", 30, 60))],
+)
 async def upload_resumes_bulk(
     files: list[UploadFile] = File(...),
     db: Session = Depends(get_db),
     current_user: User = Depends(require_recruiter_or_admin),
 ):
+    if len(files) > MAX_RESUMES_BULK:
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            detail=f"Upload at most {MAX_RESUMES_BULK} files at a time.",
+        )
     results: list[ResumeBulkUploadResult] = []
     stored_ids: list[uuid.UUID] = []
     for file in files:
-        contents = await file.read()
         try:
+            contents = await read_capped(file, _MAX_RESUME_UPLOAD_BYTES, "Resume file")
             with db.begin_nested():
-                _validate_upload(file.content_type, len(contents))
+                _validate_upload(file.content_type, contents)
                 resume = _store_one(contents, file.filename, file.content_type, None, current_user, db)
                 db.flush()
             results.append(ResumeBulkUploadResult(
@@ -265,7 +289,14 @@ def download_resume_file(resume_id: uuid.UUID, db: Session = Depends(get_db), cu
         contents = download_resume_blob(resume.blob_path)
     except FileNotFoundError:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Resume file is missing from storage.")
-    return Response(content=contents, media_type=resume.content_type, headers={"Content-Disposition": f'inline; filename="{resume.original_filename}"'})
+    return Response(
+        content=contents,
+        media_type=resume.content_type,
+        headers={
+            "Content-Disposition": content_disposition(resume.original_filename),
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
 
 
 @router.patch("/{resume_id}/archive", response_model=ResumeRead)

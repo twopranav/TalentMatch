@@ -6,6 +6,7 @@ STORAGE_BACKEND is a config change, not a code change.
 import uuid
 
 from app.core.config import settings
+from app.core.upload_safety import safe_extension
 
 if settings.STORAGE_BACKEND == "azure":
     from app.core.storage.azure_blob import (
@@ -23,12 +24,15 @@ else:
     )
 
 
-def build_blob_name(owner_id: uuid.UUID | None, original_filename: str) -> str:
+def build_blob_name(
+    owner_id: uuid.UUID | None,
+    original_filename: str,
+    content_type: str | None = None,
+) -> str:
     """Namespaced, collision-proof blob key. Prefixing with the owner id
     (or 'unowned' for recruiter-sourced files with no account yet) keeps a
     container browsable by candidate without needing a DB lookup, while the
     uuid4 segment guarantees two uploads of 'resume.pdf' never collide.
     Same scheme regardless of which backend is active."""
     prefix = str(owner_id) if owner_id else "unowned"
-    ext = ("." + original_filename.rsplit(".", 1)[-1]) if "." in original_filename else ""
-    return f"{prefix}/{uuid.uuid4()}{ext}"
+    return f"{prefix}/{uuid.uuid4()}{safe_extension(original_filename, content_type)}"

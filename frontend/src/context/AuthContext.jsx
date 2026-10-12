@@ -44,7 +44,12 @@ export function AuthProvider({ children }) {
     return data
   }, [])
 
-  const logout = useCallback(() => {
+  const logout = useCallback(async () => {
+    try {
+      await apiClient.post('/auth/logout')
+    } catch {
+      // token may already be expired or revoked; still clear locally
+    }
     localStorage.removeItem('access_token')
     setUser(null)
   }, [])

@@ -14,17 +14,44 @@ from app.api.routes import (
     users,
 )
 from app.core.config import settings
+from app.core.request_limits import BodySizeLimitMiddleware
 
-app = FastAPI(title=settings.APP_NAME, debug=settings.DEBUG)
+app = FastAPI(
+    title=settings.APP_NAME,
+    debug=settings.DEBUG and not settings.IS_PRODUCTION,
+    docs_url=None if settings.IS_PRODUCTION else "/docs",
+    redoc_url=None if settings.IS_PRODUCTION else "/redoc",
+    openapi_url=None if settings.IS_PRODUCTION else "/openapi.json",
+)
+
+# Middleware order: the one added LAST is outermost. CORS goes last so that
+# even 413/429 error responses carry CORS headers the browser can read.
+app.add_middleware(
+    BodySizeLimitMiddleware,
+    default_limit=settings.MAX_REQUEST_BYTES,
+    bulk_limit=settings.MAX_BULK_REQUEST_BYTES,
+)
+
+
+@app.middleware("http")
+async def security_headers(request, call_next):
+    response = await call_next(request)
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("X-Frame-Options", "SAMEORIGIN")
+    response.headers.setdefault("Referrer-Policy", "no-referrer")
+    if settings.IS_PRODUCTION:
+        response.headers.setdefault("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
+    return response
+
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.CORS_ORIGINS,
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type", "Accept"],
     # The applicants list reports its full (unpaged) size in this header.
-    expose_headers=["X-Total-Count"],
+    expose_headers=["X-Total-Count", "Retry-After"],
 )
 
 app.include_router(health.router, prefix="/api")
@@ -37,6 +64,7 @@ app.include_router(recruiter_actions.router, prefix="/api/applications", tags=["
 app.include_router(audit.router, prefix="/api/audit", tags=["audit"])
 app.include_router(resumes.router, prefix="/api/resumes", tags=["resumes"])
 app.include_router(llm_config.router, prefix="/api/admin/llm-config", tags=["admin"])
+
 
 @app.get("/")
 def root() -> dict:

@@ -79,11 +79,11 @@ def test_avatar_replace_removes_old_blob(client, make_user, auth_headers):
     download still returns the newest bytes."""
     user, _ = make_user()
     headers = auth_headers(user)
-    client.post("/api/users/me/avatar", files={"file": ("first.png", b"first-bytes", "image/png")}, headers=headers)
-    client.post("/api/users/me/avatar", files={"file": ("second.png", b"second-bytes", "image/png")}, headers=headers)
+    client.post("/api/users/me/avatar", files={"file": ("first.png", b"\x89PNG\r\n\x1a\nfirst-bytes", "image/png")}, headers=headers)
+    client.post("/api/users/me/avatar", files={"file": ("second.png", b"\x89PNG\r\n\x1a\nsecond-bytes", "image/png")}, headers=headers)
     avatar_url = client.get("/api/users/me", headers=headers).json()["avatar_url"]
     file_resp = client.get(avatar_url)
-    assert file_resp.content == b"second-bytes"
+    assert file_resp.content == b"\x89PNG\r\n\x1a\nsecond-bytes"
 
 def test_get_avatar_file_404_when_none_set(client, make_user):
     user, _ = make_user()

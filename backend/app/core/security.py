@@ -9,6 +9,7 @@ from jose import JWTError, jwt
 from pwdlib import PasswordHash
 from pwdlib.hashers.bcrypt import BcryptHasher
 from app.core.config import settings
+from app.core.rate_limit import get_redis, mark_redis_down
 
 # Modern password hashing context replacing passlib
 pwd_context = PasswordHash((BcryptHasher(),))
@@ -43,18 +44,28 @@ def decode_access_token(token: str) -> dict[str, Any] | None:
 # ---------------------------------------------------------------------------
 # Login throttling (brute-force protection)
 # ---------------------------------------------------------------------------
-# In-memory only — resets on process restart and is NOT shared across
-# multiple app instances/workers. Good enough to stop naive password
-# guessing right now; if you deploy with >1 worker or need this to survive
-# restarts, move this to Redis (or a DB table with a migration) instead.
+# Redis-backed when available (shared across workers, survives restarts);
+# falls back to the in-memory dicts below if Redis is off or unreachable.
 _LOGIN_ATTEMPT_LIMIT = 5
 _LOGIN_LOCKOUT_MINUTES = 15
 _failed_attempts: dict[str, list[datetime]] = {}
 _locked_until: dict[str, datetime] = {}
 
 
+def _norm(email: str) -> str:
+    return email.strip().lower()
+
+
 def is_login_locked(email: str) -> tuple[bool, int]:
     """Returns (locked, seconds_remaining)."""
+    email = _norm(email)
+    client = get_redis()
+    if client is not None:
+        try:
+            ttl = client.ttl(f"login:lock:{email}")
+            return (ttl > 0, max(ttl, 0))
+        except Exception:
+            mark_redis_down()
     until = _locked_until.get(email)
     if until is None:
         return False, 0
@@ -67,6 +78,20 @@ def is_login_locked(email: str) -> tuple[bool, int]:
 
 
 def record_failed_login(email: str) -> None:
+    email = _norm(email)
+    client = get_redis()
+    if client is not None:
+        try:
+            key = f"login:fail:{email}"
+            pipe = client.pipeline()
+            pipe.incr(key)
+            pipe.expire(key, _LOGIN_LOCKOUT_MINUTES * 60)
+            count = pipe.execute()[0]
+            if count >= _LOGIN_ATTEMPT_LIMIT:
+                client.set(f"login:lock:{email}", 1, ex=_LOGIN_LOCKOUT_MINUTES * 60)
+            return
+        except Exception:
+            mark_redis_down()
     now = datetime.now(timezone.utc)
     window_start = now - timedelta(minutes=_LOGIN_LOCKOUT_MINUTES)
     attempts = [t for t in _failed_attempts.get(email, []) if t > window_start]
@@ -77,5 +102,12 @@ def record_failed_login(email: str) -> None:
 
 
 def clear_failed_logins(email: str) -> None:
+    email = _norm(email)
+    client = get_redis()
+    if client is not None:
+        try:
+            client.delete(f"login:fail:{email}", f"login:lock:{email}")
+        except Exception:
+            mark_redis_down()
     _failed_attempts.pop(email, None)
     _locked_until.pop(email, None)
