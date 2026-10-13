@@ -160,7 +160,11 @@ def test_pdf_two_columns_heading_in_right_column():
 
 
 def test_pdf_two_columns_right_column_continues_the_list():
-    left = REQS + [("p", "- REST API design"), ("p", "- Git")]
+    # The left column must run to the foot of the page for the section to
+    # flow into the right one (otherwise the right column is treated as a
+    # sidebar; see the next test). ~34 filler bullets reach past 75% of an
+    # A4 page at the builder's 16pt line height.
+    left = REQS + [("p", f"- Filler skill {i}") for i in range(34)]
     right = [
         ("p", "- Redis caching"),
         ("p", "- Linux basics"),
@@ -190,6 +194,28 @@ def test_pdf_two_columns_right_column_continues_the_list():
     # dropped; and a boundary heading in the right column can cut a
     # left-column line at the same height. If you change that logic in
     # jd_skills_locator._locate_in_pdf_bytes, tighten this test.
+
+
+def test_pdf_short_left_column_does_not_pull_in_neighbouring_sidebar():
+    """If the requirements column stops well short of the page foot, a
+    bulleted block beside it is a sidebar, not a continuation."""
+    left = REQS + [("p", "- REST API design"), ("p", "- Git")]
+    right = [
+        ("p", "- Redis caching"),
+        ("p", "- Linux basics"),
+        ("p", "- Unit testing"),
+        ("p", "- Message queues"),
+        ("p", "- Terraform"),
+        ("p", "- Monitoring"),
+    ]
+
+    text = locate_jd_requirements(_build_pdf([[(50, left), (330, right)]]), "jd.pdf")[
+        "section_text"
+    ]
+
+    assert "rest api design" in text and "- git" in text
+    for unexpected in ("linux basics", "unit testing", "terraform", "monitoring"):
+        assert unexpected not in text
 
 
 def test_pdf_requirements_continue_onto_next_page():

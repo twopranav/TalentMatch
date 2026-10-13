@@ -235,3 +235,88 @@ def dispatched(monkeypatch):
         lambda application_id: calls["score"].append(application_id),
     )
     return calls
+
+
+# ---------------------------------------------------------------------------
+# Route-coverage guard. Records every (method, route template) the tests
+# actually request, then reports (or fails on) /api routes nothing hit.
+#
+#   ROUTE_COVERAGE=1      pytest     -> prints the never-requested routes
+#   ROUTE_COVERAGE=strict pytest     -> same, and exits non-zero if any
+#
+# Only meaningful for a FULL run: a subset (-k, one file, --lf) will always
+# look incomplete, which is why it is opt-in. The route list comes from the
+# app's OpenAPI schema (stable across FastAPI versions, unlike app.routes).
+# ---------------------------------------------------------------------------
+
+# Routes that are deliberately not exercised, as (METHOD, "/api/path/{param}").
+ROUTE_COVERAGE_IGNORE: set[tuple[str, str]] = set()
+
+_hit_routes: set[tuple[str, str]] = set()
+_HTTP_METHODS = {"GET", "POST", "PUT", "PATCH", "DELETE"}
+
+
+def _route_table():
+    """[(METHOD, template, compiled_regex)] for every /api operation."""
+    import re
+    table = []
+    for template, operations in app.openapi().get("paths", {}).items():
+        if not template.startswith("/api"):
+            continue
+        parts = re.split(r"(\{[^}/]+\})", template)
+        regex = re.compile(
+            "^" + "".join("[^/]+" if p.startswith("{") else re.escape(p) for p in parts) + "/?$"
+        )
+        for method in operations:
+            if method.upper() in _HTTP_METHODS:
+                table.append((method.upper(), template, regex))
+    return table
+
+
+@pytest.fixture(autouse=True, scope="session")
+def _record_route_hits():
+    from urllib.parse import urlsplit
+    from starlette.testclient import TestClient
+
+    try:
+        table = _route_table()
+    except Exception:  # never let the guard break the suite
+        table = []
+
+    original = TestClient.request
+
+    def recording(self, method, url, *args, **kwargs):
+        path = urlsplit(str(url)).path
+        matches = [(t, rx) for m, t, rx in table if m == method.upper() and rx.match(path)]
+        if matches:
+            # '/users/me' also matches '/users/{id}'; the most specific wins.
+            template = min(matches, key=lambda m: (m[0].count("{"), -len(m[0])))[0]
+            _hit_routes.add((method.upper(), template))
+        return original(self, method, url, *args, **kwargs)
+
+    TestClient.request = recording
+    yield
+    TestClient.request = original
+
+
+def _missing_routes() -> list[tuple[str, str]]:
+    declared = {(m, t) for m, t, _ in _route_table()}
+    return sorted(declared - _hit_routes - ROUTE_COVERAGE_IGNORE, key=lambda r: (r[1], r[0]))
+
+
+def pytest_terminal_summary(terminalreporter, exitstatus, config):
+    if not os.environ.get("ROUTE_COVERAGE"):
+        return
+    missing = _missing_routes()
+    terminalreporter.section("API route coverage")
+    if not missing:
+        terminalreporter.write_line("Every /api route was requested by at least one test.")
+        return
+    terminalreporter.write_line(f"{len(missing)} route(s) were never requested by any test:")
+    for method, path in missing:
+        terminalreporter.write_line(f"  {method:<7} {path}")
+
+
+def pytest_sessionfinish(session, exitstatus):
+    if os.environ.get("ROUTE_COVERAGE") == "strict" and _missing_routes() and session.exitstatus == 0:
+        session.exitstatus = 1

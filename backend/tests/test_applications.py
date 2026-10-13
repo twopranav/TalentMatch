@@ -1,5 +1,5 @@
 from conftest import TestSessionLocal  # tests/ is on sys.path (no __init__.py)
-
+import pytest
 from app.models.resume import Resume, ResumeExtractionStatus
 from app.models.user import UserRole
 
@@ -270,6 +270,253 @@ def test_update_status_404_for_missing_application(client, make_user, auth_heade
         f"/api/applications/{uuid.uuid4()}/status", json={"status": "hired"}, headers=auth_headers(recruiter),
     )
     assert resp.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# PATCH /api/applications/{id}/shortlist-stage
+# ---------------------------------------------------------------------------
+
+def _make_application(client, make_user, auth_headers, pdf_bytes, shortlist=True):
+    """Recruiter + candidate + one application on the recruiter's job.
+    shortlist=True also moves it to status 'shortlisted' (stage starts at
+    'shortlisted'). Returns (recruiter, candidate, application_id)."""
+    recruiter, _ = make_user(role=UserRole.RECRUITER)
+    candidate, _ = make_user(role=UserRole.USER)
+    job_id = _published_job(client, auth_headers, recruiter, pdf_bytes)
+    _upload_resume(client, auth_headers, candidate, pdf_bytes)
+    app_id = client.post(
+        "/api/applications", json={"job_id": job_id, "resume_id": None}, headers=auth_headers(candidate),
+    ).json()["id"]
+    if shortlist:
+        resp = client.patch(
+            f"/api/applications/{app_id}/status", json={"status": "shortlisted"},
+            headers=auth_headers(recruiter),
+        )
+        assert resp.status_code == 200
+    return recruiter, candidate, app_id
+
+
+def _set_stage(client, auth_headers, user, app_id, stage, **extra):
+    return client.patch(
+        f"/api/applications/{app_id}/shortlist-stage",
+        json={"stage": stage, **extra},
+        headers=auth_headers(user),
+    )
+
+
+def test_shortlisting_starts_at_the_default_stage(client, make_user, auth_headers, pdf_bytes):
+    recruiter, _, app_id = _make_application(client, make_user, auth_headers, pdf_bytes, shortlist=False)
+    resp = client.patch(
+        f"/api/applications/{app_id}/status", json={"status": "shortlisted"},
+        headers=auth_headers(recruiter),
+    )
+    assert resp.json()["shortlist_stage"] == "shortlisted"
+    assert resp.json()["interview_at"] is None
+
+
+def test_move_to_review_stage(client, make_user, auth_headers, pdf_bytes):
+    recruiter, _, app_id = _make_application(client, make_user, auth_headers, pdf_bytes)
+    resp = _set_stage(client, auth_headers, recruiter, app_id, "review")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["shortlist_stage"] == "review"
+    assert body["status"] == "shortlisted"
+    assert body["interview_at"] is None
+
+
+def test_rejected_stage_keeps_the_application_status_shortlisted(client, make_user, auth_headers, pdf_bytes):
+    """The stage is a sub-state: rejecting within the shortlist does not
+    change Application.status."""
+    recruiter, _, app_id = _make_application(client, make_user, auth_headers, pdf_bytes)
+    body = _set_stage(client, auth_headers, recruiter, app_id, "rejected").json()
+    assert body["shortlist_stage"] == "rejected"
+    assert body["status"] == "shortlisted"
+
+
+def test_interview_scheduled_stores_the_time(client, make_user, auth_headers, pdf_bytes):
+    from datetime import datetime, timezone
+    recruiter, _, app_id = _make_application(client, make_user, auth_headers, pdf_bytes)
+    resp = _set_stage(
+        client, auth_headers, recruiter, app_id, "interview_scheduled",
+        interview_at="2030-01-15T14:30:00Z",
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["shortlist_stage"] == "interview_scheduled"
+    assert datetime.fromisoformat(body["interview_at"]) == datetime(2030, 1, 15, 14, 30, tzinfo=timezone.utc)
+
+
+def test_interview_time_with_a_utc_offset_is_the_same_instant(client, make_user, auth_headers, pdf_bytes):
+    from datetime import datetime, timezone
+    recruiter, _, app_id = _make_application(client, make_user, auth_headers, pdf_bytes)
+    resp = _set_stage(
+        client, auth_headers, recruiter, app_id, "interview_scheduled",
+        interview_at="2030-01-15T14:30:00+05:30",
+    )
+    assert resp.status_code == 200
+    got = datetime.fromisoformat(resp.json()["interview_at"])
+    assert got == datetime(2030, 1, 15, 9, 0, tzinfo=timezone.utc)
+
+
+def test_interview_scheduled_requires_interview_at(client, make_user, auth_headers, pdf_bytes):
+    recruiter, _, app_id = _make_application(client, make_user, auth_headers, pdf_bytes)
+    resp = _set_stage(client, auth_headers, recruiter, app_id, "interview_scheduled")
+    assert resp.status_code == 422
+    assert "interview_at" in resp.text
+
+
+def test_interview_at_without_a_timezone_is_rejected(client, make_user, auth_headers, pdf_bytes):
+    recruiter, _, app_id = _make_application(client, make_user, auth_headers, pdf_bytes)
+    resp = _set_stage(
+        client, auth_headers, recruiter, app_id, "interview_scheduled",
+        interview_at="2030-01-15T14:30:00",
+    )
+    assert resp.status_code == 422
+    assert "timezone" in resp.text
+
+
+@pytest.mark.parametrize("stage", ["shortlisted", "review", "rejected"])
+def test_other_stages_ignore_and_clear_interview_at(client, make_user, auth_headers, pdf_bytes, stage):
+    recruiter, _, app_id = _make_application(client, make_user, auth_headers, pdf_bytes)
+    _set_stage(
+        client, auth_headers, recruiter, app_id, "interview_scheduled",
+        interview_at="2030-01-15T14:30:00Z",
+    )
+    resp = _set_stage(
+        client, auth_headers, recruiter, app_id, stage,
+        interview_at="2031-02-02T10:00:00Z",  # supplied but must be dropped
+    )
+    assert resp.status_code == 200
+    assert resp.json()["shortlist_stage"] == stage
+    assert resp.json()["interview_at"] is None
+
+
+@pytest.mark.parametrize("body", [{}, {"stage": "not-a-stage"}, {"stage": None}, {"interview_at": "2030-01-15T14:30:00Z"}])
+def test_invalid_stage_payload_is_422(client, make_user, auth_headers, pdf_bytes, body):
+    recruiter, _, app_id = _make_application(client, make_user, auth_headers, pdf_bytes)
+    resp = client.patch(
+        f"/api/applications/{app_id}/shortlist-stage", json=body, headers=auth_headers(recruiter),
+    )
+    assert resp.status_code == 422
+
+
+def test_stage_change_on_a_not_shortlisted_application_is_400(client, make_user, auth_headers, pdf_bytes, db):
+    import uuid
+    from app.models.application import Application
+    recruiter, _, app_id = _make_application(client, make_user, auth_headers, pdf_bytes, shortlist=False)
+    resp = _set_stage(client, auth_headers, recruiter, app_id, "review")
+    assert resp.status_code == 400
+    db.expire_all()
+    assert db.get(Application, uuid.UUID(app_id)).shortlist_stage is None
+
+
+def test_leaving_the_shortlist_clears_stage_and_interview(client, make_user, auth_headers, pdf_bytes):
+    recruiter, _, app_id = _make_application(client, make_user, auth_headers, pdf_bytes)
+    _set_stage(
+        client, auth_headers, recruiter, app_id, "interview_scheduled",
+        interview_at="2030-01-15T14:30:00Z",
+    )
+    resp = client.patch(
+        f"/api/applications/{app_id}/status", json={"status": "under_review"},
+        headers=auth_headers(recruiter),
+    )
+    body = resp.json()
+    assert body["status"] == "under_review"
+    assert body["shortlist_stage"] is None
+    assert body["interview_at"] is None
+
+
+def test_reshortlisting_starts_again_at_the_default_stage(client, make_user, auth_headers, pdf_bytes):
+    recruiter, _, app_id = _make_application(client, make_user, auth_headers, pdf_bytes)
+    _set_stage(client, auth_headers, recruiter, app_id, "review")
+    client.patch(f"/api/applications/{app_id}/status", json={"status": "under_review"}, headers=auth_headers(recruiter))
+    body = client.patch(
+        f"/api/applications/{app_id}/status", json={"status": "shortlisted"}, headers=auth_headers(recruiter),
+    ).json()
+    assert body["shortlist_stage"] == "shortlisted"
+
+
+def test_resending_the_same_status_keeps_the_current_stage(client, make_user, auth_headers, pdf_bytes):
+    """Only a real status change resets the stage; a no-op PATCH must not
+    wipe a recruiter's progress."""
+    recruiter, _, app_id = _make_application(client, make_user, auth_headers, pdf_bytes)
+    _set_stage(client, auth_headers, recruiter, app_id, "review")
+    body = client.patch(
+        f"/api/applications/{app_id}/status", json={"status": "shortlisted"}, headers=auth_headers(recruiter),
+    ).json()
+    assert body["shortlist_stage"] == "review"
+
+
+@pytest.mark.parametrize("role", [UserRole.ADMIN, UserRole.SUPERUSER])
+def test_admin_and_superuser_can_set_stage_on_any_job(client, make_user, auth_headers, pdf_bytes, role):
+    _, _, app_id = _make_application(client, make_user, auth_headers, pdf_bytes)
+    actor, _ = make_user(role=role)
+    resp = _set_stage(client, auth_headers, actor, app_id, "review")
+    assert resp.status_code == 200
+    assert resp.json()["shortlist_stage"] == "review"
+
+
+def test_non_owning_recruiter_gets_403_and_nothing_changes(client, make_user, auth_headers, pdf_bytes, db):
+    import uuid
+    from app.models.application import Application, ShortlistStage
+    _, _, app_id = _make_application(client, make_user, auth_headers, pdf_bytes)
+    other, _ = make_user(role=UserRole.RECRUITER)
+    assert _set_stage(client, auth_headers, other, app_id, "rejected").status_code == 403
+    db.expire_all()
+    assert db.get(Application, uuid.UUID(app_id)).shortlist_stage == ShortlistStage.SHORTLISTED
+
+
+def test_candidate_cannot_set_stage_on_their_own_application(client, make_user, auth_headers, pdf_bytes):
+    _, candidate, app_id = _make_application(client, make_user, auth_headers, pdf_bytes)
+    assert _set_stage(client, auth_headers, candidate, app_id, "interview_scheduled",
+                      interview_at="2030-01-15T14:30:00Z").status_code == 403
+
+
+def test_stage_requires_authentication(client, make_user, auth_headers, pdf_bytes):
+    _, _, app_id = _make_application(client, make_user, auth_headers, pdf_bytes)
+    resp = client.patch(f"/api/applications/{app_id}/shortlist-stage", json={"stage": "review"})
+    assert resp.status_code == 401
+
+
+def test_stage_unknown_application_is_404(client, make_user, auth_headers):
+    import uuid
+    recruiter, _ = make_user(role=UserRole.RECRUITER)
+    assert _set_stage(client, auth_headers, recruiter, uuid.uuid4(), "review").status_code == 404
+
+
+def test_stage_malformed_id_is_422(client, make_user, auth_headers):
+    recruiter, _ = make_user(role=UserRole.RECRUITER)
+    assert _set_stage(client, auth_headers, recruiter, "not-a-uuid", "review").status_code == 422
+
+
+def test_stage_change_is_audited_with_before_and_after(client, make_user, auth_headers, pdf_bytes, db):
+    import uuid
+    from app.models.audit_log import AuditLog
+    recruiter, _, app_id = _make_application(client, make_user, auth_headers, pdf_bytes)
+    _set_stage(client, auth_headers, recruiter, app_id, "review")
+
+    db.expire_all()
+    rows = db.query(AuditLog).filter(
+        AuditLog.resource_type == "application",
+        AuditLog.resource_id == uuid.UUID(app_id),
+        AuditLog.action == "update",
+    ).all()
+    stage_changes = [r for r in rows if (r.after or {}).get("shortlist_stage") == "review"]
+    assert len(stage_changes) == 1
+    entry = stage_changes[0]
+    assert entry.actor_id == recruiter.id
+    assert entry.before["shortlist_stage"] == "shortlisted"
+
+
+def test_failed_stage_change_writes_no_audit(client, make_user, auth_headers, pdf_bytes, db):
+    import uuid
+    from app.models.audit_log import AuditLog
+    recruiter, _, app_id = _make_application(client, make_user, auth_headers, pdf_bytes, shortlist=False)
+    db.expire_all()
+    before = db.query(AuditLog).filter(AuditLog.resource_id == uuid.UUID(app_id)).count()
+    assert _set_stage(client, auth_headers, recruiter, app_id, "review").status_code == 400
+    db.expire_all()
+    assert db.query(AuditLog).filter(AuditLog.resource_id == uuid.UUID(app_id)).count() == before
 
 
 # ---------------------------------------------------------------------------
