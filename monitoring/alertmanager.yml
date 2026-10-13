@@ -1,0 +1,27 @@
+# Alertmanager: decides where alerts go. As shipped it receives alerts and
+# shows them at http://localhost:9093 but notifies nobody. Fill in ONE of the
+# examples below under `receivers:` and keep `receiver: default` in the route.
+route:
+  receiver: default
+  group_by: [alertname]
+  group_wait: 30s
+  group_interval: 5m
+  repeat_interval: 4h
+
+receivers:
+  - name: default
+    # --- Email ---
+    # email_configs:
+    #   - to: you@example.com
+    #     from: alerts@example.com
+    #     smarthost: smtp.example.com:587
+    #     auth_username: alerts@example.com
+    #     auth_password: CHANGE_ME
+    #
+    # --- Slack (incoming webhook URL from your Slack app) ---
+    # slack_configs:
+    #   - api_url: https://hooks.slack.com/services/XXX/YYY/ZZZ
+    #     channel: "#alerts"
+    #     send_resolved: true
+    #     title: "{{ .CommonLabels.alertname }} ({{ .Status }})"
+    #     text: "{{ .CommonAnnotations.summary }}\n{{ .CommonAnnotations.description }}"

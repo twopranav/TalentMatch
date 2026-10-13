@@ -9,12 +9,16 @@ from app.api.routes import (
     health,
     jobs,
     llm_config,
+    metrics,
     recruiter_actions,
     resumes,
     users,
 )
 from app.core.config import settings
+from app.core.logging_config import RequestLoggingMiddleware, setup_logging
 from app.core.request_limits import BodySizeLimitMiddleware
+
+setup_logging("api")
 
 app = FastAPI(
     title=settings.APP_NAME,
@@ -51,10 +55,14 @@ app.add_middleware(
     allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     allow_headers=["Authorization", "Content-Type", "Accept"],
     # The applicants list reports its full (unpaged) size in this header.
-    expose_headers=["X-Total-Count", "Retry-After"],
+    expose_headers=["X-Total-Count", "Retry-After", "X-Request-ID"],
 )
+# Added last = outermost: every request (even ones rejected by the body-size
+# limit or answered by CORS) gets a request_id and one log line.
+app.add_middleware(RequestLoggingMiddleware)
 
 app.include_router(health.router, prefix="/api")
+app.include_router(metrics.router)  # GET /metrics, see routes/metrics.py
 app.include_router(auth.router, prefix="/api/auth", tags=["auth"])
 app.include_router(jobs.router, prefix="/api/jobs", tags=["jobs"])
 app.include_router(users.router, prefix="/api/users", tags=["users"])

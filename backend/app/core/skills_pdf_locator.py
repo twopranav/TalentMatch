@@ -39,6 +39,7 @@ statement about the candidate.
 """
 
 import io
+import logging
 import re
 from collections import Counter
 
@@ -153,6 +154,14 @@ for _kind, _names in (
         _HEADING_TYPES[_name] = _kind
 
 MAX_SECTION_CHARS = 20_000
+
+# A real resume is a handful of pages. Past this, a PDF is either not a
+# resume or built to be slow to parse (every page is laid out word by word),
+# and the single extraction worker would sit on it. Pages beyond the cap are
+# ignored and the sections are located in what was read.
+MAX_RESUME_PDF_PAGES = 10
+
+logger = logging.getLogger(__name__)
 _MAX_HEADING_STYLE_COUNT = 12
 _PAGE_NUMBER = re.compile(r"^(page\s*)?\d+(\s*(of|/)\s*\d+)?$", re.IGNORECASE)
 
@@ -807,7 +816,14 @@ def locate_resume_sections(raw: bytes, filename: str) -> dict:
         import pdfplumber
 
         with pdfplumber.open(io.BytesIO(raw)) as pdf:
-            page_segments = [_extract_visual_segments(page) for page in pdf.pages]
+            pages = pdf.pages
+            if len(pages) > MAX_RESUME_PDF_PAGES:
+                logger.info(
+                    "'%s' has %d pages; only reading the first %d",
+                    filename, len(pages), MAX_RESUME_PDF_PAGES,
+                )
+                pages = pages[:MAX_RESUME_PDF_PAGES]
+            page_segments = [_extract_visual_segments(page) for page in pages]
 
         skills = _locate_skills_in_segments(page_segments)
         sections = _collect(_partition_pdf_segments(page_segments, skills["heading"]))

@@ -1,5 +1,13 @@
+# JSON logs go to stdout; without a cap Docker keeps them forever.
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "5"
+
 services:
   postgres:
+    logging: *default-logging
     image: postgres:16
     restart: unless-stopped
     environment:
@@ -17,6 +25,7 @@ services:
     # Postgres instance if you already run one.
 
   redis:
+    logging: *default-logging
     image: redis:7-alpine
     restart: unless-stopped
     healthcheck:
@@ -28,11 +37,15 @@ services:
     # instance if you already run one.
 
   backend:
+    logging: *default-logging
     build:
       context: .                    # repo root -- see backend/Dockerfile
       dockerfile: backend/Dockerfile
     restart: unless-stopped
     env_file: ./backend/.env        # .env lives inside backend/, not at root
+    # Logging / error tracking (LOG_FORMAT, LOG_LEVEL, SENTRY_DSN, SENTRY_RELEASE)
+    # go in backend/.env -- all three app services read it. Don't repeat them
+    # under `environment:` as ${VAR:-}: that would blank the value from .env.
     environment:
       DATABASE_URL: postgresql+psycopg://postgres:postgres@postgres:5432/talentdb
       REDIS_URL: redis://redis:6379/0
@@ -44,6 +57,12 @@ services:
       - resume_storage:/data/resumes
     ports:
       - "8000:8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health', timeout=3)"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
     depends_on:
       postgres:
         condition: service_healthy
@@ -51,6 +70,7 @@ services:
         condition: service_healthy
 
   worker:
+    logging: *default-logging
     build:
       context: .
       dockerfile: backend/Dockerfile
@@ -60,6 +80,12 @@ services:
     # sit at PENDING forever.
     command: celery -A app.core.celery_app worker -Q llm,celery --loglevel=info --concurrency=1
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "celery -A app.core.celery_app inspect ping -d celery@$$HOSTNAME --timeout 8"]
+      interval: 30s
+      timeout: 12s
+      retries: 3
+      start_period: 40s
     env_file: ./backend/.env
     environment:
       DATABASE_URL: postgresql+psycopg://postgres:postgres@postgres:5432/talentdb
@@ -76,6 +102,7 @@ services:
         condition: service_healthy
 
   beat:
+    logging: *default-logging
     build:
       context: .
       dockerfile: backend/Dockerfile

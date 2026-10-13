@@ -22,6 +22,8 @@ three stages this task chains together.
 import logging
 from datetime import datetime, timezone
 
+from celery.exceptions import SoftTimeLimitExceeded
+
 from app.core.celery_app import celery_app
 from app.core.experience_calc import extract_resume_experience
 from app.core.resume_storage import download_resume_blob
@@ -145,6 +147,18 @@ def run_skills_extraction_task(self, resume_id: str) -> None:
             by_source = fill_source_occurrences(by_source, blocks)
 
             skills = merge_source_skills(by_source)
+
+        except SoftTimeLimitExceeded:
+            # A file this slow will be just as slow on a retry, and would
+            # hold the single worker for another full limit each time.
+            logger.error("Resume %s: extraction hit the time limit", resume_id)
+            resume.skills_extraction_status = ResumeExtractionStatus.FAILED
+            resume.skills_extraction_error = (
+                "Processing took too long. The file may be too large or complex to read."
+            )
+            db.commit()
+            safe_dispatch_for_resume(db, resume_id)
+            return
 
         except (
             UnsupportedFileTypeError,

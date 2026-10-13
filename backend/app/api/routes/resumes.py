@@ -1,5 +1,6 @@
 import logging
 import uuid
+from dataclasses import dataclass
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, status
 from fastapi.responses import Response
 from sqlalchemy.orm import Session, joinedload
@@ -16,6 +17,7 @@ from app.models.application import Application
 from app.models.job import Job
 from app.schemas.resume import ResumeBulkUploadResult, ResumeRead, ResumeReadWithUrl
 from app.core.dispatch import dispatch_extraction
+from app.core.threaded import run_in_threads
 
 logger = logging.getLogger(__name__)
 
@@ -45,6 +47,39 @@ def _validate_upload(content_type: str, contents: bytes) -> None:
     check_magic(content_type, contents)
 
 
+def _make_resume_row(
+    blob_path: str,
+    filename: str,
+    content_type: str,
+    size_bytes: int,
+    owner_id: uuid.UUID | None,
+    uploaded_by: User,
+    db: Session,
+) -> Resume:
+    """Creates the Resume row (and its audit entry) for a blob that is
+    already stored. Flushes, so resume.id is set; the caller commits."""
+    resume = Resume(
+        owner_id=owner_id,
+        uploaded_by_id=uploaded_by.id,
+        original_filename=filename,
+        content_type=content_type,
+        size_bytes=size_bytes,
+        blob_path=blob_path,
+        status=ResumeStatus.UPLOADED,
+    )
+    db.add(resume)
+    db.flush()
+    record_audit(
+        db, actor=uploaded_by, action="create", resource_type="resume",
+        resource_id=resume.id, after=snapshot(resume, "resume"),
+    )
+    return resume
+
+
+def _store_failed(filename: str) -> str:
+    return f"Failed to store '{filename}'."
+
+
 def _store_one(
     file_bytes: bytes,
     filename: str,
@@ -60,29 +95,78 @@ def _store_one(
     blob_name = build_blob_name(owner_id, filename, content_type)
     try:
         blob_path = upload_resume_blob(file_bytes, blob_name, content_type)
-        upload_status = ResumeStatus.UPLOADED
-    except Exception as exc:
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail=f"Failed to store '{filename}': {exc}",
-        )
+    except Exception:
+        # The storage error can carry the container URL, so it goes to the
+        # log, not to the client.
+        logger.exception("Storing '%s' failed", filename)
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=_store_failed(filename))
+    return _make_resume_row(blob_path, filename, content_type, len(file_bytes), owner_id, uploaded_by, db)
 
-    resume = Resume(
-        owner_id=owner_id,
-        uploaded_by_id=uploaded_by.id,
-        original_filename=filename,
-        content_type=content_type,
-        size_bytes=len(file_bytes),
-        blob_path=blob_path,
-        status=upload_status,
-    )
-    db.add(resume)
-    db.flush()
-    record_audit(
-        db, actor=uploaded_by, action="create", resource_type="resume",
-        resource_id=resume.id, after=snapshot(resume, "resume"),
-    )
-    return resume
+
+def _discard_blob(blob_path: str | None) -> None:
+    """Best-effort cleanup of a blob whose DB row never made it."""
+    if not blob_path:
+        return
+    try:
+        delete_resume_blob(blob_path)
+    except Exception:
+        logger.warning("Could not delete orphaned blob %s", blob_path, exc_info=True)
+
+
+@dataclass
+class StagedUpload:
+    """One file of a bulk request after read + validate + store.
+    Exactly one of blob_path / error is set."""
+    file: UploadFile
+    size: int = 0
+    blob_path: str | None = None
+    error: str | None = None
+
+
+async def stage_uploads(files: list[UploadFile]) -> list[StagedUpload]:
+    """Reads, validates and stores every file for a bulk request, without
+    touching the database. Never raises for a bad file: each result carries
+    its own error, in the same order as `files`.
+
+    Two things keep this safe at 50-200 files:
+    - Files are processed BULK_CHUNK_SIZE at a time, so only a chunk's bytes
+      are held in memory (not the whole request).
+    - Within a chunk, the blocking storage uploads run in worker threads
+      BULK_UPLOAD_CONCURRENCY at a time. That is both faster than one by one
+      and keeps the event loop free, so other requests aren't stalled.
+    """
+    staged = [StagedUpload(file=f) for f in files]
+    step = max(1, settings.BULK_CHUNK_SIZE)
+
+    for start in range(0, len(staged), step):
+        to_store: list[tuple[StagedUpload, bytes]] = []
+        for item in staged[start:start + step]:
+            try:
+                contents = await read_capped(item.file, _MAX_RESUME_UPLOAD_BYTES, "Resume file")
+                _validate_upload(item.file.content_type, contents)
+            except HTTPException as exc:
+                item.error = exc.detail
+                continue
+            item.size = len(contents)
+            to_store.append((item, contents))
+
+        results = await run_in_threads(
+            upload_resume_blob,
+            [
+                (contents, build_blob_name(None, item.file.filename, item.file.content_type), item.file.content_type)
+                for item, contents in to_store
+            ],
+            settings.BULK_UPLOAD_CONCURRENCY,
+        )
+        for (item, _), result in zip(to_store, results):
+            if isinstance(result, BaseException):
+                logger.error("Storing '%s' failed", item.file.filename, exc_info=result)
+                item.error = _store_failed(item.file.filename)
+            else:
+                item.blob_path = result
+        del to_store, results  # drop the chunk's bytes before the next one
+
+    return staged
 
 
 @router.post(
@@ -167,26 +251,43 @@ async def upload_resumes_bulk(
             status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
             detail=f"Upload at most {MAX_RESUMES_BULK} files at a time.",
         )
+    # Phase 1: read, validate and store every blob (in parallel, off the
+    # event loop). Phase 2: one DB row per stored file, each in its own
+    # savepoint so a bad row doesn't sink the others.
+    staged = await stage_uploads(files)
+
     results: list[ResumeBulkUploadResult] = []
     stored_ids: list[uuid.UUID] = []
-    for file in files:
+    stored_blobs: list[str] = []
+    for item in staged:
+        filename = item.file.filename
+        if item.error is not None:
+            results.append(ResumeBulkUploadResult(original_filename=filename, success=False, error=item.error))
+            continue
         try:
-            contents = await read_capped(file, _MAX_RESUME_UPLOAD_BYTES, "Resume file")
             with db.begin_nested():
-                _validate_upload(file.content_type, contents)
-                resume = _store_one(contents, file.filename, file.content_type, None, current_user, db)
-                db.flush()
+                resume = _make_resume_row(
+                    item.blob_path, filename, item.file.content_type, item.size, None, current_user, db,
+                )
             results.append(ResumeBulkUploadResult(
-                original_filename=file.filename, success=True,
+                original_filename=filename, success=True,
                 resume=ResumeRead.model_validate(resume),
             ))
             stored_ids.append(resume.id)
-        except HTTPException as exc:
+            stored_blobs.append(item.blob_path)
+        except Exception:
+            logger.exception("Saving resume row for '%s' failed", filename)
+            _discard_blob(item.blob_path)
             results.append(ResumeBulkUploadResult(
-                original_filename=file.filename, success=False, error=exc.detail,
+                original_filename=filename, success=False, error="Could not save this file.",
             ))
 
-    db.commit()
+    try:
+        db.commit()
+    except Exception:
+        for blob_path in stored_blobs:
+            _discard_blob(blob_path)
+        raise
     for resume_id in stored_ids:
         dispatch_extraction(run_skills_extraction_task, resume_id)
     return results

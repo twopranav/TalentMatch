@@ -22,6 +22,8 @@ resume extraction at all.
 import logging
 from datetime import datetime, timezone
 
+from celery.exceptions import SoftTimeLimitExceeded
+
 from app.core.celery_app import celery_app
 from app.core.experience_calc import extract_min_experience
 from app.core.jd_skills_locator import locate_jd_requirements, locate_required_skills
@@ -125,6 +127,17 @@ def run_jd_skills_extraction_task(self, job_id: str) -> None:
                     "Job %s: removed %d exact duplicate skill(s).",
                     job_id, dupes_removed,
                 )
+
+        except SoftTimeLimitExceeded:
+            # Same as the resume task: a retry would be just as slow.
+            logger.error("Job %s: JD extraction hit the time limit", job_id)
+            job.skills_extraction_status = JobExtractionStatus.FAILED
+            job.skills_extraction_error = (
+                "Processing took too long. The file may be too large or complex to read."
+            )
+            db.commit()
+            safe_dispatch_for_job(db, job_id)
+            return
 
         except (
             ValueError,

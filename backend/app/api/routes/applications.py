@@ -6,7 +6,6 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, contains_eager, joinedload
 from app.core.audit import record_audit, snapshot
 from app.core.deps import get_current_user, rate_limit_user, require_recruiter_or_admin
-from app.core.upload_safety import read_capped
 from app.db.session import get_db
 from app.models.application import Application, ApplicationStatus, ShortlistStage
 from app.models.resume import Resume, ResumeExtractionStatus
@@ -26,9 +25,8 @@ from app.schemas.application import (
 
 from app.core.dispatch import dispatch_extraction
 from app.core.matching_tasks import dispatch_score_for_job, score_application_task
-from app.core.resume_storage import delete_resume_blob
 from app.core.skills_extraction_tasks import run_skills_extraction_task
-from app.api.routes.resumes import _MAX_RESUME_UPLOAD_BYTES, _store_one, _validate_upload
+from app.api.routes.resumes import _discard_blob, _make_resume_row, stage_uploads
 
 router = APIRouter()
 
@@ -449,37 +447,45 @@ async def bulk_upload_and_apply(
             detail=f"Upload at most {MAX_BULK_APPLY} files at a time.",
         )
 
+    # Phase 1: read, validate and store every blob (in parallel, off the
+    # event loop; see resumes.stage_uploads). Phase 2: a resume row plus its
+    # application per stored file, each in its own savepoint.
+    staged = await stage_uploads(files)
+
     results: list[BulkApplyResult] = []
     stored: list[uuid.UUID] = []
-    for file in files:
-        blob_path = None
+    stored_blobs: list[str] = []
+    for item in staged:
+        filename = item.file.filename
+        if item.error is not None:
+            results.append(BulkApplyResult(original_filename=filename, success=False, error=item.error))
+            continue
         try:
-            contents = await read_capped(file, _MAX_RESUME_UPLOAD_BYTES, "Resume file")
             with db.begin_nested():
-                _validate_upload(file.content_type, contents)
-                resume = _store_one(contents, file.filename, file.content_type, None, current_user, db)
-                blob_path = resume.blob_path
+                resume = _make_resume_row(
+                    item.blob_path, filename, item.file.content_type, item.size, None, current_user, db,
+                )
                 application = _add_unowned_application(db, job, resume, current_user)
             stored.append(resume.id)
+            stored_blobs.append(item.blob_path)
             results.append(BulkApplyResult(
-                original_filename=file.filename, success=True,
+                original_filename=filename, success=True,
                 resume_id=resume.id, application_id=application.id,
             ))
-        except HTTPException as exc:
-            results.append(BulkApplyResult(original_filename=file.filename, success=False, error=exc.detail))
         except Exception:
             # The savepoint rolled the rows back, but the blob (written
             # before the rows) is still there; don't leave it orphaned.
-            if blob_path:
-                try:
-                    delete_resume_blob(blob_path)
-                except Exception:
-                    pass
+            _discard_blob(item.blob_path)
             results.append(BulkApplyResult(
-                original_filename=file.filename, success=False, error="Could not apply this file.",
+                original_filename=filename, success=False, error="Could not apply this file.",
             ))
 
-    db.commit()
+    try:
+        db.commit()
+    except Exception:
+        for blob_path in stored_blobs:
+            _discard_blob(blob_path)
+        raise
     for resume_id in stored:
         dispatch_extraction(run_skills_extraction_task, resume_id)
     return results

@@ -91,6 +91,30 @@ class Settings(BaseSettings):
     MAX_REQUEST_BYTES: int = 12 * 1024 * 1024
     MAX_BULK_REQUEST_BYTES: int = 256 * 1024 * 1024
 
+    # Bulk resume uploads (routes/resumes.py stage_uploads): files are read
+    # and validated BULK_CHUNK_SIZE at a time (bounds memory to roughly
+    # chunk x 10 MB), and each chunk's blobs are uploaded to storage
+    # BULK_UPLOAD_CONCURRENCY at a time, off the event loop.
+    BULK_CHUNK_SIZE: int = 16
+    BULK_UPLOAD_CONCURRENCY: int = 8
+
+    # Celery time limits for the LLM extraction tasks, in seconds. The soft
+    # limit stops a pathological file (huge or malformed PDF) from tying up
+    # the single worker: the task is marked FAILED with a readable reason.
+    # The hard limit kills the task if it ignores the soft one. Only
+    # enforced by the prefork pool (the Docker default); ignored by
+    # `--pool=solo`, which is what you'd use on Windows.
+    EXTRACTION_SOFT_TIME_LIMIT: int = 300
+    EXTRACTION_HARD_TIME_LIMIT: int = 330
+
+    # --- Logging / metrics (app/core/logging_config.py, metrics.py) ---
+    LOG_LEVEL: str = "INFO"
+    # "auto" = json in production, readable text otherwise; or force "json" / "text".
+    LOG_FORMAT: str = "auto"
+    # GET /metrics (Prometheus). Open in development; in production it is
+    # disabled unless this token is set, then requires "Authorization: Bearer <token>".
+    METRICS_TOKEN: str | None = None
+
     CORS_ORIGINS: list[str] = ["http://localhost:5173"]
 
     model_config = SettingsConfigDict(

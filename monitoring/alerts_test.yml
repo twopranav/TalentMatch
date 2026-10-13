@@ -1,0 +1,118 @@
+rule_files:
+- alerts.yml
+evaluation_interval: 1m
+tests:
+- interval: 1m
+  input_series:
+  - series: up{job="talentmatch-backend"}
+    values: 1 1 0x10
+  alert_rule_test:
+  - eval_time: 1m
+    alertname: BackendDown
+    exp_alerts: []
+  - eval_time: 8m
+    alertname: BackendDown
+    exp_alerts:
+    - exp_labels:
+        severity: critical
+        job: talentmatch-backend
+      exp_annotations:
+        summary: Backend is not answering Prometheus scrapes
+        description: The API has been unreachable for 2 minutes.
+- interval: 1m
+  input_series:
+  - series: talentmatch_http_requests_total{status="500"}
+    values: 0+10x30
+  - series: talentmatch_http_requests_total{status="200"}
+    values: 0+10x30
+  alert_rule_test:
+  - eval_time: 20m
+    alertname: HighErrorRate
+    exp_alerts:
+    - exp_labels:
+        severity: critical
+      exp_annotations:
+        summary: More than 5% of API requests are failing (5xx)
+        description: Check Sentry and the app.request logs for the failing routes.
+- interval: 1m
+  input_series:
+  - series: talentmatch_http_requests_total{status="500"}
+    values: 0+1x30
+  - series: talentmatch_http_requests_total{status="200"}
+    values: 0+2000x30
+  alert_rule_test:
+  - eval_time: 20m
+    alertname: HighErrorRate
+    exp_alerts: []
+- interval: 1m
+  input_series:
+  - series: talentmatch_queue_depth{queue="llm"}
+    values: 60x30
+  alert_rule_test:
+  - eval_time: 10m
+    alertname: QueueBacklog
+    exp_alerts: []
+  - eval_time: 20m
+    alertname: QueueBacklog
+    exp_alerts:
+    - exp_labels:
+        severity: warning
+        queue: llm
+      exp_annotations:
+        summary: More than 50 LLM tasks have been waiting for 15 minutes
+        description: Bulk upload in progress, or the worker (concurrency 1) / the LLM provider is too slow.
+- interval: 1m
+  input_series:
+  - series: talentmatch_last_task_finished_timestamp_seconds
+    values: 1000x80
+  alert_rule_test:
+  - eval_time: 40m
+    alertname: WorkerOrBeatStopped
+    exp_alerts: []
+  - eval_time: 60m
+    alertname: WorkerOrBeatStopped
+    exp_alerts:
+    - exp_labels:
+        severity: critical
+      exp_annotations:
+        summary: No Celery task has finished for 30+ minutes
+        description: The worker or beat is down or stuck. Check `docker compose ps` and /api/health/worker.
+- interval: 1m
+  input_series:
+  - series: talentmatch_last_task_finished_timestamp_seconds
+    values: '0x80'
+  alert_rule_test:
+  - eval_time: 70m
+    alertname: WorkerOrBeatStopped
+    exp_alerts: []
+- interval: 1m
+  input_series:
+  - series: talentmatch_stuck_rows{kind="resume_extraction_pending"}
+    values: 3x40
+  - series: talentmatch_stuck_rows{kind="jd_extraction_failed"}
+    values: '0x40'
+  alert_rule_test:
+  - eval_time: 20m
+    alertname: ExtractionsStuckPending
+    exp_alerts:
+    - exp_labels:
+        severity: warning
+      exp_annotations:
+        summary: Resumes or JDs have been PENDING for 30+ minutes
+        description: The retry sweep should have fixed these. Is the worker running (/api/health/worker)?
+  - eval_time: 30m
+    alertname: ExtractionsNeedAHuman
+    exp_alerts: []
+- interval: 1m
+  input_series:
+  - series: talentmatch_task_runs_total{task="x",state="FAILURE"}
+    values: 0 0 5 10 10 10
+  alert_rule_test:
+  - eval_time: 4m
+    alertname: TaskFailures
+    exp_alerts:
+    - exp_labels:
+        severity: warning
+      exp_annotations:
+        summary: More than 3 Celery tasks failed in the last 15 minutes
+        description: Likely an LLM provider problem (rate limit, credits, bad key). See the worker logs and Sentry.

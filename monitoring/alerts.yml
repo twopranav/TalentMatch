@@ -1,0 +1,92 @@
+# Alert rules for TalentMatch. Metric names come from backend/app/core/metrics.py.
+groups:
+  - name: talentmatch-api
+    rules:
+      - alert: BackendDown
+        expr: up{job="talentmatch-backend"} == 0
+        for: 2m
+        labels: { severity: critical }
+        annotations:
+          summary: "Backend is not answering Prometheus scrapes"
+          description: "The API has been unreachable for 2 minutes."
+
+      - alert: HighErrorRate
+        # >5% of requests are 5xx, and there is real traffic (>3 requests/min),
+        # so a single failed request on a quiet system doesn't page anyone.
+        expr: |
+          (
+            sum(rate(talentmatch_http_requests_total{status=~"5.."}[5m]))
+            / sum(rate(talentmatch_http_requests_total[5m]))
+          ) > 0.05
+          and sum(rate(talentmatch_http_requests_total[5m])) > 0.05
+        for: 5m
+        labels: { severity: critical }
+        annotations:
+          summary: "More than 5% of API requests are failing (5xx)"
+          description: "Check Sentry and the app.request logs for the failing routes."
+
+      - alert: SlowRequests
+        expr: |
+          histogram_quantile(0.95,
+            sum by (le) (rate(talentmatch_http_request_duration_seconds_bucket[10m]))
+          ) > 2
+        for: 10m
+        labels: { severity: warning }
+        annotations:
+          summary: "API p95 latency is above 2 seconds"
+          description: "Look at the per-route breakdown: talentmatch_http_request_duration_seconds_bucket by route."
+
+  - name: talentmatch-pipeline
+    rules:
+      - alert: RedisDown
+        expr: talentmatch_redis_up == 0
+        for: 2m
+        labels: { severity: critical }
+        annotations:
+          summary: "Redis is unreachable"
+          description: "Redis is the Celery broker and rate-limit store. Nothing queued will run while it is down."
+
+      - alert: WorkerOrBeatStopped
+        # The three sweep tasks run every 10 minutes on the "celery" queue, so a
+        # healthy worker+beat finishes a task at least that often. The "> 0" part
+        # keeps this quiet on a fresh install or after Redis was wiped.
+        expr: |
+          talentmatch_last_task_finished_timestamp_seconds > 0
+          and time() - talentmatch_last_task_finished_timestamp_seconds > 1800
+        for: 5m
+        labels: { severity: critical }
+        annotations:
+          summary: "No Celery task has finished for 30+ minutes"
+          description: "The worker or beat is down or stuck. Check `docker compose ps` and /api/health/worker."
+
+      - alert: QueueBacklog
+        expr: talentmatch_queue_depth{queue="llm"} > 50
+        for: 15m
+        labels: { severity: warning }
+        annotations:
+          summary: "More than 50 LLM tasks have been waiting for 15 minutes"
+          description: "Bulk upload in progress, or the worker (concurrency 1) / the LLM provider is too slow."
+
+      - alert: TaskFailures
+        expr: sum(increase(talentmatch_task_runs_total{state="FAILURE"}[15m])) > 3
+        for: 0m
+        labels: { severity: warning }
+        annotations:
+          summary: "More than 3 Celery tasks failed in the last 15 minutes"
+          description: "Likely an LLM provider problem (rate limit, credits, bad key). See the worker logs and Sentry."
+
+      - alert: ExtractionsStuckPending
+        expr: sum(talentmatch_stuck_rows{kind=~".*_pending"}) > 0
+        for: 15m
+        labels: { severity: warning }
+        annotations:
+          summary: "Resumes or JDs have been PENDING for 30+ minutes"
+          description: "The retry sweep should have fixed these. Is the worker running (/api/health/worker)?"
+
+      - alert: ExtractionsNeedAHuman
+        expr: sum(talentmatch_stuck_rows{kind=~".*_failed"}) > 0
+        for: 1h
+        labels: { severity: info }
+        annotations:
+          summary: "Some extractions or match scores failed and are out of automatic retries"
+          description: "Check skills_extraction_error / match_error on those rows, or have the file re-uploaded."

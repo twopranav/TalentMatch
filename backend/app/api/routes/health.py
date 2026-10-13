@@ -1,4 +1,5 @@
 from fastapi import APIRouter, Depends
+from fastapi.responses import JSONResponse
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
@@ -41,3 +42,50 @@ def health_check_llm(db: Session = Depends(get_db)) -> dict:
     if unset:
         result["unset_tasks"] = unset
     return result
+
+
+@router.get("/health/redis")
+def health_check_redis():
+    """Redis is the Celery broker and the rate-limit store, so if it is down
+    nothing queued will run. 503 on failure so uptime monitors catch it."""
+    from app.core.metrics import _redis
+
+    try:
+        _redis().ping()
+    except Exception as exc:
+        return JSONResponse(
+            status_code=503,
+            content={"status": "error", "redis": "unreachable", "detail": type(exc).__name__},
+        )
+    return {"status": "ok", "redis": "connected"}
+
+
+@router.get("/health/worker")
+def health_check_worker():
+    """Is at least one Celery worker alive and answering, and how many
+    messages are waiting? 503 if no worker responds (extractions would sit
+    at PENDING until one comes back)."""
+    from app.core.celery_app import celery_app
+    from app.core.metrics import _redis, queue_names
+
+    try:
+        replies = celery_app.control.inspect(timeout=1.5).ping() or {}
+    except Exception as exc:
+        return JSONResponse(
+            status_code=503,
+            content={"status": "error", "workers": [], "detail": type(exc).__name__},
+        )
+
+    depths: dict[str, int] = {}
+    try:
+        r = _redis()
+        depths = {name: int(r.llen(name)) for name in queue_names()}
+    except Exception:
+        pass  # queue depth is a bonus; worker liveness is the point
+
+    if not replies:
+        return JSONResponse(
+            status_code=503,
+            content={"status": "error", "workers": [], "queues": depths, "detail": "no worker responded"},
+        )
+    return {"status": "ok", "workers": sorted(replies), "queues": depths}
