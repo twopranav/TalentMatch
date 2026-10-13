@@ -1,3 +1,4 @@
+import { EmptyArt } from '../components/ui/Ornaments'
 import { useEffect, useState } from 'react'
 import { fetchResumes, uploadResumesBulk, archiveResume, deleteResume, openResumeFile } from '../api/resumes'
 import ConfirmDialog from '../components/ui/ConfirmDialog'
@@ -197,6 +198,7 @@ export default function ResumeLibrary() {
           </div>
         ) : resumes.length === 0 ? (
           <div className="px-6 py-16 text-center">
+            <EmptyArt variant="resumes" />
             <p className="text-sm text-slate-500 dark:text-slate-400">No resumes yet.</p>
           </div>
         ) : (

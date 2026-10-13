@@ -5,6 +5,7 @@ import { useAuth } from '../context/AuthContext'
 import { useToast } from '../components/ui/Toast'
 import Spinner from '../components/ui/Spinner'
 import ThemeToggle from '../components/ui/ThemeToggle'
+import { Crest, CornerFan } from '../components/ui/Ornaments'
 
 export default function Login() {
   const { login } = useAuth()
@@ -35,23 +36,32 @@ export default function Login() {
       className="relative flex min-h-screen items-center justify-center overflow-y-auto bg-slate-900 bg-cover bg-center px-4 py-8"
       style={{
         backgroundImage:
-          "linear-gradient(to bottom right, rgba(15,23,42,0.65), rgba(15,23,42,0.75)), url('https://images.unsplash.com/photo-1573496130407-57329f01f769?auto=format&fit=crop&w=2000&q=80')",
+          "linear-gradient(to bottom right, rgba(14,22,48,0.80), rgba(10,14,30,0.90)), url('https://images.unsplash.com/photo-1573496130407-57329f01f769?auto=format&fit=crop&w=2000&q=80')",
       }}
     >
-      <div className="absolute right-4 top-4">
+      <div className="pointer-events-none absolute inset-0 overflow-hidden" aria-hidden="true">
+        <CornerFan className="absolute -bottom-20 -left-20 h-[26rem] w-[26rem] -scale-y-100 text-gold-400/35" />
+        <CornerFan className="absolute -right-20 -top-20 h-[26rem] w-[26rem] -scale-x-100 text-gold-400/35" />
+        <CornerFan className="absolute -bottom-40 -right-40 hidden h-[34rem] w-[34rem] -scale-100 text-gold-400/15 lg:block" />
+        <CornerFan className="absolute -left-40 -top-40 hidden h-[34rem] w-[34rem] text-gold-400/15 lg:block" />
+      </div>
+
+      <div className="absolute right-4 top-4 z-10">
         <ThemeToggle />
       </div>
 
       <div className="flex w-full max-w-sm flex-col items-center">
-        <div className="animate-slide-down mb-6 select-none text-center">
-          <span className="text-3xl font-bold tracking-tight text-white drop-shadow-lg">
-            Talent<span className="text-slate-300">Match</span>
+        <div className="animate-slide-down relative mb-6 select-none text-center">
+          <Crest className="mx-auto mb-3 h-14 w-14 drop-shadow-lg" />
+          <span className="font-display text-5xl font-semibold tracking-wide text-white drop-shadow-lg">
+            Talent<span className="text-gold-300">Match</span>
           </span>
+          <span className="mx-auto mt-3 block h-px w-16 bg-linear-to-r from-transparent via-gold-400 to-transparent" />
         </div>
 
         <form
           onSubmit={handleSubmit}
-          className="animate-slide-down-delay w-full rounded-xl border border-white/40 bg-white/40 p-8 shadow-2xl backdrop-blur-xl dark:border-slate-700/50 dark:bg-slate-900/55"
+          className="animate-slide-down-delay w-full rounded-2xl border border-white/50 border-t-gold-300/80 bg-white/90 p-8 shadow-2xl backdrop-blur-xl dark:border-white/10 dark:border-t-gold-400/50 dark:bg-slate-900/80"
         >
           <h1 className="mb-6 text-lg font-semibold text-slate-900 dark:text-slate-100">
             Log in

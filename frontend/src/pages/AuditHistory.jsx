@@ -4,6 +4,7 @@ import { useAuth } from '../context/AuthContext'
 import { fetchAuditPage } from '../api/audit'
 import Pagination from '../components/ui/Pagination'
 import Spinner from '../components/ui/Spinner'
+import { EmptyArt } from '../components/ui/Ornaments'
 import { formatEnumLabel, getErrorMessage } from '../utils/format'
 
 const PAGE_SIZE = 25
@@ -300,6 +301,7 @@ export default function AuditHistory() {
 
       {!loading && !error && items.length === 0 && (
         <div className="rounded-lg border border-dashed border-slate-300 px-6 py-16 text-center dark:border-slate-700">
+          <EmptyArt variant="history" />
           <p className="text-sm text-slate-500 dark:text-slate-400">
             {hasFilters ? 'No entries match these filters.' : 'Nothing has been recorded yet.'}
           </p>

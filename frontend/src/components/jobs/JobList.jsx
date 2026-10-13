@@ -1,6 +1,7 @@
 // frontend/src/components/jobs/JobList.jsx
 import { useState } from 'react'
 import Spinner from '../ui/Spinner'
+import { EmptyArt } from '../ui/Ornaments'
 import { formatEnumLabel } from '../../utils/format'
 import { useAuth } from '../../context/AuthContext'
 
@@ -141,6 +142,7 @@ export default function JobList({
   if (jobs.length === 0) {
     return (
       <div className="rounded-lg border border-dashed border-slate-300 px-6 py-16 text-center dark:border-slate-700">
+        <EmptyArt variant="jobs" />
         <p className="text-sm text-slate-500 dark:text-slate-400">No jobs to show yet.</p>
       </div>
     )

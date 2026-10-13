@@ -1,22 +1,51 @@
+@import url("https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@500;600;700&family=Inter:wght@400;500;600&display=swap");
 @import "tailwindcss";
 @custom-variant dark (&:where(.dark, .dark *));
 
+/* ------------------------------------------------------------------
+   Design tokens -- "ivory, ink & gold".
+   Every component already uses the slate / indigo scales, so re-tinting
+   them here restyles the whole app without touching any markup:
+     slate  -> warm ivory & stone in light mode, deep midnight ink in dark
+     indigo -> royal sapphire (the single functional accent)
+     gold   -> antique brass, used sparingly for ornament and focus
+   ------------------------------------------------------------------ */
 @theme {
-  /* Chrome's actual dark-gray palette — replaces Tailwind's slate,
-     which has a blue/purple undertone */
-  --color-slate-50: #f8f9fa;
-  --color-slate-100: #f1f3f4;
-  --color-slate-200: #e8eaed;
-  --color-slate-300: #dadce0;
-  --color-slate-400: #bdc1c6;
-  --color-slate-500: #9aa0a6;
-  --color-slate-600: #80868b;
-  --color-slate-700: #5f6368;
-  --color-slate-800: #3c4043;
-  --color-slate-900: #292a2d;
-  --color-slate-950: #202124;
+  --color-slate-50: #faf9f6;
+  --color-slate-100: #f4f2ed;
+  --color-slate-200: #e8e5de;
+  --color-slate-300: #d6d2c8;
+  --color-slate-400: #aaa69b;
+  --color-slate-500: #827f76;
+  --color-slate-600: #625f58;
+  --color-slate-700: #45443f;
+  --color-slate-800: #272a35;
+  --color-slate-900: #181b25;
+  --color-slate-950: #0e1018;
+
+  --color-indigo-50: #f1f4fa;
+  --color-indigo-100: #e2e8f4;
+  --color-indigo-200: #c5d1e8;
+  --color-indigo-300: #9db0d6;
+  --color-indigo-400: #6f88bf;
+  --color-indigo-500: #4a66a6;
+  --color-indigo-600: #364f8a;
+  --color-indigo-700: #2b3f70;
+  --color-indigo-800: #21315a;
+  --color-indigo-900: #182446;
+  --color-indigo-950: #0e1630;
+
+  --color-gold-50: #fbf7ee;
+  --color-gold-100: #f4ead2;
+  --color-gold-200: #e8d5a4;
+  --color-gold-300: #d9bb71;
+  --color-gold-400: #c9a45c;
+  --color-gold-500: #b58c3e;
+  --color-gold-600: #976f2e;
+  --color-gold-700: #755527;
 
   --font-sans: "Inter", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --font-display: "Cormorant Garamond", "Playfair Display", Georgia, "Times New Roman", serif;
 }
 
 @keyframes slide-down-fade {
@@ -41,70 +70,162 @@
 
 /* ------------------------------------------------------------------
    Global polish. Unlayered on purpose: it sits above Tailwind's utility
-   layer, so one accent (indigo) and consistent surfaces apply app-wide
-   without touching every component's class list.
+   layer, so one accent and consistent surfaces apply app-wide without
+   touching every component's class list.
    ------------------------------------------------------------------ */
 
 html { -webkit-font-smoothing: antialiased; text-rendering: optimizeLegibility; }
-::selection { background: rgba(99, 102, 241, 0.25); }
+body { letter-spacing: 0.003em; }
+::selection { background: rgba(201, 164, 92, 0.30); }
 
 * { scrollbar-width: thin; scrollbar-color: var(--color-slate-300) transparent; }
 .dark * { scrollbar-color: var(--color-slate-700) transparent; }
 
+/* Page backdrop: ivory with a faint gold glow; midnight ink with a sapphire one */
 .app-bg {
   background:
-    radial-gradient(56rem 26rem at 50% -8%, rgba(99, 102, 241, 0.10), transparent 70%),
+    radial-gradient(60rem 24rem at 50% -10%, rgba(201, 164, 92, 0.10), transparent 70%),
     var(--color-slate-50);
 }
 .dark .app-bg {
   background:
-    radial-gradient(56rem 26rem at 50% -8%, rgba(99, 102, 241, 0.16), transparent 70%),
+    radial-gradient(60rem 26rem at 50% -12%, rgba(201, 164, 92, 0.07), transparent 70%),
+    radial-gradient(44rem 30rem at 100% 0%, rgba(74, 102, 166, 0.12), transparent 70%),
     var(--color-slate-950);
 }
 
-button, a, select, input { transition: background-color .15s, border-color .15s, color .15s, box-shadow .15s, filter .15s, transform .15s; }
-button:not(:disabled) { cursor: pointer; }
-button:focus-visible, a:focus-visible { outline: 2px solid #6366f1; outline-offset: 2px; }
+/* Fine art-deco lattice that fades out down the page */
+.app-bg { position: relative; isolation: isolate; }
+.app-bg::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='56' height='56' viewBox='0 0 56 56' fill='none' stroke='%23b58c3e' stroke-width='.7'%3E%3Cpath d='M28 0 56 28 28 56 0 28Z' stroke-opacity='.18'/%3E%3Cpath d='M28 12 44 28 28 44 12 28Z' stroke-opacity='.10'/%3E%3Ccircle cx='28' cy='28' r='1.2' fill='%23b58c3e' stroke='none' fill-opacity='.30'/%3E%3C/svg%3E");
+  background-size: 56px 56px;
+  background-position: center top;
+  -webkit-mask-image: linear-gradient(to bottom, #000 0, rgba(0, 0, 0, 0.55) 260px, transparent 640px);
+  mask-image: linear-gradient(to bottom, #000 0, rgba(0, 0, 0, 0.55) 260px, transparent 640px);
+}
+.dark .app-bg::before { opacity: 0.7; }
 
-/* Primary buttons (the slate-800 / dark:slate-700 + white text pattern) -> accent */
-:is(button, a):is(.bg-slate-800, .bg-slate-700, .dark\:bg-slate-700).text-white {
-  background-color: #4f46e5;
-  background-image: linear-gradient(135deg, #6366f1, #4f46e5);
-  box-shadow: 0 1px 2px rgba(79, 70, 229, 0.35), inset 0 1px 0 rgba(255, 255, 255, 0.15);
+/* Sunburst fades into the page rather than ending on a hard edge */
+.deco-backdrop {
+  -webkit-mask-image: linear-gradient(to bottom, #000 25%, transparent 100%);
+  mask-image: linear-gradient(to bottom, #000 25%, transparent 100%);
 }
-:is(button, a):is(.bg-slate-800, .bg-slate-700, .dark\:bg-slate-700).text-white:hover:not(:disabled) {
-  filter: brightness(1.08);
+
+button, a, select, input { transition: background-color .18s, border-color .18s, color .18s, box-shadow .18s, filter .18s, transform .18s; }
+button:not(:disabled) { cursor: pointer; }
+button:focus-visible, a:focus-visible { outline: 2px solid var(--color-gold-500); outline-offset: 2px; }
+.dark button:focus-visible, .dark a:focus-visible { outline-color: var(--color-gold-400); }
+
+/* Slightly softer corners on the small "rounded" controls and chips */
+.rounded { border-radius: 0.45rem; }
+
+/* Header: a hairline of gold fading out at both ends */
+header.sticky::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: -1px;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, rgba(181, 140, 62, 0.55), transparent);
+  pointer-events: none;
 }
-:is(button, a):is(.bg-slate-800, .bg-slate-700, .dark\:bg-slate-700).text-white:active:not(:disabled) {
+
+/* Primary buttons (the slate-800 / dark:slate-700 / indigo-600 + white text
+   pattern): deep sapphire with a fine top highlight in light mode, antique
+   gold with ink text in dark mode. */
+:is(button, a):is(.bg-slate-800, .bg-slate-700, .dark\:bg-slate-700, .bg-indigo-600, .dark\:bg-indigo-500).text-white {
+  background-color: var(--color-indigo-800);
+  background-image: linear-gradient(180deg, #34498a, var(--color-indigo-800));
+  box-shadow:
+    0 1px 2px rgba(14, 22, 48, 0.35),
+    inset 0 1px 0 rgba(255, 255, 255, 0.14);
+  letter-spacing: 0.01em;
+}
+:is(button, a):is(.bg-slate-800, .bg-slate-700, .dark\:bg-slate-700, .bg-indigo-600, .dark\:bg-indigo-500).text-white:hover:not(:disabled) {
+  filter: brightness(1.12);
+}
+:is(button, a):is(.bg-slate-800, .bg-slate-700, .dark\:bg-slate-700, .bg-indigo-600, .dark\:bg-indigo-500).text-white:active:not(:disabled) {
   transform: translateY(1px);
+}
+.dark :is(button, a):is(.bg-slate-800, .bg-slate-700, .dark\:bg-slate-700, .bg-indigo-600, .dark\:bg-indigo-500).text-white {
+  color: #1b1508;
+  background-color: var(--color-gold-400);
+  background-image: linear-gradient(180deg, #dcbf7c, var(--color-gold-500));
+  box-shadow:
+    0 1px 2px rgba(0, 0, 0, 0.45),
+    inset 0 1px 0 rgba(255, 255, 255, 0.35);
 }
 
 /* Form fields */
 input:not([type="checkbox"]):not([type="radio"]):not([type="file"]),
 select,
 textarea {
-  border-radius: 0.625rem;
+  border-radius: 0.5rem;
 }
+input[type="checkbox"], input[type="radio"] { accent-color: var(--color-indigo-700); }
+.dark input[type="checkbox"], .dark input[type="radio"] { accent-color: var(--color-gold-400); }
 input:focus, select:focus, textarea:focus {
   outline: none;
-  border-color: #6366f1;
-  box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.22);
+  border-color: var(--color-gold-500);
+  box-shadow: 0 0 0 3px rgba(181, 140, 62, 0.20);
+}
+.dark input:focus, .dark select:focus, .dark textarea:focus {
+  border-color: var(--color-gold-400);
+  box-shadow: 0 0 0 3px rgba(201, 164, 92, 0.22);
+}
+/* keep validation errors red even while focused */
+input[aria-invalid="true"]:focus {
+  border-color: #f87171;
+  box-shadow: 0 0 0 3px rgba(248, 113, 113, 0.25);
 }
 
 /* Cards */
 .rounded-lg.border:is(.bg-white, .dark\:bg-slate-900) {
-  border-radius: 0.875rem;
-  box-shadow: 0 1px 2px rgba(16, 24, 40, 0.04), 0 1px 3px rgba(16, 24, 40, 0.06);
+  border-radius: 0.75rem;
+  border-color: var(--color-slate-200);
+  box-shadow:
+    0 1px 0 rgba(255, 255, 255, 0.7) inset,
+    0 1px 2px rgba(24, 27, 37, 0.04),
+    0 10px 28px -16px rgba(24, 27, 37, 0.14);
 }
 .dark .rounded-lg.border:is(.bg-white, .dark\:bg-slate-900) {
-  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.3);
+  border-color: rgba(255, 255, 255, 0.07);
+  box-shadow:
+    0 1px 0 rgba(255, 255, 255, 0.04) inset,
+    0 10px 28px -14px rgba(0, 0, 0, 0.6);
 }
 
 /* Tables */
-thead { text-transform: uppercase; letter-spacing: 0.05em; font-size: 0.68rem; }
+thead { text-transform: uppercase; letter-spacing: 0.09em; font-size: 0.66rem; font-weight: 600; }
 tbody tr { transition: background-color .12s; }
 
-h1 { letter-spacing: -0.015em; }
+/* Typography: serif display headings with a small gold rule under page titles */
+h1, #modal-title, .font-display {
+  font-family: var(--font-display);
+  font-weight: 600;
+  letter-spacing: 0.005em;
+}
+h1 { font-size: 1.75rem; line-height: 1.15; }
+#modal-title { font-size: 1.4rem; line-height: 1.2; }
+main h1::after {
+  content: "";
+  display: block;
+  width: 2.25rem;
+  height: 2px;
+  margin-top: 0.55rem;
+  border-radius: 9999px;
+  background: linear-gradient(90deg, var(--color-gold-500), var(--color-gold-300));
+}
+
+/* Modal: a touch more presence */
+[role="dialog"] { border-radius: 1rem; }
+.dark [role="dialog"] { box-shadow: 0 25px 60px -12px rgba(0, 0, 0, 0.7); }
 
 @keyframes pop-in {
   from { opacity: 0; transform: translateY(8px) scale(0.98); }
