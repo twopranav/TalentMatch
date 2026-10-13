@@ -11,7 +11,7 @@ venv/
 *.env.local
 
 # Resume storage
-storage/
+/backend/storage/
 
 # Local test fixtures
 /testing files/
