@@ -2,8 +2,10 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
 from app.core.audit import record_audit, snapshot
+from app.core.config import settings
 from app.core.deps import require_admin_or_superuser
 import time
+from app.core import llm_quota
 from app.core.llm_client import get_chat_model_for_task
 from app.core.llm_json_call import content_to_text
 from app.core.llm_provider_registry import PROVIDERS, LLMConfigError
@@ -13,6 +15,8 @@ from app.models.user import User
 from app.schemas.llm_config import LLMConfigRead, LLMConfigUpdate
 
 router = APIRouter()
+
+_PROBE_EST_TOKENS = 100  # the probe prompt is tiny
 
 
 @router.get("", response_model=list[LLMConfigRead])
@@ -69,6 +73,17 @@ def probe_llm_config(
 ):
     """Makes one tiny real call with the task's configured provider/model.
     Admin-only because it spends provider quota."""
+    # Same shared quota as the extraction path. Non-blocking: an admin clicking
+    # "test" should get an answer now, not hold a request open for a minute.
+    reservation, wait = llm_quota.try_reserve(
+        _PROBE_EST_TOKENS, settings.LLM_RPM_LIMIT, settings.LLM_TPM_LIMIT
+    )
+    if reservation is None:
+        return {
+            "ok": False,
+            "stage": "rate_limited",
+            "error": f"The shared LLM quota is busy; try again in about {wait:.0f}s.",
+        }
     started = time.monotonic()
     try:
         reply = get_chat_model_for_task(task).invoke("Reply with exactly: ok")
@@ -80,6 +95,9 @@ def probe_llm_config(
             "stage": "provider_call",
             "error": f"{type(exc).__name__}: {exc}",
         }
+
+    usage = (getattr(reply, "response_metadata", None) or {}).get("token_usage") or {}
+    llm_quota.settle(reservation, usage.get("total_tokens") or _PROBE_EST_TOKENS)
 
     return {
         "ok": True,

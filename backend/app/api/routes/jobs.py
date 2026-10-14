@@ -469,6 +469,7 @@ async def upload_jd(
 @router.post(
     "/{job_id}/extract-skills",
     response_model=JobRead,
+    dependencies=[Depends(rate_limit_user("extract", 10, 60))],
 )
 def trigger_jd_skills_extraction(
     job_id: uuid.UUID,

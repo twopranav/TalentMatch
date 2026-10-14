@@ -16,6 +16,9 @@ Metrics (all prefixed talentmatch_):
   queue_depth{queue}                            messages waiting in Redis
   stuck_rows{kind}                              rows needing attention
   redis_up                                      1 if Redis answered
+  llm_quota_events_total{event}                 wait | redis_fallback | token_budget_rejected
+  llm_quota_tokens_in_window                    tokens reserved in the rolling 60s window
+  llm_quota_requests_in_window                  LLM calls reserved in the rolling 60s window
 
 Labels are always bounded: routes use the path template ("/jobs/{job_id}"),
 never the raw URL, and no user, email or file data is ever a label.
@@ -34,6 +37,7 @@ _TASK_COUNT_KEY = "tm:metrics:task_count"          # hash "task|STATE" -> n
 _TASK_DURATION_SUM_KEY = "tm:metrics:task_dur_sum"  # hash task -> seconds
 _TASK_DURATION_N_KEY = "tm:metrics:task_dur_n"      # hash task -> n
 _LAST_FINISHED_KEY = "tm:metrics:last_task_finished"
+_QUOTA_EVENTS_KEY = "tm:metrics:quota_events"       # hash event -> n
 
 HTTP_REQUESTS = Counter(
     "talentmatch_http_requests_total",
@@ -91,6 +95,34 @@ def record_task(task: str, state: str, seconds: float | None) -> None:
         pipe.execute()
     except Exception:
         logger.debug("could not record task metric", exc_info=True)
+
+
+def record_quota_event(event: str) -> None:
+    """Count an LLM-quota event (called from the worker, via llm_quota).
+    Never raises, and does nothing unless the shared Redis backend is on,
+    so tests and single-process dev runs pay no connection timeout."""
+    if settings.RATE_LIMIT_BACKEND != "redis":
+        return
+    try:
+        _redis().hincrby(_QUOTA_EVENTS_KEY, event, 1)
+    except Exception:
+        logger.debug("could not record quota event", exc_info=True)
+
+
+def _quota_window_usage(r) -> tuple[int, int]:
+    """(tokens, requests) currently reserved in the shared LLM quota window.
+    Members of the sorted set look like "<id>:<tokens>", scored by time in ms."""
+    from app.core import llm_quota
+
+    now_ms = int(time.time() * 1000)
+    members = r.zrangebyscore(
+        llm_quota.KEY, now_ms - llm_quota.WINDOW_SECONDS * 1000, "+inf"
+    )
+    tokens = 0
+    for m in members:
+        text = m.decode() if isinstance(m, bytes) else str(m)
+        tokens += int(text.rsplit(":", 1)[-1])
+    return tokens, len(members)
 
 
 # ---------------------------------------------------------------------
@@ -220,6 +252,34 @@ class _AppCollector:
         yield runs
         yield durations
         yield last
+
+        # Quota series live in their own try block: a problem reading them
+        # must not flip redis_up to 0 or hide the series above.
+        quota_events = CounterMetricFamily(
+            "talentmatch_llm_quota_events",
+            "LLM quota events (waits, Redis fallbacks, over-budget rejections).",
+            labels=["event"],
+        )
+        quota_tokens = GaugeMetricFamily(
+            "talentmatch_llm_quota_tokens_in_window",
+            "Tokens reserved in the rolling LLM quota window.",
+        )
+        quota_requests = GaugeMetricFamily(
+            "talentmatch_llm_quota_requests_in_window",
+            "LLM calls reserved in the rolling LLM quota window.",
+        )
+        try:
+            r = _redis()
+            for field, value in r.hgetall(_QUOTA_EVENTS_KEY).items():
+                quota_events.add_metric([field.decode()], float(value))
+            tokens, requests_n = _quota_window_usage(r)
+            quota_tokens.add_metric([], tokens)
+            quota_requests.add_metric([], requests_n)
+        except Exception:
+            logger.debug("llm quota metrics unavailable", exc_info=True)
+        yield quota_events
+        yield quota_tokens
+        yield quota_requests
 
         stuck = GaugeMetricFamily(
             "talentmatch_stuck_rows", "Rows needing attention.", labels=["kind"]

@@ -38,6 +38,7 @@ jd_skills_locator._locate_in_pdf_bytes, which is what the rest of the
 app actually calls.
 """
 
+import logging
 import math
 import re
 from collections import Counter
@@ -45,6 +46,13 @@ from pathlib import Path
 from statistics import median
 
 import pdfplumber
+
+# Same ceiling as resumes (MAX_RESUME_PDF_PAGES in skills_pdf_locator.py): a
+# job description's requirements live in the first pages, and without a cap a
+# 10 MB PDF of hundreds of pages would occupy the single Celery worker.
+MAX_JD_PDF_PAGES = 10
+
+logger = logging.getLogger(__name__)
 
 
 # ============================================================
@@ -1588,8 +1596,16 @@ def extract_requirements_section_from_pdf(
         pdf_path
     ) as pdf:
 
+        if len(pdf.pages) > MAX_JD_PDF_PAGES:
+            logger.info(
+                "'%s' has %d pages; only reading first %d",
+                pdf_path.name,
+                len(pdf.pages),
+                MAX_JD_PDF_PAGES,
+            )
+
         for page_number, page in enumerate(
-            pdf.pages,
+            pdf.pages[:MAX_JD_PDF_PAGES],
             start=1,
         ):
 

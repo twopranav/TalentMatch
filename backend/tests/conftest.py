@@ -93,9 +93,12 @@ def _rate_limit_defaults(monkeypatch):
     trip it; hardening tests switch it on explicitly."""
     from app.core import rate_limit
     monkeypatch.setattr(settings, "RATE_LIMIT_BACKEND", "off")
+    from app.core import llm_quota
     rate_limit._memory_hits.clear()
+    llm_quota.reset_memory_window()
     yield
     rate_limit._memory_hits.clear()
+    llm_quota.reset_memory_window()
 
 
 @pytest.fixture(autouse=True)

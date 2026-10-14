@@ -1,5 +1,6 @@
 import uuid
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, status
+from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import RedirectResponse, Response
 from sqlalchemy import func
 from sqlalchemy.orm import Session
@@ -61,10 +62,10 @@ async def upload_avatar(file: UploadFile = File(...), db: Session = Depends(get_
     contents = await read_capped(file, _MAX_AVATAR_UPLOAD_BYTES, "Avatar file")
     check_magic(file.content_type, contents)
     if current_user.avatar_blob_path:
-        delete_resume_blob(current_user.avatar_blob_path)
+        await run_in_threadpool(delete_resume_blob, current_user.avatar_blob_path)
     before = snapshot(current_user, "user")
     blob_name = build_blob_name(current_user.id, file.filename, file.content_type)
-    current_user.avatar_blob_path = upload_resume_blob(contents, blob_name, file.content_type)
+    current_user.avatar_blob_path = await run_in_threadpool(upload_resume_blob, contents, blob_name, file.content_type)
     record_audit(db, actor=current_user, action="update", resource_type="user", resource_id=current_user.id, before=before, after=snapshot(current_user, "user"))
     db.commit(); db.refresh(current_user)
     return _serialize_user(current_user)

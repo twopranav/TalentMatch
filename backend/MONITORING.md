@@ -97,3 +97,17 @@ the same id is returned to clients in the `X-Request-ID` header, so a user
 report can be traced from API call to worker task with a single search.
 Extractions that fail permanently show up in `stuck_rows`
 (`resume_extraction_failed`, `jd_extraction_failed`, `match_scoring_failed`).
+
+## LLM quota metrics
+
+Exported on `/metrics`, written by the worker through Redis like the task metrics:
+
+| Metric | Meaning |
+|---|---|
+| `talentmatch_llm_quota_events_total{event="wait"}` | An LLM call had to wait for the rolling window to free up. |
+| `talentmatch_llm_quota_events_total{event="redis_fallback"}` | Redis was unreachable, so the process-local window was used (quota no longer shared between workers). |
+| `talentmatch_llm_quota_events_total{event="token_budget_rejected"}` | A request alone exceeded the per-minute token budget. |
+| `talentmatch_llm_quota_tokens_in_window` | Tokens reserved in the last 60 seconds. Compare with `LLM_TPM_LIMIT`. |
+| `talentmatch_llm_quota_requests_in_window` | Calls reserved in the last 60 seconds. Compare with `LLM_RPM_LIMIT`. |
+
+A rising `wait` rate with a growing `queue_depth` means the LLM quota, not the worker, is the bottleneck.

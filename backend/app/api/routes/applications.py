@@ -5,6 +5,7 @@ from sqlalchemy import Text, and_, cast, func, or_
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, contains_eager, joinedload
 from app.core.audit import record_audit, snapshot
+from app.core.config import settings
 from app.core.deps import get_current_user, rate_limit_user, require_recruiter_or_admin
 from app.db.session import get_db
 from app.models.application import Application, ApplicationStatus, ShortlistStage
@@ -23,7 +24,7 @@ from app.schemas.application import (
     ApplicationWithApplicant,
 )
 
-from app.core.dispatch import dispatch_extraction
+from app.core.dispatch import acquire_once, dispatch_extraction
 from app.core.matching_tasks import dispatch_score_for_job, score_application_task
 from app.core.skills_extraction_tasks import run_skills_extraction_task
 from app.api.routes.resumes import _discard_blob, _make_resume_row, stage_uploads
@@ -370,7 +371,11 @@ def _check_resume_usable(resume: Resume | None, db: Session, job: Job, actor: Us
     return None
 
 
-@router.post("/job/{job_id}/bulk", response_model=list[BulkApplyResult])
+@router.post(
+    "/job/{job_id}/bulk",
+    response_model=list[BulkApplyResult],
+    dependencies=[Depends(rate_limit_user("bulk_apply", 10, 60))],
+)
 def bulk_apply_resumes(
     job_id: uuid.UUID,
     payload: BulkApplyRequest,
@@ -491,7 +496,11 @@ async def bulk_upload_and_apply(
     return results
 
 
-@router.post("/job/{job_id}/rescore", status_code=status.HTTP_202_ACCEPTED)
+@router.post(
+    "/job/{job_id}/rescore",
+    status_code=status.HTTP_202_ACCEPTED,
+    dependencies=[Depends(rate_limit_user("rescore", 5, 60))],
+)
 def rescore_job_applications(
     job_id: uuid.UUID,
     db: Session = Depends(get_db),
@@ -503,6 +512,10 @@ def rescore_job_applications(
     if job is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Job not found")
     _assert_can_view_job_applications(job, current_user)
+    # Dedupe: a repeat inside the lock window would only re-queue the same
+    # work behind itself, so acknowledge it and queue nothing.
+    if not acquire_once(f"rescore:job:{job_id}", settings.RESCORE_LOCK_SECONDS):
+        return {"queued": 0, "already_in_progress": True}
     queued = dispatch_score_for_job(db, job_id)
     return {"queued": queued}
 

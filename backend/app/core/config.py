@@ -98,6 +98,16 @@ class Settings(BaseSettings):
     BULK_CHUNK_SIZE: int = 16
     BULK_UPLOAD_CONCURRENCY: int = 8
 
+    # Fan-out control (matching_tasks._dispatch_ids, POST .../rescore).
+    # Scoring tasks are queued RESCORE_BATCH_SIZE at a time, each later batch
+    # starting RESCORE_BATCH_DELAY_SECONDS after the one before it, so a job
+    # with thousands of applicants doesn't land on the queue all at once.
+    # RESCORE_LOCK_SECONDS: a second rescore of the same job inside this window
+    # is ignored (double-click / retry protection).
+    RESCORE_BATCH_SIZE: int = 50
+    RESCORE_BATCH_DELAY_SECONDS: int = 5
+    RESCORE_LOCK_SECONDS: int = 60
+
     # Celery time limits for the LLM extraction tasks, in seconds. The soft
     # limit stops a pathological file (huge or malformed PDF) from tying up
     # the single worker: the task is marked FAILED with a readable reason.

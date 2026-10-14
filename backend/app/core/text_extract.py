@@ -17,6 +17,7 @@ import re
 from collections import Counter
 
 from fastapi import HTTPException, UploadFile, status
+from fastapi.concurrency import run_in_threadpool
 
 logger = logging.getLogger(__name__)
 
@@ -257,7 +258,10 @@ async def extract_text_from_upload(
     raw = await file.read()
 
     try:
-        return extract_text_from_bytes(
+        # pypdf / python-docx are synchronous and CPU-bound: run them in a
+        # worker thread so parsing one upload never stalls the event loop.
+        return await run_in_threadpool(
+            extract_text_from_bytes,
             raw,
             filename,
         )

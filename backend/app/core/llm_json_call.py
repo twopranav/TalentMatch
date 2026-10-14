@@ -27,6 +27,7 @@ import json
 import logging
 import time
 
+from app.core import llm_quota
 from app.core.llm_client import get_chat_model_for_task
 
 logger = logging.getLogger(__name__)
@@ -145,24 +146,6 @@ def _wait_seconds(exc: Exception, retry_number: int) -> float | None:
 
 
 _EST_OUTPUT_TOKENS = 1500  # throttle's guess for one call's output size (reasoning models use well over 1k)
-_WINDOW: list[tuple[float, int]] = []  # (timestamp, tokens) of calls in the last 60s
-
-
-def _throttle(est_tokens: int, rpm_limit: int, tpm_limit: int) -> None:
-    while True:
-        now = time.monotonic()
-        _WINDOW[:] = [(t, k) for t, k in _WINDOW if now - t < 60]
-        used = sum(k for _, k in _WINDOW)
-        if not _WINDOW or (
-            len(_WINDOW) < rpm_limit * 0.9 and used + est_tokens <= tpm_limit * 0.9
-        ):
-            return
-        wait = 60 - (now - _WINDOW[0][0]) + 0.5
-        logger.info(
-            "throttle: %d req / %d tok in last 60s -> waiting %.0fs",
-            len(_WINDOW), used, wait,
-        )
-        time.sleep(max(wait, 1))
 
 
 def call_skills_model(
@@ -189,6 +172,14 @@ def call_skills_model(
     )
 
     est = (len(system_content) + len(document_text)) // 4 + _EST_OUTPUT_TOKENS
+    if rate_limits and not llm_quota.fits(est, rate_limits[1]):
+        # Can never be admitted by the throttle, however long we wait, so fail
+        # now instead of letting an empty window wave it through.
+        raise error_cls(
+            f"{schema_name} input is too large for the token budget "
+            f"(~{est} estimated tokens, budget {llm_quota.token_budget(rate_limits[1]):.0f} "
+            f"per minute). Shorten the document or raise LLM_TPM_LIMIT."
+        )
     last_error: Exception | None = None
     start = time.monotonic()
     attempts = 0
@@ -197,8 +188,7 @@ def call_skills_model(
 
     while True:
         attempts += 1
-        if rate_limits:
-            _throttle(est, *rate_limits)
+        reservation = llm_quota.reserve(est, *rate_limits) if rate_limits else None
 
         try:
             response = llm.invoke(
@@ -208,8 +198,6 @@ def call_skills_model(
                 ]
             )
         except Exception as exc:
-            if rate_limits:
-                _WINDOW.append((time.monotonic(), est))
             last_error = exc
             code = _status_code(exc)
 
@@ -255,6 +243,12 @@ def call_skills_model(
             time.sleep(delay)
             continue
 
+        if reservation is not None:
+            # Swap the estimate for real usage even if the output turns out
+            # to be unusable: the provider counted those tokens either way.
+            _usage = (getattr(response, "response_metadata", None) or {}).get("token_usage") or {}
+            llm_quota.settle(reservation, _usage.get("total_tokens") or est)
+
         try:
             content = response.content
             if not content:
@@ -276,8 +270,6 @@ def call_skills_model(
                     raise ValueError("Model did not return a JSON array of strings.")
 
             usage = response.response_metadata.get("token_usage", {})
-            if rate_limits:
-                _WINDOW.append((time.monotonic(), usage.get("total_tokens") or est))
             details = usage.get("completion_tokens_details") or {}
             meta = {
                 "task": task,

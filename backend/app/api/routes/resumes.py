@@ -2,6 +2,7 @@ import logging
 import uuid
 from dataclasses import dataclass
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, status
+from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import Response
 from sqlalchemy.orm import Session, joinedload
 from app.core.audit import record_audit, snapshot
@@ -92,15 +93,28 @@ def _store_one(
     run_skills_extraction_task after their own commit succeeds. A resume
     row created here always starts at its default
     skills_extraction_status (PENDING)."""
+    blob_path = _upload_blob(file_bytes, filename, content_type, owner_id)
+    return _make_resume_row(blob_path, filename, content_type, len(file_bytes), owner_id, uploaded_by, db)
+
+
+def _upload_blob(
+    file_bytes: bytes,
+    filename: str,
+    content_type: str,
+    owner_id: uuid.UUID | None,
+) -> str:
+    """The blocking storage write only (no DB). Async routes run this in a
+    worker thread via run_in_threadpool so a slow storage call can't freeze
+    the event loop; keeping the DB session out of it means a Session is
+    never touched from two threads."""
     blob_name = build_blob_name(owner_id, filename, content_type)
     try:
-        blob_path = upload_resume_blob(file_bytes, blob_name, content_type)
+        return upload_resume_blob(file_bytes, blob_name, content_type)
     except Exception:
         # The storage error can carry the container URL, so it goes to the
         # log, not to the client.
         logger.exception("Storing '%s' failed", filename)
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=_store_failed(filename))
-    return _make_resume_row(blob_path, filename, content_type, len(file_bytes), owner_id, uploaded_by, db)
 
 
 def _discard_blob(blob_path: str | None) -> None:
@@ -226,7 +240,12 @@ async def upload_resume(
         )
         db.flush()
 
-    resume = _store_one(contents, file.filename, file.content_type, current_user.id, current_user, db)
+    blob_path = await run_in_threadpool(
+        _upload_blob, contents, file.filename, file.content_type, current_user.id
+    )
+    resume = _make_resume_row(
+        blob_path, file.filename, file.content_type, len(contents), current_user.id, current_user, db
+    )
     db.commit()
     db.refresh(resume)
 
@@ -419,7 +438,11 @@ def set_resume_archived(
     return resume
 
 
-@router.post("/{resume_id}/extract-skills", response_model=ResumeRead)
+@router.post(
+    "/{resume_id}/extract-skills",
+    response_model=ResumeRead,
+    dependencies=[Depends(rate_limit_user("extract", 10, 60))],
+)
 def trigger_skills_extraction(
     resume_id: uuid.UUID,
     db: Session = Depends(get_db),

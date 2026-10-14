@@ -137,10 +137,19 @@ def score_application_task(self, application_id: str) -> None:
 # ---------------------------------------------------------------------------
 
 def _dispatch_ids(ids) -> int:
+    """Queue one scoring task per id, in batches. Duplicate ids are dropped
+    (dict.fromkeys keeps first-seen order), and batch k starts
+    k * RESCORE_BATCH_DELAY_SECONDS later, so the worker's queue grows
+    gradually instead of all at once."""
+    unique = list(dict.fromkeys(str(i) for i in ids))
+    size = max(settings.RESCORE_BATCH_SIZE, 1)
+    delay = max(settings.RESCORE_BATCH_DELAY_SECONDS, 0)
     n = 0
-    for application_id in ids:
-        if dispatch_extraction(score_application_task, application_id):
-            n += 1
+    for start in range(0, len(unique), size):
+        countdown = (start // size) * delay
+        for application_id in unique[start:start + size]:
+            if dispatch_extraction(score_application_task, application_id, countdown=countdown):
+                n += 1
     return n
 
 

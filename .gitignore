@@ -10,7 +10,8 @@ venv/
 .env
 *.env.local
 
-# Resume storage
+# Local resume blobs (real candidate PII). Anchored: a bare `storage/` also
+# matches backend/app/core/storage/ -- the adapter code -- and keeps it out of git.
 /backend/storage/
 
 # Local test fixtures
