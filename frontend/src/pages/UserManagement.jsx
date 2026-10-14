@@ -1,5 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
+import { useSearchParams } from 'react-router-dom'
 import { useAuth } from '../context/AuthContext'
 import { useUsers } from '../hooks/useUsers'
 import { useToast } from '../components/ui/Toast'
@@ -248,7 +249,9 @@ function UserDetailsModal({ user, onClose }) {
 
 export default function UserManagement() {
   const { user: currentUser, logout } = useAuth()
-  const [tab, setTab] = useState('all')
+  const [searchParams, setSearchParams] = useSearchParams()
+  const [tab, setTab] = useState(searchParams.get('pending') === 'true' ? 'pending' : 'all')
+  useEffect(() => { setTab(searchParams.get('pending') === 'true' ? 'pending' : 'all') }, [searchParams])
   const { users, loading, error, refetch } = useUsers(tab === 'pending')
   const { showToast } = useToast()
   const [busyId, setBusyId] = useState(null)
@@ -295,7 +298,7 @@ export default function UserManagement() {
             {['all', 'pending'].map((t) => (
               <button
                 key={t}
-                onClick={() => setTab(t)}
+                onClick={() => { setTab(t); setSearchParams(t === 'pending' ? { pending: 'true' } : {}) }}
                 className={`rounded px-3 py-1.5 text-sm font-medium ${
                   tab === t
                     ? 'bg-slate-800 text-white dark:bg-slate-700'

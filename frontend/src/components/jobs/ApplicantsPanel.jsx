@@ -7,6 +7,7 @@ import {
   updateApplicationStatus,
   updateManualScore,
   updateShortlistStage,
+  bulkUpdateApplicationStatus,
 } from '../../api/applications'
 import {
   SHORTLIST_STAGE_OPTIONS,
@@ -24,8 +25,10 @@ import ApplicantFilters from './ApplicantFilters'
 import ScoreExplanation from './ScoreExplanation'
 import ApplicantNotesModal from './ApplicantNotesModal'
 import { openResumeFile } from '../../api/resumes'
+import ConfirmDialog from '../ui/ConfirmDialog'
+import Button from '../ui/Button'
 
-const PAGE_SIZE = 10
+const DEFAULT_PAGE_SIZE = 10
 
 // Applicants are returned best-match first by the server (sort=score). The
 // score itself is computed asynchronously, so a row can be 'pending' for a
@@ -147,7 +150,7 @@ function ManualScoreCell({ applicant, onSaved }) {
         disabled={saving}
         placeholder="0-100"
         aria-label={`Manual score for ${name}, 0 to 100`}
-        className="w-16 rounded border border-slate-200 bg-white px-2 py-1 text-xs dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100"
+        className="w-16 rounded border border-slate-200 bg-white px-2 py-1 text-xs dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100 [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none [-moz-appearance:textfield]"
       />
       <button
         type="button"
@@ -192,12 +195,17 @@ export default function ApplicantsPanel({ job, active = true, fullPage = false, 
   const [applicants, setApplicants] = useState([])
   const [total, setTotal] = useState(0)
   const [page, setPage] = useState(1)
+  const pageSize = DEFAULT_PAGE_SIZE
+  const [selectedIds, setSelectedIds] = useState([])
+  const [bulkStatus, setBulkStatus] = useState('under_review')
+  const [bulkUpdating, setBulkUpdating] = useState(false)
+  const [rescoreConfirmOpen, setRescoreConfirmOpen] = useState(false)
   const [filters, setFilters] = useState(EMPTY_FILTERS)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(null)
   const requestId = useRef(0)
 
-  const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE))
+  const totalPages = Math.max(1, Math.ceil(total / pageSize))
   const filtersActive = countActiveFilters(filters) > 0
 
   // One place that loads the current page with the current filters. Only the
@@ -214,20 +222,20 @@ export default function ApplicantsPanel({ job, active = true, fullPage = false, 
     try {
       const params = filtersToParams(filters)
       if (isShortlist) params.set('status', 'shortlisted') // this tab is always just the shortlist
-      const result = await fetchJobApplicationsPage(jobId, params, PAGE_SIZE, (page - 1) * PAGE_SIZE)
+      const result = await fetchJobApplicationsPage(jobId, params, pageSize, (page - 1) * pageSize)
       if (id !== requestId.current) return
       setApplicants(result.items)
       setTotal(result.total)
       // Rows may have disappeared under us (withdrawn, filtered out): step
       // back to the last real page instead of showing an empty one.
-      const pages = Math.max(1, Math.ceil(result.total / PAGE_SIZE))
+      const pages = Math.max(1, Math.ceil(result.total / pageSize))
       if (page > pages) setPage(pages)
     } catch {
       if (id === requestId.current && showSpinner) setError('Could not load applicants.')
     } finally {
       if (id === requestId.current) setLoading(false)
     }
-  }, [jobId, filters, page, isShortlist])
+  }, [jobId, filters, page, pageSize, isShortlist])
 
   useEffect(() => {
     if (!active || !jobId) {
@@ -259,21 +267,67 @@ export default function ApplicantsPanel({ job, active = true, fullPage = false, 
 
   const handleFiltersChange = (next) => {
     setFilters(next)
-    setPage(1) // a new filter set always starts from its first page
+    setPage(1)
+    setSelectedIds([])
   }
 
   const handleRescore = async () => {
     setRescoring(true)
     try {
-      await rescoreJobApplications(jobId)
-      setApplicants((prev) => prev.map((a) => ({ ...a, match_status: 'pending' })))
-      showToast('Re-scoring applicants…', 'success')
-    } catch {
-      showToast('Could not start re-scoring.', 'error')
-    } finally {
-      setRescoring(false)
-    }
+      const result = await rescoreJobApplications(jobId)
+      if (result?.already_in_progress) {
+        showToast('A rescore is already running.', 'info')
+      } else {
+        const queued = Number(result?.queued ?? result?.queued_count ?? result?.queued_applications ?? 0)
+        if (queued > 0) {
+          setApplicants((prev) => prev.map((applicant) => ({ ...applicant, match_status: 'pending' })))
+          showToast(`Re-scoring queued for ${queued} applicant${queued === 1 ? '' : 's'}.`, 'success')
+        } else {
+          showToast('No applicants were queued for re-scoring.', 'info')
+        }
+      }
+    } catch (err) {
+      if (err.response?.status === 429) {
+        const retryAfter = Number(err.response.headers?.['retry-after'] ?? 60)
+        showToast(`Please wait ${retryAfter} seconds before starting another rescore.`, 'error', 7000)
+      } else showToast(getErrorMessage(err, 'Could not start re-scoring.'), 'error')
+    } finally { setRescoring(false); setRescoreConfirmOpen(false) }
   }
+
+  const handleBulkUpdate = async () => {
+    if (!selectedIds.length || !bulkStatus || bulkUpdating) return
+    const prior = applicants.filter((applicant) => selectedIds.includes(applicant.id)).map((applicant) => ({ id: applicant.id, status: applicant.status }))
+    setBulkUpdating(true)
+    try {
+      const response = await bulkUpdateApplicationStatus(jobId, selectedIds, bulkStatus)
+      const outcomes = response?.results ?? response?.items ?? response?.items_results ?? []
+      const successfulIds = outcomes.length
+        ? outcomes.filter((item) => item.success === true || item.ok === true || item.status === 'success' || item.status === bulkStatus || item.updated === true).map((item) => item.application_id ?? item.id)
+        : selectedIds.slice(0, Number(response?.updated_count ?? response?.updated ?? selectedIds.length))
+      setApplicants((current) => current.map((applicant) => successfulIds.includes(applicant.id) ? { ...applicant, status: bulkStatus, shortlist_stage: bulkStatus === 'shortlisted' ? (applicant.shortlist_stage ?? 'shortlisted') : null, interview_at: bulkStatus === 'shortlisted' ? applicant.interview_at : null } : applicant))
+      setSelectedIds([])
+      const undo = async () => {
+        const groups = new Map()
+        for (const item of prior.filter((row) => successfulIds.includes(row.id))) groups.set(item.status, [...(groups.get(item.status) ?? []), item.id])
+        try {
+          await Promise.all([...groups.entries()].map(([oldStatus, ids]) => bulkUpdateApplicationStatus(jobId, ids, oldStatus)))
+          showToast('Bulk status change undone.', 'info')
+          runFetch(false)
+        } catch (error) { showToast(getErrorMessage(error, 'Could not undo the bulk update.'), 'error') }
+      }
+      showToast(`Updated ${successfulIds.length} of ${selectedIds.length} selected applications.`, 'success', 6500, { label: 'Undo', onClick: undo })
+      runFetch(false)
+    } catch (err) {
+      if (err.response?.status === 429) {
+        const retryAfter = Number(err.response.headers?.['retry-after'] ?? 60)
+        showToast(`Bulk triage is rate-limited. Try again in ${retryAfter} seconds.`, 'error', 7000)
+      } else showToast(getErrorMessage(err, 'Could not update selected applications.'), 'error')
+    } finally { setBulkUpdating(false) }
+  }
+
+  const pageIds = applicants.map((applicant) => applicant.id)
+  const allPageSelected = pageIds.length > 0 && pageIds.every((id) => selectedIds.includes(id))
+  const togglePageSelection = (checked) => setSelectedIds((current) => checked ? [...new Set([...current, ...pageIds])] : current.filter((id) => !pageIds.includes(id)))
 
   const handleManualScoreSaved = (applicationId, manualScore) => {
     setApplicants((prev) => prev.map((a) => (a.id === applicationId ? { ...a, manual_score: manualScore } : a)))
@@ -311,14 +365,19 @@ export default function ApplicantsPanel({ job, active = true, fullPage = false, 
 
   // --- Shortlist stage / interview scheduling (shortlist tab only) ---
   const [schedulingId, setSchedulingId] = useState(null)
-  const [scheduleValue, setScheduleValue] = useState('')
+  const [scheduleDate, setScheduleDate] = useState('')
+  const [scheduleTime, setScheduleTime] = useState('')
   const [savingSchedule, setSavingSchedule] = useState(false)
 
   const handleStageChange = async (application, stage) => {
     if (stage === 'interview_scheduled') {
-      // An interview needs a date and time first; nothing changes until saved.
       setSchedulingId(application.id)
-      setScheduleValue(isoToLocalInput(application.interview_at))
+
+      const localValue = isoToLocalInput(application.interview_at)
+
+      setScheduleDate(localValue ? localValue.slice(0, 10) : '')
+      setScheduleTime(localValue ? localValue.slice(11, 16) : '')
+
       return
     }
     setSchedulingId(null)
@@ -334,11 +393,18 @@ export default function ApplicantsPanel({ job, active = true, fullPage = false, 
   }
 
   const handleSaveInterview = async (applicationId) => {
-    const iso = localInputToIso(scheduleValue)
-    if (!iso) {
-      showToast('Pick a date and time for the interview.', 'error')
+    if (!scheduleDate || !scheduleTime) {
+      showToast('Select both an interview date and time.', 'error')
       return
     }
+
+    const iso = localInputToIso(`${scheduleDate}T${scheduleTime}`)
+
+    if (!iso) {
+      showToast('Select a valid interview date and time.', 'error')
+      return
+    }
+
     setSavingSchedule(true)
     try {
       await updateShortlistStage(applicationId, 'interview_scheduled', iso)
@@ -353,9 +419,9 @@ export default function ApplicantsPanel({ job, active = true, fullPage = false, 
     }
   }
 
-  // Shortlist tab has two extra columns (manual score, notes) on top of the usual six.
-  const columnCount = isShortlist ? 8 : 6
-  const offset = (page - 1) * PAGE_SIZE
+  // Shortlist tab has extra columns (manual score, notes) on top of the usual ones.
+  const columnCount = isShortlist ? 9 : 7
+  const offset = (page - 1) * pageSize
   const shownFrom = total === 0 ? 0 : offset + 1
   const shownTo = offset + applicants.length
 
@@ -365,11 +431,9 @@ export default function ApplicantsPanel({ job, active = true, fullPage = false, 
         <span>
           {isShortlist ? 'Shortlisted' : 'Applicants'} ({total}){filtersActive ? ' matching filters' : ''} · best AI score first, ties by earliest applied
         </span>
-        {total > 0 && (
-          <button onClick={handleRescore} disabled={rescoring} className="font-medium text-slate-600 underline hover:no-underline disabled:opacity-50 dark:text-slate-300">
-            {rescoring ? 'Queuing…' : 'Re-score all'}
-          </button>
-        )}
+        <span className="flex items-center gap-3">
+          {total > 0 && <button onClick={() => setRescoreConfirmOpen(true)} disabled={rescoring} className="font-semibold text-indigo-700 underline hover:no-underline disabled:opacity-50 dark:text-indigo-300">{rescoring ? 'Queuing…' : 'Re-score all'}</button>}
+        </span>
       </dt>
 
       {(total > 0 || filtersActive) && (
@@ -394,6 +458,7 @@ export default function ApplicantsPanel({ job, active = true, fullPage = false, 
             <table className="w-full text-left text-xs">
               <thead className="bg-slate-50 text-slate-400 dark:bg-slate-800 dark:text-slate-500">
                 <tr>
+                  <th className="w-8 px-3 py-2 font-medium"><input type="checkbox" aria-label="Select all applicants on this page" checked={allPageSelected} onChange={(event) => togglePageSelection(event.target.checked)} disabled={isShortlist} /></th>
                   <th className="w-8 px-3 py-2 font-medium">#</th>
                   <th className="px-3 py-2 font-medium">Applicant</th>
                   <th className="px-3 py-2 font-medium">AI score</th>
@@ -415,6 +480,7 @@ export default function ApplicantsPanel({ job, active = true, fullPage = false, 
                           : 'border-slate-100 hover:bg-slate-50 dark:border-slate-800 dark:hover:bg-slate-800/50'
                       }`}
                     >
+                      <td className="px-3 py-2"><input type="checkbox" aria-label={`Select ${a.applicant_name || a.applicant_email}`} checked={selectedIds.includes(a.id)} disabled={isShortlist} onChange={(event) => setSelectedIds((current) => event.target.checked ? [...new Set([...current, a.id])] : current.filter((id) => id !== a.id))} /></td>
                       <td className={`px-3 py-2 font-semibold tabular-nums ${offset + idx === 0 && a.match_score != null ? 'text-indigo-600 dark:text-indigo-400' : 'text-slate-400 dark:text-slate-500'}`}>
                         {offset + idx + 1}
                       </td>
@@ -501,30 +567,55 @@ export default function ApplicantsPanel({ job, active = true, fullPage = false, 
                     {isShortlist && schedulingId === a.id && (
                       <tr className="bg-slate-50/60 dark:bg-slate-800/40">
                         <td colSpan={columnCount} className="px-4 py-3">
-                          <div className="flex flex-wrap items-center gap-2">
-                            <label htmlFor={`interview-${a.id}`} className="text-xs font-medium text-slate-600 dark:text-slate-300">
-                              Interview date &amp; time
-                            </label>
-                            <input
-                              id={`interview-${a.id}`}
-                              type="datetime-local"
-                              value={scheduleValue}
-                              onChange={(e) => setScheduleValue(e.target.value)}
-                              className="rounded border border-slate-200 bg-white px-2 py-1 text-xs dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100"
-                            />
+                          <div className="flex flex-wrap items-end gap-4">
+                            <div>
+                              <label
+                                htmlFor={`interview-date-${a.id}`}
+                                className="mb-1.5 block text-xs font-medium text-slate-600 dark:text-slate-300"
+                              >
+                                Interview date
+                              </label>
+
+                              <input
+                                id={`interview-date-${a.id}`}
+                                type="date"
+                                value={scheduleDate}
+                                onChange={(e) => setScheduleDate(e.target.value)}
+                                className="interview-date-input rounded-xl border border-slate-300 bg-[#faf9f6] px-3 py-2 text-sm text-slate-900 shadow-sm outline-none transition focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/20 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100"
+                              />
+                            </div>
+
+                            <div>
+                              <label
+                                htmlFor={`interview-time-${a.id}`}
+                                className="mb-1.5 block text-xs font-medium text-slate-600 dark:text-slate-300"
+                              >
+                                Interview time
+                              </label>
+
+                              <input
+                                id={`interview-time-${a.id}`}
+                                type="time"
+                                value={scheduleTime}
+                                onChange={(e) => setScheduleTime(e.target.value)}
+                                className="interview-time-input rounded-xl border border-slate-300 bg-[#faf9f6] px-3 py-2 text-sm text-slate-900 shadow-sm outline-none transition focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/20 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100"
+                              />
+                            </div>
+
                             <button
                               type="button"
                               onClick={() => handleSaveInterview(a.id)}
-                              disabled={savingSchedule || !scheduleValue}
-                              className="rounded bg-indigo-600 px-3 py-1 text-xs font-medium text-white hover:bg-indigo-700 disabled:opacity-50"
+                              disabled={savingSchedule || !scheduleDate || !scheduleTime}
+                              className="rounded-xl bg-indigo-600 px-4 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-indigo-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-amber-400 disabled:cursor-not-allowed disabled:opacity-50"
                             >
-                              {savingSchedule ? 'Saving…' : 'Save'}
+                              {savingSchedule ? 'Saving…' : 'Save interview'}
                             </button>
+
                             <button
                               type="button"
                               onClick={() => setSchedulingId(null)}
                               disabled={savingSchedule}
-                              className="rounded px-3 py-1 text-xs font-medium text-slate-600 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-slate-800"
+                              className="rounded-xl border border-slate-200 px-4 py-2 text-sm font-medium text-slate-600 transition hover:bg-slate-100 dark:border-slate-700 dark:text-slate-300 dark:hover:bg-slate-800"
                             >
                               Cancel
                             </button>
@@ -548,6 +639,8 @@ export default function ApplicantsPanel({ job, active = true, fullPage = false, 
           <Pagination page={page} totalPages={totalPages} onPageChange={setPage} disabled={loading} />
         </>
       )}
+      {!isShortlist && selectedIds.length > 0 && <div className="sticky bottom-3 z-20 mt-4 flex items-center justify-between gap-4 rounded-2xl border border-indigo-200 bg-white/95 px-5 py-3 shadow-xl backdrop-blur dark:border-indigo-900 dark:bg-slate-900/95"><div><p className="text-sm font-semibold text-slate-900 dark:text-slate-100">{selectedIds.length} selected</p><p className="text-xs text-slate-500 dark:text-slate-400">Apply one status to the selected applications.</p></div><div className="flex items-center gap-3"><select value={bulkStatus} onChange={(event) => setBulkStatus(event.target.value)} aria-label="Bulk application status" className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100"><option value="applied">Applied</option><option value="under_review">Reviewing</option><option value="shortlisted">Shortlisted</option><option value="rejected">Not proceeding</option><option value="hired">Hired</option></select><Button variant="secondary" size="sm" onClick={() => setSelectedIds([])} disabled={bulkUpdating}>Clear selection</Button><Button size="sm" onClick={handleBulkUpdate} disabled={bulkUpdating}>{bulkUpdating ? 'Updating…' : 'Update status'}</Button></div></div>}
+      <ConfirmDialog open={rescoreConfirmOpen} onClose={() => setRescoreConfirmOpen(false)} onConfirm={handleRescore} title="Re-score all applicants?" message={`This will queue a rescore for all ${total} applicants associated with this job.`} confirmLabel="Re-score all" busy={rescoring} />
       {isShortlist && <ApplicantNotesModal applicant={notesFor} onClose={() => setNotesFor(null)} />}
     </div>
   )

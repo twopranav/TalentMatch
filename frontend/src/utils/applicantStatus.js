@@ -31,7 +31,7 @@ export const SHORTLIST_STAGE_LABELS = {
   shortlisted: 'Shortlisted',
   review: 'Review',
   interview_scheduled: 'Interview scheduled',
-  rejected: 'Rejected',
+  rejected: 'Not proceeding',
 }
 
 export function stageLabel(value) {

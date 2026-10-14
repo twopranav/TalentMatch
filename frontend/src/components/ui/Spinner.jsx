@@ -9,7 +9,7 @@ export default function Spinner({ size = 'md', label = 'Loading' }) {
   return (
     <div role="status" className="inline-flex items-center gap-2">
       <span
-        className={`${sizes[size]} animate-spin rounded-full border-slate-300 border-t-gold-500 dark:border-slate-700 dark:border-t-gold-400`}
+        className={`${sizes[size]} animate-spin rounded-full border-slate-300 border-t-indigo-600 dark:border-slate-700 dark:border-t-indigo-400`}
       />
       <span className="sr-only">{label}</span>
     </div>

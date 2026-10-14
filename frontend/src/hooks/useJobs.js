@@ -1,32 +1,21 @@
 import { useCallback, useEffect, useState } from 'react'
-import { fetchJobs } from '../api/jobs'
+import { fetchJobsPage } from '../api/jobs'
 
-export function useJobs(filters) {
+export function useJobs(filters = {}) {
   const [jobs, setJobs] = useState([])
+  const [total, setTotal] = useState(0)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
-
   const filtersKey = JSON.stringify(filters)
 
   const load = useCallback(() => {
-    setLoading(true)
-    setError(null)
-    fetchJobs(filters)
-      .then(setJobs)
-      .catch((err) => {
-        const message =
-          err.response?.status === 401
-            ? 'Your session has expired. Please log in again.'
-            : 'Could not load jobs. Please try again.'
-        setError(message)
-      })
+    setLoading(true); setError(null)
+    fetchJobsPage(JSON.parse(filtersKey))
+      .then(({ items, total: count }) => { setJobs(items); setTotal(count) })
+      .catch(() => { setError('Could not load jobs. Please try again.') })
       .finally(() => setLoading(false))
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [filtersKey])
 
-  useEffect(() => {
-    load()
-  }, [load])
-
-  return { jobs, loading, error, refetch: load }
+  useEffect(() => { load() }, [load])
+  return { jobs, total, loading, error, refetch: load }
 }

@@ -47,31 +47,13 @@ function JobRow({ job, onOpenDetails, onUploadJD, isApplicant, myApplication, on
           )}
         </div>
 
-        <button onClick={toggle('description')} className={TOGGLE_BUTTON_CLASSES(expanded === 'description')}>
-          Description
-        </button>
-
-        <button onClick={toggle('jd')} className={TOGGLE_BUTTON_CLASSES(expanded === 'jd')}>
-          JD
-        </button>
-
-        <button
-          onClick={() => onOpenDetails(job)}
-          className={TOGGLE_BUTTON_CLASSES(false)}
-        >
-          Metadata
-        </button>
+        {!isApplicant && <button onClick={toggle('description')} className={TOGGLE_BUTTON_CLASSES(expanded === 'description')}>Description</button>}
+        {!isApplicant && <button onClick={toggle('jd')} className={TOGGLE_BUTTON_CLASSES(expanded === 'jd')}>JD</button>}
+        {isApplicant && myApplication && <span className="shrink-0 rounded-full bg-emerald-50 px-2.5 py-1 text-xs font-semibold text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300" aria-label="Already applied">Applied ✓</span>}
+        <button onClick={() => onOpenDetails(job)} className={TOGGLE_BUTTON_CLASSES(false)}>{isApplicant ? 'View details' : 'Metadata'}</button>
 
         {isApplicant && job.status === 'published' && (
-          myApplication ? (
-            <button
-              onClick={() => onWithdraw(myApplication)}
-              disabled={applying}
-              className="shrink-0 rounded px-3 py-1.5 text-xs font-medium text-red-600 hover:bg-red-50 disabled:opacity-50 dark:text-red-400 dark:hover:bg-red-950"
-            >
-              {applying ? 'Withdrawing…' : 'Withdraw'}
-            </button>
-          ) : (
+          myApplication ? null : (
             <button
               onClick={() => onApply(job)}
               disabled={applying}

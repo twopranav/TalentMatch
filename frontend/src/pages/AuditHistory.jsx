@@ -117,14 +117,14 @@ function AuditRow({ entry, expanded, onToggle, onFilter }) {
 
         <div className="min-w-0 flex-1">
           <div className="text-sm text-slate-900 dark:text-slate-100">
-            {resourceLabel(entry.resource_type)}{' '}
+            <span className="font-medium">{entry.resource_label || resourceLabel(entry.resource_type)}</span>{' '}
             <button
               type="button"
               onClick={() => onFilter({ resource_id: entry.resource_id })}
-              title={`Show history of ${entry.resource_id}`}
+              title={`Show history of ${entry.resource_label || entry.resource_id || 'this resource'}`}
               className="font-mono text-xs text-indigo-600 hover:underline dark:text-indigo-400"
             >
-              {entry.resource_id.slice(0, 8)}
+              {String(entry.resource_id ?? '').slice(0, 8)}
             </button>
           </div>
           <div className="truncate text-xs text-slate-500 dark:text-slate-400">{summary}</div>
