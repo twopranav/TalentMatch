@@ -123,6 +123,10 @@ def list_my_applications(
         ApplicationWithJob(
             id=a.id, user_id=a.user_id, job_id=a.job_id, resume_id=a.resume_id, status=a.status,
             applied_at=a.applied_at, updated_at=a.updated_at,
+            # Candidates only ever see stage + time of a scheduled interview;
+            # no other stage, no match_score, no notes.
+            shortlist_stage=a.shortlist_stage if a.shortlist_stage == ShortlistStage.INTERVIEW_SCHEDULED else None,
+            interview_at=a.interview_at if a.shortlist_stage == ShortlistStage.INTERVIEW_SCHEDULED else None,
             job_title=a.job.title, job_status=a.job.status.value,
             location=a.job.location, company=a.job.created_by.company,
         )

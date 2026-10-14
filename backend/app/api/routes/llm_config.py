@@ -71,6 +71,16 @@ def probe_llm_config(
     task: str,
     _: User = Depends(require_admin_or_superuser),
 ):
+    result = _run_probe(task)
+    # A busy quota says nothing about the model, so it is not a probe result.
+    if result.get("stage") != "rate_limited":
+        from app.core.metrics import record_probe_result
+
+        record_probe_result(task, result)
+    return result
+
+
+def _run_probe(task: str) -> dict:
     """Makes one tiny real call with the task's configured provider/model.
     Admin-only because it spends provider quota."""
     # Same shared quota as the extraction path. Non-blocking: an admin clicking

@@ -362,6 +362,8 @@ def _to_read(resume: Resume) -> ResumeRead:
 @router.get("", response_model=list[ResumeRead])
 def list_resumes(
     include_archived: bool = False,
+    q: str | None = Query(default=None, max_length=200),
+    response: Response = None,
     limit: int = Query(default=50, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
     db: Session = Depends(get_db),
@@ -376,6 +378,13 @@ def list_resumes(
         query = query.filter(Resume.uploaded_by_id == current_user.id)    
     if not include_archived:
         query = query.filter(Resume.is_archived.is_(False))
+    if q and q.strip():
+        term = q.strip().replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        pattern = f"%{term}%"
+        query = query.filter(Resume.original_filename.ilike(pattern, escape="\\") | Resume.candidate_name.ilike(pattern, escape="\\") | Resume.candidate_email.ilike(pattern, escape="\\"))
+    total = query.order_by(None).count()
+    if response is not None:
+        response.headers["X-Total-Count"] = str(total)
     resumes = query.order_by(Resume.created_at.desc()).offset(offset).limit(limit).all()
     return [_to_read(r) for r in resumes]
 

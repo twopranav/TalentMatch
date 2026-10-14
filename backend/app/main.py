@@ -13,6 +13,7 @@ from app.api.routes import (
     recruiter_actions,
     resumes,
     users,
+    overview,
 )
 from app.core.config import settings
 from app.core.logging_config import RequestLoggingMiddleware, setup_logging
@@ -63,9 +64,15 @@ app.add_middleware(RequestLoggingMiddleware)
 
 app.include_router(health.router, prefix="/api")
 app.include_router(metrics.router)  # GET /metrics, see routes/metrics.py
+app.include_router(metrics.admin_router, tags=["admin"])  # GET /api/v1/admin/health-metrics
 app.include_router(auth.router, prefix="/api/auth", tags=["auth"])
 app.include_router(jobs.router, prefix="/api/jobs", tags=["jobs"])
 app.include_router(users.router, prefix="/api/users", tags=["users"])
+# Versioned compatibility aliases for the v1 API additions.
+app.include_router(overview.router, prefix="/api/v1", tags=["overview"])
+app.include_router(users.router, prefix="/api/v1/users", tags=["users-v1"])
+app.include_router(jobs.router, prefix="/api/v1/jobs", tags=["jobs-v1"])
+app.include_router(resumes.router, prefix="/api/v1/resumes", tags=["resumes-v1"])
 app.include_router(applications.router, prefix="/api/applications", tags=["applications"])
 # Notes + manual score share the /api/applications prefix; separate module.
 app.include_router(recruiter_actions.router, prefix="/api/applications", tags=["applications"])

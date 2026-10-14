@@ -2,6 +2,7 @@ import logging
 import uuid
 from datetime import datetime, timezone
 
+from fastapi import Response
 from fastapi import (
     APIRouter,
     Depends,
@@ -11,6 +12,8 @@ from fastapi import (
     UploadFile,
     status,
 )
+from pydantic import BaseModel, Field
+from sqlalchemy import or_
 from sqlalchemy.orm import Session
 from starlette.concurrency import run_in_threadpool
 
@@ -37,10 +40,18 @@ from app.models.user import User, UserRole
 from app.schemas.job import JobCreate, JobRead, JobSkillsUpdate, JobUpdate
 from app.core.dispatch import dispatch_extraction
 from app.core.matching_tasks import safe_dispatch_for_job
+from app.core.rate_limit import enforce
+from app.models.application import Application, ApplicationStatus, ShortlistStage
+from app.schemas.application import MAX_BULK_APPLY
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+
+def _like_escape(text: str) -> str:
+    """Escape LIKE wildcards so a search for '100%' or 'a_b' is literal."""
+    return text.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
 
 @router.get("", response_model=list[JobRead])
@@ -54,6 +65,8 @@ def list_jobs(
     seniority: SeniorityLevel | None = Query(default=None),
     remote_type: RemoteType | None = Query(default=None),
     department: str | None = Query(default=None),
+    q: str | None = Query(default=None, max_length=200),
+    response: Response = None,
     limit: int = Query(default=50, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
     db: Session = Depends(get_db),
@@ -95,8 +108,23 @@ def list_jobs(
             Job.department.ilike(f"%{department}%")
         )
 
+    if q and q.strip():
+        pattern = f"%{_like_escape(q.strip())}%"
+        query = query.filter(
+            or_(
+                Job.title.ilike(pattern, escape="\\"),
+                Job.department.ilike(pattern, escape="\\"),
+                Job.location.ilike(pattern, escape="\\"),
+                Job.description.ilike(pattern, escape="\\"),
+            )
+        )
+
+    total = query.order_by(None).count()
+    if response is not None:
+        response.headers["X-Total-Count"] = str(total)
+
     return (
-        query.order_by(Job.created_at.desc())
+        query.order_by(Job.created_at.desc(), Job.id.desc())
         .offset(offset)
         .limit(limit)
         .all()
@@ -614,3 +642,53 @@ def update_job_skills(
     safe_dispatch_for_job(db, job.id)
 
     return job
+
+
+class BulkApplicationStatusPayload(BaseModel):
+    application_ids: list[uuid.UUID] = Field(min_length=1, max_length=MAX_BULK_APPLY)
+    status: ApplicationStatus
+
+
+@router.post("/{job_id}/applications/bulk-status")
+def bulk_update_application_status(
+    job_id: uuid.UUID,
+    payload: BulkApplicationStatusPayload,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_recruiter_or_admin),
+):
+    """Move many applications of ONE job to a new status. Recruiters can only
+    act on their own jobs (others 404); ids that don't belong to the job get a
+    per-item failure instead of failing the whole batch."""
+    enforce(f"bulk-status:user:{current_user.id}", 10, 60)
+    job = _get_owned_job(job_id, db, current_user)
+    ids = list(dict.fromkeys(payload.application_ids))  # de-dupe, keep order
+    rows = db.query(Application).filter(Application.job_id == job.id, Application.id.in_(ids)).all()
+    by_id = {row.id: row for row in rows}
+    results = []
+    for app_id in ids:
+        application = by_id.get(app_id)
+        if application is None:
+            results.append({"application_id": str(app_id), "success": False, "detail": "Application not found for this job."})
+            continue
+        if application.status == payload.status:
+            results.append({"application_id": str(app_id), "success": True, "status": payload.status.value, "changed": False})
+            continue
+        before = snapshot(application, "application")
+        # Same sub-state rules as PATCH /applications/{id}/status.
+        application.shortlist_stage = (
+            ShortlistStage.SHORTLISTED if payload.status == ApplicationStatus.SHORTLISTED else None
+        )
+        application.interview_at = None
+        application.status = payload.status
+        record_audit(
+            db, actor=current_user, action="update", resource_type="application",
+            resource_id=application.id, before=before, after=snapshot(application, "application"),
+        )
+        results.append({"application_id": str(app_id), "success": True, "status": payload.status.value, "changed": True})
+    db.commit()
+    return {
+        "job_id": str(job.id),
+        "results": results,
+        "requested": len(ids),
+        "updated": sum(1 for item in results if item["success"]),
+    }

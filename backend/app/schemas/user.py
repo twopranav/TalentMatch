@@ -94,3 +94,8 @@ class ChangePassword(BaseModel):
     @classmethod
     def check_password_strength(cls, value: str) -> str:
         return _validate_password_strength(value)
+
+
+class DeleteAccount(BaseModel):
+    """Body of DELETE /users/me: the caller re-enters their password."""
+    password: str

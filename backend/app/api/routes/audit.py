@@ -19,6 +19,7 @@ from app.db.session import get_db
 from app.models.audit_log import AuditLog
 from app.models.job import Job
 from app.models.user import User, UserRole
+from app.models.resume import Resume
 from app.schemas.audit import AuditLogRead
 
 router = APIRouter()
@@ -81,10 +82,10 @@ def _changed_fields(before: Any, after: Any) -> list[str]:
     return sorted(k for k in keys if before.get(k) != after.get(k))
 
 
-def _to_read(row: AuditLog) -> AuditLogRead:
+def _to_read(row: AuditLog, resource_label: str | None = None) -> AuditLogRead:
     return AuditLogRead(
         id=row.id, actor_id=row.actor_id, actor_email=row.actor_email,
-        action=row.action, resource_type=row.resource_type, resource_id=row.resource_id,
+        action=row.action, resource_type=row.resource_type, resource_id=row.resource_id, resource_label=resource_label,
         before=_strip_heavy(row.before), after=_strip_heavy(row.after),
         changed_fields=_changed_fields(row.before, row.after),
         created_at=row.created_at,
@@ -140,4 +141,33 @@ def list_audit_logs(
         .limit(limit)
         .all()
     )
-    return [_to_read(r) for r in rows]
+    # Resolve labels in at most one query per resource type for this page.
+    ids = {kind: {r.resource_id for r in rows if r.resource_type == kind} for kind in ("job", "user", "resume")}
+    # Application and note labels are the parent job title, derived from snapshots.
+    for r in rows:
+        if r.resource_type in ("application", "application_note"):
+            raw = (r.after or {}).get("job_id") or (r.before or {}).get("job_id")
+            if raw:
+                try: ids["job"].add(uuid.UUID(str(raw)))
+                except (ValueError, TypeError): pass
+    labels: dict[tuple[str, uuid.UUID], str] = {}
+    if ids["job"]:
+        labels.update({("job", x.id): x.title for x in db.query(Job.id, Job.title).filter(Job.id.in_(ids["job"])).all()})
+    if ids["user"]:
+        labels.update({("user", x.id): x.email for x in db.query(User.id, User.email).filter(User.id.in_(ids["user"])).all()})
+    if ids["resume"]:
+        labels.update({("resume", x.id): x.original_filename for x in db.query(Resume.id, Resume.original_filename).filter(Resume.id.in_(ids["resume"])).all()})
+    output = []
+    for r in rows:
+        key_type = r.resource_type
+        key_id = r.resource_id
+        if key_type in ("application", "application_note"):
+            raw = (r.after or {}).get("job_id") or (r.before or {}).get("job_id")
+            try: key_type, key_id = "job", uuid.UUID(str(raw))
+            except (ValueError, TypeError): key_type, key_id = r.resource_type, r.resource_id
+        label = labels.get((key_type, key_id))
+        if label is None:
+            snap = r.before or r.after or {}
+            label = snap.get({"job":"title", "user":"email", "resume":"original_filename", "application":"job_id", "application_note":"job_id"}.get(r.resource_type, ""))
+        output.append(_to_read(r, str(label) if label is not None else None))
+    return output

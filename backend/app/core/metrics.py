@@ -134,12 +134,12 @@ _STUCK_CACHE_SECONDS = 30
 _STUCK_PENDING_AFTER_MINUTES = 30
 
 
-def _count_stuck_rows() -> dict[str, int]:
+def _count_stuck_rows(use_cache: bool = True) -> dict[str, int]:
     """Rows a person (or the sweep) needs to look at. Cached for 30s so a
     15s scrape interval doesn't hit Postgres every time."""
     global _stuck_cache
     now = time.monotonic()
-    if _stuck_cache and now - _stuck_cache[0] < _STUCK_CACHE_SECONDS:
+    if use_cache and _stuck_cache and now - _stuck_cache[0] < _STUCK_CACHE_SECONDS:
         return _stuck_cache[1]
 
     from datetime import datetime, timedelta, timezone
@@ -300,3 +300,120 @@ def register_collector() -> None:
     if not _collector_registered:
         REGISTRY.register(_AppCollector())
         _collector_registered = True
+
+
+# ---------------------------------------------------------------------
+# Snapshot helpers shared by GET /api/v1/overview (admin) and
+# GET /api/v1/admin/health-metrics. Every one of them degrades to a
+# harmless value instead of raising: a dashboard must not 500 because
+# Redis is down.
+# ---------------------------------------------------------------------
+
+_PROBE_KEY = "tm:metrics:llm_probe"  # hash task -> JSON of the last probe
+_probe_memory: dict[str, dict] = {}   # single-process fallback / test mode
+
+
+def redis_status() -> str:
+    """"ok" | "unavailable" | "disabled" (RATE_LIMIT_BACKEND is not redis)."""
+    if settings.RATE_LIMIT_BACKEND != "redis":
+        return "disabled"
+    from app.core import rate_limit
+
+    client = rate_limit.get_redis()
+    if client is None:
+        return "unavailable"
+    try:
+        client.ping()
+        return "ok"
+    except Exception:
+        rate_limit.mark_redis_down()
+        return "unavailable"
+
+
+def queue_depths() -> dict | None:
+    """{"queues": {name: n}, "total": n}, or None when Redis can't be read."""
+    from app.core import rate_limit
+
+    client = rate_limit.get_redis()
+    if client is None:
+        return None
+    try:
+        queues = {name: int(client.llen(name)) for name in queue_names()}
+    except Exception:
+        rate_limit.mark_redis_down()
+        return None
+    return {"queues": queues, "total": sum(queues.values())}
+
+
+def quota_snapshot() -> dict:
+    """Usage of the shared rolling LLM quota window (Redis, or this
+    process's memory window when Redis is not in use)."""
+    from app.core import llm_quota, rate_limit
+
+    snap = {
+        "backend": "memory",
+        "window_seconds": llm_quota.WINDOW_SECONDS,
+        "tokens_in_window": 0,
+        "requests_in_window": 0,
+        "tpm_limit": settings.LLM_TPM_LIMIT,
+        "rpm_limit": settings.LLM_RPM_LIMIT,
+        "token_budget": llm_quota.token_budget(settings.LLM_TPM_LIMIT),
+    }
+    client = rate_limit.get_redis()
+    if client is not None:
+        try:
+            tokens, requests_n = _quota_window_usage(client)
+            snap.update(backend="redis", tokens_in_window=tokens, requests_in_window=requests_n)
+            return snap
+        except Exception:
+            logger.debug("quota snapshot: redis unreadable, using memory window", exc_info=True)
+    with llm_quota._mem_lock:
+        now = time.time()
+        live = [x for x in llm_quota._mem_window if now - x[0] < llm_quota.WINDOW_SECONDS]
+    snap.update(tokens_in_window=sum(x[2] for x in live), requests_in_window=len(live))
+    return snap
+
+
+def record_probe_result(task: str, result: dict) -> None:
+    """Remember the outcome of the last /llm-config/{task}/probe. Never raises."""
+    import json
+    from datetime import datetime, timezone
+
+    ok = bool(result.get("ok"))
+    error = result.get("error")
+    entry = {
+        "ok": ok,
+        "stage": result.get("stage") or ("ok" if ok else None),
+        "error": str(error)[:300] if error else None,
+        "elapsed_s": result.get("elapsed_s"),
+        "at": datetime.now(timezone.utc).isoformat(),
+    }
+    _probe_memory[task] = entry
+    if settings.RATE_LIMIT_BACKEND != "redis":
+        return
+    try:
+        from app.core import rate_limit
+
+        client = rate_limit.get_redis()
+        if client is not None:
+            client.hset(_PROBE_KEY, task, json.dumps(entry))
+    except Exception:
+        logger.debug("could not store probe result", exc_info=True)
+
+
+def last_probe_results() -> dict[str, dict]:
+    import json
+
+    results = dict(_probe_memory)
+    if settings.RATE_LIMIT_BACKEND == "redis":
+        try:
+            from app.core import rate_limit
+
+            client = rate_limit.get_redis()
+            if client is not None:
+                for field, value in client.hgetall(_PROBE_KEY).items():
+                    key = field.decode() if isinstance(field, bytes) else str(field)
+                    results[key] = json.loads(value)
+        except Exception:
+            logger.debug("could not read probe results", exc_info=True)
+    return results

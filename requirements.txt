@@ -25,3 +25,7 @@ langchain-openai>=1.6
 langchain-groq>=1.1
 sentence-transformers>=3.0
 prometheus-client>=0.20
+fakeredis>=2.20.0
+lupa>=2.0
+pytest-randomly>=3.15.0
+pgserver>=0.1.0

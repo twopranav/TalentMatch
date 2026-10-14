@@ -1,5 +1,6 @@
+import logging
 import uuid
-from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, status
+from fastapi import APIRouter, Body, Depends, File, HTTPException, Query, UploadFile, status
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import RedirectResponse, Response
 from sqlalchemy import func
@@ -10,9 +11,14 @@ from app.core.resume_storage import build_blob_name, delete_resume_blob, get_res
 from app.core.deps import get_current_user, rate_limit_user, require_recruiter_or_admin, require_admin_or_superuser, require_superuser
 from app.core.upload_safety import check_magic, read_capped
 from app.db.session import get_db
+from app.models.application import Application
 from app.models.job import Job
+from app.models.resume import Resume
 from app.models.user import User, UserRole
-from app.schemas.user import UserRead, UserPublicRead, UserRoleUpdate, UserActiveUpdate, UserProfileUpdate
+from app.schemas.user import UserRead, UserPublicRead, UserRoleUpdate, UserActiveUpdate, UserProfileUpdate, ChangePassword, DeleteAccount
+from app.core.security import verify_password, hash_password
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -50,6 +56,96 @@ def update_me(
     db.commit()
     db.refresh(current_user)
     return _serialize_user(current_user)
+
+@router.post("/change-password")
+def change_password(
+    payload: ChangePassword,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Self-service password change. Strength rules are enforced by the
+    ChangePassword schema (same validator as registration)."""
+    if not verify_password(payload.current_password, current_user.hashed_password):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Current password is incorrect.")
+    if payload.current_password == payload.new_password:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="New password must differ from current password.")
+    current_user.hashed_password = hash_password(payload.new_password)
+    # hashed_password is excluded from snapshot(), so record the event itself.
+    record_audit(
+        db, actor=current_user, action="change_password", resource_type="user",
+        resource_id=current_user.id,
+        before={"security_event": "password_change"}, after={"security_event": "password_changed"},
+    )
+    db.commit()
+    return {"detail": "Password changed successfully."}
+
+
+# NOTE: must stay above the "/{user_id}" routes, otherwise "me" is parsed as a
+# user id and DELETE /users/me 422s.
+@router.delete("/me", status_code=status.HTTP_204_NO_CONTENT)
+def delete_my_account(
+    payload: DeleteAccount | None = Body(default=None),
+    password: str | None = Query(default=None, deprecated=True, description="Deprecated: send {\"password\": ...} as the JSON body instead."),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Delete the caller's own account after re-confirming their password.
+    Their resumes (rows and stored files) and applications go with it."""
+    supplied = payload.password if payload is not None else password
+    if not supplied:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Password confirmation is required.")
+    if current_user.role == UserRole.SUPERUSER:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Superusers cannot delete their own account. Transfer superuser status first.",
+        )
+    if not verify_password(supplied, current_user.hashed_password):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Password confirmation failed.")
+    # Same guard as the admin delete: Job.created_by cascades, and deleting a
+    # recruiter must not silently wipe jobs and every candidate's application.
+    owned_jobs = db.query(func.count(Job.id)).filter(Job.created_by_id == current_user.id).scalar()
+    if owned_jobs:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                f"You still own {owned_jobs} job posting(s). "
+                "Ask an admin to reassign or close them before deleting your account."
+            ),
+        )
+
+    # The user's own resumes: owned by them, or uploaded by them with no owner
+    # (a recruiter's library). Resumes a recruiter uploaded for someone else's
+    # account are left alone; their uploaded_by link is nulled by the FK.
+    resume_filter = (Resume.owner_id == current_user.id) | (
+        Resume.owner_id.is_(None) & (Resume.uploaded_by_id == current_user.id)
+    )
+    resume_rows = db.query(Resume.id, Resume.blob_path).filter(resume_filter).all()
+    resume_ids = [r.id for r in resume_rows]
+    blob_paths = [r.blob_path for r in resume_rows if r.blob_path]
+
+    app_filter = Application.user_id == current_user.id
+    if resume_ids:
+        app_filter = app_filter | Application.resume_id.in_(resume_ids)
+    db.query(Application).filter(app_filter).delete(synchronize_session=False)
+    if resume_ids:
+        db.query(Resume).filter(Resume.id.in_(resume_ids)).delete(synchronize_session=False)
+
+    record_audit(
+        db, actor=current_user, action="delete", resource_type="user",
+        resource_id=current_user.id, before=snapshot(current_user, "user"),
+    )
+    db.delete(current_user)
+    db.commit()
+
+    # Files go after the commit: a storage hiccup must not leave rows pointing
+    # at half-deleted files, and a stray orphan blob is harmless and logged.
+    for blob_path in blob_paths:
+        try:
+            delete_resume_blob(blob_path)
+        except Exception:
+            logger.warning("could not delete resume blob %s during account deletion", blob_path, exc_info=True)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
 
 @router.post(
     "/me/avatar",

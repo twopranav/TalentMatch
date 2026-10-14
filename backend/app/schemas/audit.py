@@ -11,6 +11,7 @@ class AuditLogRead(BaseModel):
     action: str  # "create" | "update" | "delete"
     resource_type: str  # "job" | "user" | "application" | "application_note" | "resume"
     resource_id: uuid.UUID
+    resource_label: str | None = None
     before: dict[str, Any] | None
     after: dict[str, Any] | None
     # Names of the fields whose value differs between before and after, so a
