@@ -6,9 +6,10 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, contains_eager, joinedload
 from app.core.audit import record_audit, snapshot
 from app.core.config import settings
+from app.core.access import apply_status_change, assert_read_job, assert_write_job, can_write_job, job_read_clause
 from app.core.deps import get_current_user, rate_limit_user, require_recruiter_or_admin
 from app.db.session import get_db
-from app.models.application import Application, ApplicationStatus, ShortlistStage
+from app.models.application import Application, ApplicationStatus, InterviewStage, ShortlistStage
 from app.models.resume import Resume, ResumeExtractionStatus
 from app.models.job import Job, JobStatus
 from app.models.user import User, UserRole
@@ -19,6 +20,7 @@ from app.schemas.application import (
     ApplicationCreate,
     ApplicationRead,
     ApplicationStatusUpdate,
+    InterviewUpdate,
     ShortlistStageUpdate,
     ApplicationWithJob,
     ApplicationWithApplicant,
@@ -125,8 +127,8 @@ def list_my_applications(
             applied_at=a.applied_at, updated_at=a.updated_at,
             # Candidates only ever see stage + time of a scheduled interview;
             # no other stage, no match_score, no notes.
-            shortlist_stage=a.shortlist_stage if a.shortlist_stage == ShortlistStage.INTERVIEW_SCHEDULED else None,
-            interview_at=a.interview_at if a.shortlist_stage == ShortlistStage.INTERVIEW_SCHEDULED else None,
+            shortlist_stage=ShortlistStage.INTERVIEW_SCHEDULED if a.interview_stage == InterviewStage.SCHEDULED else None,
+            interview_at=a.interview_at if a.interview_stage == InterviewStage.SCHEDULED else None,
             job_title=a.job.title, job_status=a.job.status.value,
             location=a.job.location, company=a.job.created_by.company,
         )
@@ -134,9 +136,12 @@ def list_my_applications(
     ]
 
 def _assert_can_view_job_applications(job: Job, current_user: User):
-    is_privileged = current_user.role in (UserRole.ADMIN, UserRole.SUPERUSER)
-    if not is_privileged and job.created_by_id != current_user.id:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="You do not have permission to view these applications")
+    """Read access (name kept so existing imports still work)."""
+    assert_read_job(job, current_user)
+
+
+def _assert_can_edit_job_applications(job: Job, current_user: User):
+    assert_write_job(job, current_user)
 
 def _like_escape(text: str) -> str:
     """Escape LIKE wildcards so a search for '100%' or 'a_b' is literal."""
@@ -152,6 +157,7 @@ def _applicant_filters(
     q: str | None,
     statuses: list[ApplicationStatus] | None,
     shortlist_stages: list[ShortlistStage] | None,
+    interview_stages: list[InterviewStage] | None,
     min_score: float | None,
     max_score: float | None,
     skills_matched: list[str],
@@ -183,6 +189,8 @@ def _applicant_filters(
     # everything else, so this naturally excludes them).
     if shortlist_stages:
         filters.append(Application.shortlist_stage.in_(shortlist_stages))
+    if interview_stages:
+        filters.append(Application.interview_stage.in_(interview_stages))
 
     # Unscored applicants (NULL score) drop out as soon as a score bound is set.
     if min_score is not None:
@@ -229,6 +237,7 @@ def list_job_applications(
     q: str | None = Query(default=None, max_length=100, description="Name, email or resume file name contains this"),
     statuses: list[ApplicationStatus] | None = Query(default=None, alias="status"),
     shortlist_stages: list[ShortlistStage] | None = Query(default=None, alias="shortlist_stage", description="Shortlist sub-state (shortlisted applicants only)"),
+    interview_stages: list[InterviewStage] | None = Query(default=None, alias="interview_stage"),
     min_score: float | None = Query(default=None, ge=0, le=100),
     max_score: float | None = Query(default=None, ge=0, le=100),
     skills_matched: list[str] | None = Query(default=None, description="JD skills the resume must match (proven or mentioned)"),
@@ -257,7 +266,7 @@ def list_job_applications(
     _assert_can_view_job_applications(job, current_user)
 
     filters = _applicant_filters(
-        q=q, statuses=statuses, shortlist_stages=shortlist_stages, min_score=min_score, max_score=max_score,
+        q=q, statuses=statuses, shortlist_stages=shortlist_stages, interview_stages=interview_stages, min_score=min_score, max_score=max_score,
         skills_matched=_clean_skill_list(skills_matched),
         skills_proven=_clean_skill_list(skills_proven),
         skills_missing=_clean_skill_list(skills_missing),
@@ -317,7 +326,7 @@ def _to_applicant(a: Application) -> ApplicationWithApplicant:
         email = a.resume.candidate_email if a.resume else None
     return ApplicationWithApplicant(
         id=a.id, user_id=a.user_id, job_id=a.job_id, resume_id=a.resume_id, status=a.status,
-        shortlist_stage=a.shortlist_stage, interview_at=a.interview_at,
+        shortlist_stage=a.shortlist_stage, interview_stage=a.interview_stage, interview_at=a.interview_at,
         applied_at=a.applied_at, updated_at=a.updated_at,
         applicant_email=email, applicant_name=name,
         submitted_by_email=a.submitted_by.email if a.submitted_by else None,
@@ -334,8 +343,8 @@ def _get_job_for_bulk_apply(job_id: uuid.UUID, db: Session, current_user: User) 
     job = db.get(Job, job_id)
     if job is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Job not found")
-    # Same rule as viewing the applicants: admin/superuser, or the job's owner.
-    _assert_can_view_job_applications(job, current_user)
+    # Writing: superuser, admin of the job's sub company, or the job's owner.
+    _assert_can_edit_job_applications(job, current_user)
     if job.status != JobStatus.PUBLISHED:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Publish the job before applying resumes to it.")
     return job
@@ -356,8 +365,9 @@ def _check_resume_usable(resume: Resume | None, db: Session, job: Job, actor: Us
     """Returns a candidate-readable reason this resume can't be applied, or
     None if it can. A resume the caller isn't allowed to use reads as
     'not found', same as everywhere else in resumes.py."""
-    is_admin = actor.role in (UserRole.ADMIN, UserRole.SUPERUSER)
-    if resume is None or (not is_admin and resume.uploaded_by_id != actor.id):
+    # Library resumes are private to whoever uploaded them: no admin or
+    # superuser exception.
+    if resume is None or resume.uploaded_by_id != actor.id:
         return "Resume not found."
     if resume.owner_id is not None:
         return "This resume belongs to a candidate account; they need to apply themselves."
@@ -515,7 +525,7 @@ def rescore_job_applications(
     job = db.get(Job, job_id)
     if job is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Job not found")
-    _assert_can_view_job_applications(job, current_user)
+    _assert_can_edit_job_applications(job, current_user)
     # Dedupe: a repeat inside the lock window would only re-queue the same
     # work behind itself, so acknowledge it and queue nothing.
     if not acquire_once(f"rescore:job:{job_id}", settings.RESCORE_LOCK_SECONDS):
@@ -534,17 +544,9 @@ def update_application_status(
     application = db.get(Application, application_id)
     if application is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Application not found")
-    _assert_can_view_job_applications(application.job, current_user)
+    _assert_can_edit_job_applications(application.job, current_user)
     before = snapshot(application, "application")
-    if payload.status != application.status:
-        # The shortlist sub-state only exists while shortlisted: entering the
-        # shortlist starts at the default stage, leaving it clears the stage
-        # and any interview time.
-        application.shortlist_stage = (
-            ShortlistStage.SHORTLISTED if payload.status == ApplicationStatus.SHORTLISTED else None
-        )
-        application.interview_at = None
-    application.status = payload.status
+    apply_status_change(application, payload.status)
     record_audit(
         db, actor=current_user, action="update", resource_type="application",
         resource_id=application.id, before=before, after=snapshot(application, "application"),
@@ -565,7 +567,9 @@ def update_shortlist_stage(
     application = db.get(Application, application_id)
     if application is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Application not found")
-    _assert_can_view_job_applications(application.job, current_user)
+    _assert_can_edit_job_applications(application.job, current_user)
+    if payload.stage == ShortlistStage.INTERVIEW_SCHEDULED:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Move the applicant to Interviewing instead.")
     if application.status != ApplicationStatus.SHORTLISTED:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -595,9 +599,7 @@ def withdraw_application(
     if application.user_id is None:
         # Recruiter-submitted: there is no candidate to withdraw it, so the
         # people who manage the job can.
-        can_remove = current_user.role in (UserRole.ADMIN, UserRole.SUPERUSER) or (
-            current_user.role == UserRole.RECRUITER and application.job.created_by_id == current_user.id
-        )
+        can_remove = can_write_job(current_user, application.job)
     else:
         can_remove = application.user_id == current_user.id
     if not can_remove:
@@ -608,3 +610,53 @@ def withdraw_application(
     )
     db.delete(application)
     db.commit()
+
+
+@router.patch("/{application_id}/interview", response_model=ApplicationRead)
+def update_interview(
+    application_id: uuid.UUID,
+    payload: InterviewUpdate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_recruiter_or_admin),
+):
+    """Interviewing tab: set the interview date and/or outcome (scheduled / rejected / hired)."""
+    application = db.get(Application, application_id)
+    if application is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Application not found")
+    assert_write_job(application.job, current_user)
+    if application.interview_stage is None:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="This applicant is not in the Interviewing stage.")
+    before = snapshot(application, "application")
+    application.interview_stage = payload.stage
+    application.status = {
+        InterviewStage.SCHEDULED: ApplicationStatus.INTERVIEWING,
+        InterviewStage.REJECTED: ApplicationStatus.REJECTED,
+        InterviewStage.HIRED: ApplicationStatus.HIRED,
+    }[payload.stage]
+    if payload.interview_at is not None:
+        application.interview_at = payload.interview_at
+    record_audit(
+        db, actor=current_user, action="update", resource_type="application",
+        resource_id=application.id, before=before, after=snapshot(application, "application"),
+    )
+    db.commit()
+    db.refresh(application)
+    return application
+
+
+@router.get("/stage-counts")
+def stage_counts(db: Session = Depends(get_db), current_user: User = Depends(require_recruiter_or_admin)):
+    """{job_id: {total, applied, shortlisted, interviewing, hired, ...}} for every job the caller can read."""
+    rows = (
+        db.query(Application.job_id, Application.status, func.count(Application.id))
+        .join(Job, Job.id == Application.job_id)
+        .filter(job_read_clause(current_user))
+        .group_by(Application.job_id, Application.status)
+        .all()
+    )
+    out: dict[str, dict[str, int]] = {}
+    for job_id, st, n in rows:
+        entry = out.setdefault(str(job_id), {"total": 0})
+        entry[st.value] = n
+        entry["total"] += n
+    return out

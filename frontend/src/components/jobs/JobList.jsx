@@ -4,12 +4,8 @@ import Spinner from '../ui/Spinner'
 import { EmptyArt } from '../ui/Ornaments'
 import { formatEnumLabel } from '../../utils/format'
 import { useAuth } from '../../context/AuthContext'
-
-const STATUS_STYLES = {
-  draft: 'bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-300',
-  published: 'bg-emerald-100 text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-300',
-  closed: 'bg-slate-200 text-slate-500 dark:bg-slate-800 dark:text-slate-500',
-}
+import StatusBadge from '../ui/StatusBadge'
+import { canWriteJob } from '../../utils/permissions'
 
 const TOGGLE_BUTTON_CLASSES = (active) =>
   `shrink-0 rounded border px-3 py-1.5 text-xs font-medium ${
@@ -18,9 +14,9 @@ const TOGGLE_BUTTON_CLASSES = (active) =>
       : 'border-slate-200 bg-white text-slate-600 hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300 dark:hover:bg-slate-800'
   }`
 
-function JobRow({ job, onOpenDetails, onUploadJD, isApplicant, myApplication, onApply, onWithdraw, applying }) {
+function JobRow({ job, onOpenDetails, onUploadJD, isApplicant, myApplication, onApply, onWithdraw, applying, counts }) {
   const { user } = useAuth()
-  const canManage = user?.role === 'admin' || user?.role === 'superuser' || (user?.role === 'recruiter' && job.created_by_id === user?.id)
+  const canManage = canWriteJob(user, job)
   const [expanded, setExpanded] = useState(null) // 'description' | 'jd' | null
 
   const toggle = (section) => (e) => {
@@ -38,22 +34,43 @@ function JobRow({ job, onOpenDetails, onUploadJD, isApplicant, myApplication, on
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2">
             <span className="truncate font-medium text-slate-900 dark:text-slate-100">{job.title}</span>
-            <span className={`shrink-0 rounded-full px-2 py-0.5 text-xs font-medium ${STATUS_STYLES[job.status]}`}>
-              {formatEnumLabel(job.status)}
-            </span>
+            <StatusBadge status={job.status}>{formatEnumLabel(job.status)}</StatusBadge>
           </div>
           {subline && (
             <div className="mt-0.5 truncate text-xs text-slate-400 dark:text-slate-500">{subline}</div>
           )}
+          {counts && (
+            <div className="mt-0.5 truncate text-xs text-slate-500 dark:text-slate-400">
+              {counts.total ?? 0} applicants · {counts.shortlisted ?? 0} shortlisted · {counts.interviewing ?? 0} interviewing · {counts.hired ?? 0} hired
+            </div>
+          )}
         </div>
 
-        {!isApplicant && <button onClick={toggle('description')} className={TOGGLE_BUTTON_CLASSES(expanded === 'description')}>Description</button>}
-        {!isApplicant && <button onClick={toggle('jd')} className={TOGGLE_BUTTON_CLASSES(expanded === 'jd')}>JD</button>}
-        {isApplicant && myApplication && <span className="shrink-0 rounded-full bg-emerald-50 px-2.5 py-1 text-xs font-semibold text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300" aria-label="Already applied">Applied ✓</span>}
-        <button onClick={() => onOpenDetails(job)} className={TOGGLE_BUTTON_CLASSES(false)}>{isApplicant ? 'View details' : 'Metadata'}</button>
+        <button onClick={toggle('description')} className={TOGGLE_BUTTON_CLASSES(expanded === 'description')}>
+          Description
+        </button>
+
+        <button onClick={toggle('jd')} className={TOGGLE_BUTTON_CLASSES(expanded === 'jd')}>
+          JD
+        </button>
+
+        <button
+          onClick={() => onOpenDetails(job)}
+          className={TOGGLE_BUTTON_CLASSES(false)}
+        >
+          Metadata
+        </button>
 
         {isApplicant && job.status === 'published' && (
-          myApplication ? null : (
+          myApplication ? (
+            <button
+              onClick={() => onWithdraw(myApplication)}
+              disabled={applying}
+              className="shrink-0 rounded px-3 py-1.5 text-xs font-medium text-red-600 hover:bg-red-50 disabled:opacity-50 dark:text-red-400 dark:hover:bg-red-950"
+            >
+              {applying ? 'Withdrawing…' : 'Withdraw'}
+            </button>
+          ) : (
             <button
               onClick={() => onApply(job)}
               disabled={applying}
@@ -100,7 +117,7 @@ function JobRow({ job, onOpenDetails, onUploadJD, isApplicant, myApplication, on
 
 export default function JobList({
   jobs, loading, error, onRetry, onSelectJob, onUploadJD,
-  isApplicant, myApplicationsByJob = {}, onApply, onWithdraw, applyingJobId,
+  isApplicant, myApplicationsByJob = {}, onApply, onWithdraw, applyingJobId, stageCounts,
 }) {
   if (loading) {
     return (
@@ -136,6 +153,7 @@ export default function JobList({
         <JobRow
           key={job.id}
           job={job}
+          counts={stageCounts?.[job.id]}
           onOpenDetails={onSelectJob}
           onUploadJD={onUploadJD}
           isApplicant={isApplicant}

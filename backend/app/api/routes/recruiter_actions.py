@@ -12,7 +12,7 @@ import uuid
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
-from app.api.routes.applications import _assert_can_view_job_applications
+from app.core.access import assert_read_job, assert_write_job
 from app.core.audit import record_audit, snapshot
 from app.core.deps import require_recruiter_or_admin
 from app.db.session import get_db
@@ -29,13 +29,12 @@ from app.schemas.application_note import (
 router = APIRouter()
 
 
-def _get_application_for_recruiter(application_id: uuid.UUID, db: Session, current_user: User) -> Application:
-    """404 if it doesn't exist, 403 if this recruiter doesn't own its job.
-    Same order of checks as the status / shortlist-stage endpoints."""
+def _get_application_for_recruiter(application_id: uuid.UUID, db: Session, current_user: User, write: bool = False) -> Application:
+    """404 if it doesn't exist, 403 if the caller may not read (or, with write=True, change) its job."""
     application = db.get(Application, application_id)
     if application is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Application not found")
-    _assert_can_view_job_applications(application.job, current_user)
+    (assert_write_job if write else assert_read_job)(application.job, current_user)
     return application
 
 
@@ -68,7 +67,7 @@ def add_application_note(
     db: Session = Depends(get_db),
     current_user: User = Depends(require_recruiter_or_admin),
 ):
-    application = _get_application_for_recruiter(application_id, db, current_user)
+    application = _get_application_for_recruiter(application_id, db, current_user, write=True)
     note = ApplicationNote(
         application_id=application.id,
         author_id=current_user.id,
@@ -105,7 +104,7 @@ def update_manual_score(
     applicant. Only touches manual_score: the AI match_score is written by the
     scoring worker alone, so it is never changed here and a re-score never
     changes this."""
-    application = _get_application_for_recruiter(application_id, db, current_user)
+    application = _get_application_for_recruiter(application_id, db, current_user, write=True)
     if payload.manual_score == application.manual_score:
         return application  # nothing changed, so no audit row either
     before = snapshot(application, "application")

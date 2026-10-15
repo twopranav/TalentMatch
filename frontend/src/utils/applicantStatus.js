@@ -1,13 +1,14 @@
 // Status choices a recruiter can set on an application. The backend enum also
 // has "hired", which is deliberately not offered here; rows already in that
 // state still display (see statusOptionsFor).
-export const APPLICATION_STATUS_OPTIONS = ['applied', 'under_review', 'shortlisted', 'rejected']
+export const APPLICATION_STATUS_OPTIONS = ['applied', 'under_review', 'shortlisted', 'interviewing', 'rejected']
 
 export const APPLICATION_STATUS_LABELS = {
   applied: 'Applied',
   under_review: 'Reviewing',
   shortlisted: 'Shortlisted',
-  rejected: 'Rejected',
+  interviewing: 'Interviewing',
+  rejected: 'Not proceeding',
   hired: 'Hired',
 }
 
@@ -25,7 +26,7 @@ export function statusOptionsFor(current) {
 }
 
 // Shortlist sub-states. "shortlisted" is the default on entering the shortlist.
-export const SHORTLIST_STAGE_OPTIONS = ['shortlisted', 'review', 'interview_scheduled', 'rejected']
+export const SHORTLIST_STAGE_OPTIONS = ['shortlisted', 'review', 'rejected']
 
 export const SHORTLIST_STAGE_LABELS = {
   shortlisted: 'Shortlisted',

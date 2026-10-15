@@ -5,21 +5,18 @@ import { useAuth } from '../context/AuthContext'
 import BulkApplyPanel from '../components/jobs/BulkApplyPanel'
 import ApplicantsPanel from '../components/jobs/ApplicantsPanel'
 import Spinner from '../components/ui/Spinner'
+import InterviewingPanel from '../components/jobs/InterviewingPanel'
+import { canWriteJob } from '../utils/permissions'
 import { formatEnumLabel, getErrorMessage } from '../utils/format'
+import PageHeader from '../components/ui/PageHeader'
+import StatusBadge from '../components/ui/StatusBadge'
 
-const STATUS_STYLES = {
-  draft: 'bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-300',
-  published: 'bg-emerald-100 text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-300',
-  closed: 'bg-slate-200 text-slate-500 dark:bg-slate-800 dark:text-slate-500',
-}
 
 const TABS = [
-  { key: 'all', label: 'All applicants' },
-  { key: 'shortlisted', label: 'Shortlisted' },
+  { key: 'all', label: 'Applicants' },
+  { key: 'shortlisted', label: 'Shortlist' },
+  { key: 'interviewing', label: 'Interviewing' },
 ]
-
-// Only these roles get the bulk-apply panel (candidates and admins never see it).
-const BULK_APPLY_ROLES = ['recruiter', 'superuser']
 
 // Dedicated page (meant to be opened via window.open in a new tab, not
 // rendered inline) so a recruiter — or a future matching model reading this
@@ -29,9 +26,13 @@ export default function JobApplicants() {
   const { jobId } = useParams()
   const { user } = useAuth()
   const [refreshKey, setRefreshKey] = useState(0)
+  const [allApplicantCount, setAllApplicantCount] = useState(null)
+  const [shortlistedCount, setShortlistedCount] = useState(null)
+  const [interviewingCount, setInterviewingCount] = useState(null)
   // The tab lives in the URL (?tab=shortlisted) so it survives a refresh and can be linked to.
   const [searchParams, setSearchParams] = useSearchParams()
-  const tab = searchParams.get('tab') === 'shortlisted' ? 'shortlisted' : 'all'
+  const tab = TABS.some((t) => t.key === searchParams.get('tab')) ? searchParams.get('tab') : 'all'
+  const counts = { all: allApplicantCount, shortlisted: shortlistedCount, interviewing: interviewingCount }
   const selectTab = (key) => {
     setSearchParams(key === 'all' ? {} : { tab: key }, { replace: true })
   }
@@ -58,32 +59,24 @@ export default function JobApplicants() {
 
   if (error || !job) {
     return (
-      <div className="mx-auto max-w-4xl px-6 py-8">
-        <p className="text-sm text-red-600 dark:text-red-400">{error || 'Job not found.'}</p>
-        <Link to="/my-jobs" className="mt-3 inline-block text-sm font-medium text-slate-700 underline hover:no-underline dark:text-slate-300">
-          Back to My Jobs
-        </Link>
+      <div className="mx-auto max-w-[1440px] px-8 py-8">
+        <PageHeader eyebrow="Recruiter workspace" title="Applicants unavailable" description={error || 'This job could not be found.'} />
+        <Link to="/jobs/mine" className="inline-flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-700 transition hover:border-indigo-200 hover:text-indigo-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-amber-400 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200 dark:hover:text-indigo-300">← Back to My Jobs</Link>
       </div>
     )
   }
 
-  const canBulkApply = BULK_APPLY_ROLES.includes(user?.role)
+  const canBulkApply = canWriteJob(user, job)
 
   return (
-    <div className="mx-auto max-w-4xl px-6 py-8">
-      <div className="mb-6">
-        <div className="flex flex-wrap items-center gap-2">
-          <h1 className="text-xl font-semibold text-slate-900 dark:text-slate-100">{job.title}</h1>
-          <span className={`rounded-full px-2.5 py-0.5 text-xs font-medium ${STATUS_STYLES[job.status]}`}>
-            {formatEnumLabel(job.status)}
-          </span>
-        </div>
-        <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">
-          {[job.location, formatEnumLabel(job.employment_type), formatEnumLabel(job.remote_type)]
-            .filter(Boolean)
-            .join(' · ')}
-        </p>
-      </div>
+    <div className="mx-auto max-w-[1440px] px-8 py-8">
+      <PageHeader
+        eyebrow="Recruiter workspace"
+        title={job.title}
+        description={[job.location, formatEnumLabel(job.employment_type), formatEnumLabel(job.remote_type)].filter(Boolean).join(' · ')}
+        meta={<StatusBadge status={job.status}>{formatEnumLabel(job.status)}</StatusBadge>}
+        action={<Link to="/jobs/mine" className="inline-flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-700 transition hover:border-indigo-200 hover:text-indigo-700 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200 dark:hover:text-indigo-300">← My jobs</Link>}
+      />
 
       {canBulkApply && (
         job.status === 'published' ? (
@@ -95,7 +88,7 @@ export default function JobApplicants() {
         )
       )}
 
-      <div className="rounded-lg border border-slate-200 bg-white p-5 dark:border-slate-800 dark:bg-slate-900">
+      <div className="rounded-2xl border border-slate-200/80 bg-[#fbfaf7]/95 p-6 shadow-sm dark:border-slate-800 dark:bg-slate-900/90">
         <div role="tablist" aria-label="Applicant views" className="mb-4 flex gap-1 border-b border-slate-200 dark:border-slate-800">
           {TABS.map((t) => (
             <button
@@ -112,7 +105,7 @@ export default function JobApplicants() {
                   : 'border-transparent text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-200'
               }`}
             >
-              {t.label}
+              {counts[t.key] != null ? `${t.label} (${counts[t.key]})` : t.label}
             </button>
           ))}
         </div>
@@ -122,10 +115,13 @@ export default function JobApplicants() {
             refreshes on becoming visible, so a status change made in the other
             tab always shows up. */}
         <div role="tabpanel" id="applicants-panel-all" aria-labelledby="applicants-tab-all" hidden={tab !== 'all'}>
-          <ApplicantsPanel job={job} active={tab === 'all'} fullPage refreshKey={refreshKey} />
+          <ApplicantsPanel job={job} active={tab === 'all'} fullPage refreshKey={refreshKey} onTotalChange={setAllApplicantCount} />
         </div>
         <div role="tabpanel" id="applicants-panel-shortlisted" aria-labelledby="applicants-tab-shortlisted" hidden={tab !== 'shortlisted'}>
-          <ApplicantsPanel job={job} mode="shortlisted" active={tab === 'shortlisted'} fullPage refreshKey={refreshKey} />
+          <ApplicantsPanel job={job} mode="shortlisted" active={tab === 'shortlisted'} fullPage refreshKey={refreshKey} onTotalChange={setShortlistedCount} />
+        </div>
+        <div role="tabpanel" id="applicants-panel-interviewing" aria-labelledby="applicants-tab-interviewing" hidden={tab !== 'interviewing'}>
+          <InterviewingPanel job={job} active={tab === 'interviewing'} refreshKey={refreshKey} onTotalChange={setInterviewingCount} />
         </div>
       </div>
     </div>

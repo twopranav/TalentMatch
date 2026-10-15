@@ -18,6 +18,7 @@ class ApplicationStatus(str, PyEnum):
     SHORTLISTED = "shortlisted"
     REJECTED = "rejected"
     HIRED = "hired"
+    INTERVIEWING = "interviewing"
 
 class ShortlistStage(str, PyEnum):
     """Sub-state of an application whose status is SHORTLISTED. NULL on the
@@ -26,6 +27,13 @@ class ShortlistStage(str, PyEnum):
     REVIEW = "review"
     INTERVIEW_SCHEDULED = "interview_scheduled"  # requires Application.interview_at
     REJECTED = "rejected"
+
+
+class InterviewStage(str, PyEnum):
+    """Set for as long as an applicant belongs to the Interviewing tab, including after the outcome."""
+    SCHEDULED = "scheduled"
+    REJECTED = "rejected"
+    HIRED = "hired"
 
 
 class Application(Base):
@@ -77,6 +85,9 @@ class Application(Base):
     # Only set while status == SHORTLISTED (see routes/applications.py).
     shortlist_stage: Mapped[ShortlistStage | None] = mapped_column(
         SAEnum(ShortlistStage, name="shortlist_stage"), nullable=True
+    )
+    interview_stage: Mapped[InterviewStage | None] = mapped_column(
+        SAEnum(InterviewStage, name="interview_stage", native_enum=False, length=16), nullable=True
     )
     # Only set while shortlist_stage == INTERVIEW_SCHEDULED. Timezone-aware.
     interview_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

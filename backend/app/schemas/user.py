@@ -1,8 +1,8 @@
 import re
 import uuid
 from datetime import datetime
-from pydantic import BaseModel, EmailStr, ConfigDict, field_validator
-from app.models.user import UserRole
+from pydantic import BaseModel, EmailStr, ConfigDict, field_validator, model_validator
+from app.models.user import SubCompany, UserRole
 
 
 def _validate_password_strength(value: str) -> str:
@@ -21,15 +21,23 @@ class UserCreate(BaseModel):
     full_name: str | None = None
     phone: str | None = None
     # What the signer-upper is asking to be. Defaults to USER so existing
-    # clients that don't send this field are unaffected. Validated below so
-    # nobody can request ADMIN/SUPERUSER through signup.
+    # clients that don't send this field are unaffected. Recruiter and admin
+    # are requests only (the superuser grants them); superuser can never be
+    # requested through signup.
     role: UserRole = UserRole.USER
+    sub_company: SubCompany | None = None
+
+    @model_validator(mode="after")
+    def staff_needs_sub_company(self):
+        if self.role in (UserRole.RECRUITER, UserRole.ADMIN) and self.sub_company is None:
+            raise ValueError("sub_company is required when requesting recruiter or admin access")
+        return self
 
     @field_validator("role")
     @classmethod
     def restrict_signup_role(cls, value: UserRole) -> UserRole:
-        if value not in (UserRole.USER, UserRole.RECRUITER):
-            raise ValueError("role must be 'user' or 'recruiter' at signup")
+        if value not in (UserRole.USER, UserRole.RECRUITER, UserRole.ADMIN):
+            raise ValueError("role must be 'user', 'recruiter' or 'admin' at signup")
         return value
 
     @field_validator("password")
@@ -54,6 +62,7 @@ class UserRead(BaseModel):
     location: str | None
     desired_role: str | None
     avatar_url: str | None = None
+    sub_company: SubCompany | None = None
     created_at: datetime
     model_config = ConfigDict(from_attributes=True)
 
@@ -99,3 +108,7 @@ class ChangePassword(BaseModel):
 class DeleteAccount(BaseModel):
     """Body of DELETE /users/me: the caller re-enters their password."""
     password: str
+
+
+class UserSubCompanyUpdate(BaseModel):
+    sub_company: SubCompany | None

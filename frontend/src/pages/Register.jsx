@@ -1,3 +1,5 @@
+import emmveeLogo from '../assets/emmvee-logo.jpg'
+import { SUB_COMPANIES } from '../utils/subCompany'
 import { Link, useNavigate } from 'react-router-dom'
 import { useState } from 'react'
 import { useAuth } from '../context/AuthContext'
@@ -17,12 +19,13 @@ export default function Register() {
     confirmPassword: '',
     full_name: '',
     phone: '',
-    wantsRecruiter: false,
+    role: 'user',
+    sub_company: '',
   })
   const [submitting, setSubmitting] = useState(false)
 
   const set = (field) => (e) => {
-    const value = e.target.type === 'checkbox' ? e.target.checked : e.target.value
+    const value = e.target.value
     setForm((f) => ({ ...f, [field]: value }))
   }
 
@@ -35,7 +38,8 @@ export default function Register() {
     form.password.length > 0 &&
     (form.password.length < 8 || !/[A-Za-z]/.test(form.password) || !/[0-9]/.test(form.password))
   const canSubmit =
-    form.password.length > 0 && form.confirmPassword.length > 0 && !passwordsMismatch && !passwordTooWeak
+    form.password.length > 0 && form.confirmPassword.length > 0 && !passwordsMismatch && !passwordTooWeak &&
+    (form.role === 'user' || form.sub_company !== '')
 
   const handleSubmit = async (e) => {
     e.preventDefault()
@@ -47,11 +51,12 @@ export default function Register() {
         password: form.password,
         full_name: form.full_name || null,
         phone: form.phone || null,
-        role: form.wantsRecruiter ? 'recruiter' : 'user',
+        role: form.role,
+        sub_company: form.role !== 'user' ? form.sub_company : null,
       })
       showToast(
-        form.wantsRecruiter
-          ? 'Account created. Recruiter access needs admin approval — log in now with standard access in the meantime.'
+        form.role !== 'user'
+          ? `Account created. ${form.role === 'admin' ? 'Admin' : 'Recruiter'} access needs superuser approval — log in now with standard access in the meantime.`
           : 'Account created. You can log in now.',
         'success',
       )
@@ -104,6 +109,7 @@ export default function Register() {
           onSubmit={handleSubmit}
           className="animate-slide-down-delay w-full rounded-2xl border border-white/50 border-t-gold-300/80 bg-white/90 p-8 shadow-2xl backdrop-blur-xl dark:border-white/10 dark:border-t-gold-400/50 dark:bg-slate-900/80"
         >
+          <img src={emmveeLogo} alt="Emmvee" className="mx-auto mb-4 h-14 w-auto" />
           <h1 className="mb-6 text-lg font-semibold text-slate-900 dark:text-slate-100">
             Create account
           </h1>
@@ -196,15 +202,26 @@ export default function Register() {
           className="mb-4 w-full rounded-lg border border-slate-400/70 bg-white/80 px-3 py-2 text-sm shadow-sm focus:outline-none focus:ring-2 focus:ring-slate-400 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100 dark:focus:ring-slate-500"
         />
 
-        <label className="mb-6 flex items-start gap-2 text-sm text-slate-600 dark:text-slate-300">
-          <input
-            type="checkbox"
-            checked={form.wantsRecruiter}
-            onChange={set('wantsRecruiter')}
-            className="mt-0.5 h-4 w-4 rounded border-slate-300 dark:border-slate-600"
-          />
-          <span>I'm signing up as a recruiter (requires admin approval — standard access until then)</span>
+        <label className="mb-1 block text-sm font-medium text-slate-700 dark:text-slate-300" htmlFor="role">
+          Account type
         </label>
+        <select id="role" value={form.role} onChange={set('role')} className="mb-1 w-full rounded-lg border border-slate-400/70 bg-white/80 px-3 py-2 text-sm shadow-sm focus:outline-none focus:ring-2 focus:ring-slate-400 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100 dark:focus:ring-slate-500">
+          <option value="user">Candidate</option>
+          <option value="recruiter">Recruiter (request)</option>
+          <option value="admin">Admin (request)</option>
+        </select>
+        <p className="mb-4 min-h-4 text-xs text-slate-400 dark:text-slate-500">
+          {form.role === 'user' ? 'Standard access.' : 'Needs superuser approval — standard access until then.'}
+        </p>
+        {form.role !== 'user' && (
+          <div className="mb-6">
+            <label htmlFor="sub_company" className="mb-1 block text-sm font-medium text-slate-700 dark:text-slate-300">Sub company</label>
+            <select id="sub_company" value={form.sub_company} onChange={set('sub_company')} required className="w-full rounded-lg border border-slate-400/70 bg-white/80 px-3 py-2 text-sm shadow-sm focus:outline-none focus:ring-2 focus:ring-slate-400 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100 dark:focus:ring-slate-500">
+              <option value="">Select your sub company</option>
+              {SUB_COMPANIES.map((c) => <option key={c} value={c}>{c}</option>)}
+            </select>
+          </div>
+        )}
 
         <button
           type="submit"

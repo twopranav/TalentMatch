@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { useAuth } from '../context/AuthContext'
 import { useJobs } from '../hooks/useJobs'
@@ -11,7 +11,7 @@ import JDUploadModal from '../components/jobs/JDUploadModal'
 import JobDetailsModal from '../components/jobs/JobDetailsModal'
 import Pagination from '../components/ui/Pagination'
 import { formatEnumLabel, getErrorMessage } from '../utils/format'
-import { applyToJob, withdrawApplication } from '../api/applications'
+import { applyToJob, fetchStageCounts, withdrawApplication } from '../api/applications'
 import { useToast } from '../components/ui/Toast'
 import Button from '../components/ui/Button'
 
@@ -39,6 +39,11 @@ export default function JobDashboard() {
   const { jobs, total, loading, error, refetch } = useJobs(queryFilters)
   const { applications: myApplications, refetch: refetchMyApplications } = useMyApplications(isApplicant)
   const { resumes } = useResumes({ enabled: isApplicant })
+  const [stageCounts, setStageCounts] = useState(null)
+  useEffect(() => {
+    if (!canFilterByStatus) return
+    fetchStageCounts().then(setStageCounts).catch(() => setStageCounts(null))
+  }, [canFilterByStatus, jobs])
   const myApplicationsByJob = useMemo(() => {
     const map = {}
     for (const application of myApplications) map[application.job_id] = application
@@ -95,7 +100,7 @@ export default function JobDashboard() {
     {canFilterByStatus && <div className="mb-4 flex items-center justify-between gap-4"><div className="flex gap-2">{STATUS_OPTIONS.map((option) => <button key={option} onClick={() => { setFilters((current) => ({ ...current, status: option })); setPage(1) }} className={`rounded-lg px-3 py-1.5 text-xs font-semibold ${filters.status === option ? 'bg-indigo-700 text-white' : 'bg-white text-slate-600 ring-1 ring-slate-200 hover:bg-slate-50 dark:bg-slate-900 dark:text-slate-300 dark:ring-slate-700 dark:hover:bg-slate-800'}`}>{formatEnumLabel(option)}</button>)}</div><p className="text-xs tabular-nums text-slate-500 dark:text-slate-400">{total.toLocaleString()} result{total === 1 ? '' : 's'}</p></div>}
 
     <JobFilterBar filters={filters} onChange={changeFilters} />
-    <JobList jobs={jobs} loading={loading} error={error} onRetry={refetch} onSelectJob={setSelectedJob} onUploadJD={setUploadJob} isApplicant={isApplicant} myApplicationsByJob={myApplicationsByJob} onApply={handleApply} onWithdraw={handleWithdraw} applyingJobId={applyingJobId} />
+    <JobList jobs={jobs} loading={loading} error={error} onRetry={refetch} onSelectJob={setSelectedJob} onUploadJD={setUploadJob} isApplicant={isApplicant} myApplicationsByJob={myApplicationsByJob} onApply={handleApply} onWithdraw={handleWithdraw} applyingJobId={applyingJobId} stageCounts={stageCounts} />
     {!loading && !error && <div className="mt-4 flex items-center justify-between"><p className="text-xs text-slate-500 dark:text-slate-400">Showing {total === 0 ? 0 : (page - 1) * PAGE_SIZE + 1}–{Math.min(page * PAGE_SIZE, total)} of {total}</p><Pagination page={page} totalPages={totalPages} onPageChange={setPage} disabled={loading} /></div>}
 
     <JobDetailsModal open={Boolean(selectedJob)} onClose={() => setSelectedJob(null)} job={selectedJob} onEdit={openEdit} onChanged={handleChanged} onDeleted={refetch} myApplication={selectedJob ? myApplicationsByJob[selectedJob.id] : null} onApplicationChanged={handleApplicationChanged} />

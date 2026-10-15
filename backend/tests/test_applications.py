@@ -1,7 +1,7 @@
 from conftest import TestSessionLocal  # tests/ is on sys.path (no __init__.py)
 import pytest
 from app.models.resume import Resume, ResumeExtractionStatus
-from app.models.user import UserRole
+from app.models.user import SubCompany, UserRole
 
 
 def _published_job(client, auth_headers, recruiter, pdf_bytes, title="Job"):
@@ -188,8 +188,9 @@ def test_owning_recruiter_lists_job_applicants(client, make_user, auth_headers, 
     assert applicant["resume_filename"] == "resume.pdf"
 
 def test_non_owning_recruiter_forbidden_from_job_applicants(client, make_user, auth_headers, pdf_bytes):
+    # A recruiter in a DIFFERENT sub company cannot even read the applicants.
     r1, _ = make_user(role=UserRole.RECRUITER)
-    r2, _ = make_user(role=UserRole.RECRUITER)
+    r2, _ = make_user(role=UserRole.RECRUITER, sub_company=SubCompany.PHOTOVOLTAIC)
     job_id = _published_job(client, auth_headers, r1, pdf_bytes)
     resp = client.get(f"/api/applications/job/{job_id}", headers=auth_headers(r2))
     assert resp.status_code == 403
@@ -811,10 +812,11 @@ def test_bulk_apply_refuses_candidate_owned_and_archived_resumes(client, make_us
     url = f"/api/applications/job/{job_id}/bulk"
     body = {"resume_ids": [owned_id, ids["x.pdf"]]}
 
-    # Superuser can use any unowned resume, so they see the real reasons.
+    # Libraries are private: the superuser can't use either one, and neither
+    # resume even reads as existing to them.
     owned, archived = client.post(url, json=body, headers=auth_headers(superuser)).json()
-    assert owned["success"] is False and "candidate account" in owned["error"]
-    assert archived["success"] is False and "archived" in archived["error"]
+    assert owned["success"] is False and owned["error"] == "Resume not found."
+    assert archived["success"] is False and archived["error"] == "Resume not found."
 
     # A recruiter didn't upload the candidate's resume: it reads as not found.
     owned, archived = client.post(url, json=body, headers=auth_headers(recruiter)).json()
@@ -836,16 +838,19 @@ def test_bulk_apply_recruiter_cannot_use_another_recruiters_resumes(client, make
     assert resp.json()[0]["error"] == "Resume not found."
 
 
-def test_bulk_apply_superuser_can_apply_on_any_job_with_any_unowned_resume(client, make_user, auth_headers, pdf_bytes):
+def test_bulk_apply_superuser_can_apply_on_any_job_with_their_own_library_resume(client, make_user, auth_headers, pdf_bytes):
     recruiter, _ = make_user(role=UserRole.RECRUITER)
     superuser, _ = make_user(role=UserRole.SUPERUSER)
     job_id = _published_job(client, auth_headers, recruiter, pdf_bytes)
-    ids = _bulk_upload_library(client, auth_headers, recruiter, pdf_bytes, ["a.pdf"])
+    theirs = _bulk_upload_library(client, auth_headers, recruiter, pdf_bytes, ["theirs.pdf"])
+    mine = _bulk_upload_library(client, auth_headers, superuser, pdf_bytes, ["mine.pdf"])
+    url = f"/api/applications/job/{job_id}/bulk"
 
-    resp = client.post(
-        f"/api/applications/job/{job_id}/bulk", json={"resume_ids": [ids["a.pdf"]]},
-        headers=auth_headers(superuser),
-    )
+    # Someone else's library resume is off limits even to the superuser.
+    resp = client.post(url, json={"resume_ids": [theirs["theirs.pdf"]]}, headers=auth_headers(superuser))
+    assert resp.json()[0]["success"] is False
+
+    resp = client.post(url, json={"resume_ids": [mine["mine.pdf"]]}, headers=auth_headers(superuser))
     assert resp.json()[0]["success"] is True
     [row] = client.get(f"/api/applications/job/{job_id}", headers=auth_headers(superuser)).json()
     assert row["submitted_by_email"] == superuser.email

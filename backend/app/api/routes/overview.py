@@ -7,13 +7,14 @@ caller's role; response shape is `{"role": ..., ...}`.
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends
-from sqlalchemy import case, func, select
+from sqlalchemy import case, false, func, select
 from sqlalchemy.orm import Session
 
 from app.core import metrics
+from app.core.audit_scope import admin_scope
 from app.core.deps import get_current_user
 from app.db.session import get_db
-from app.models.application import Application, ApplicationStatus, ShortlistStage
+from app.models.application import Application, ApplicationStatus, ShortlistStage, InterviewStage
 from app.models.audit_log import AuditLog
 from app.models.job import Job, JobStatus
 from app.models.llm_config import LLMConfig
@@ -51,7 +52,7 @@ def _applicant_overview(db: Session, user: User, now: datetime) -> dict:
         .join(Job, Job.id == Application.job_id)
         .filter(
             Application.user_id == user.id,
-            Application.shortlist_stage == ShortlistStage.INTERVIEW_SCHEDULED,
+            Application.interview_stage == InterviewStage.SCHEDULED,
             Application.interview_at >= now,
         )
         .order_by(Application.interview_at.asc())
@@ -163,9 +164,32 @@ def _recruiter_overview(db: Session, user: User, now: datetime) -> dict:
             "shortlisted_count": shortlisted,
         })
 
+    # One grouped query for the hiring funnel across every owned job. Interview
+    # is a sub-state of SHORTLISTED, so it is split out of the shortlisted bucket.
+    funnel = {"applied": 0, "reviewing": 0, "shortlisted": 0, "interview": 0, "hired": 0, "rejected": 0}
+    stage_rows = (
+        db.query(Application.status, Application.shortlist_stage, func.count(Application.id))
+        .filter(Application.job_id.in_(own_job_ids))
+        .group_by(Application.status, Application.shortlist_stage)
+        .all()
+    )
+    for status, stage, n in stage_rows:
+        if status == ApplicationStatus.APPLIED:
+            funnel["applied"] += n
+        elif status == ApplicationStatus.UNDER_REVIEW:
+            funnel["reviewing"] += n
+        elif status == ApplicationStatus.SHORTLISTED:
+            funnel["shortlisted"] += n
+        elif status == ApplicationStatus.INTERVIEWING:
+            funnel["interview"] += n
+        elif status == ApplicationStatus.HIRED:
+            funnel["hired"] += n
+        elif status == ApplicationStatus.REJECTED:
+            funnel["rejected"] += n
+
     interview_filter = (
         Job.created_by_id == user.id,
-        Application.shortlist_stage == ShortlistStage.INTERVIEW_SCHEDULED,
+        Application.interview_stage == InterviewStage.SCHEDULED,
         Application.interview_at >= now,
     )
     interviews_total = (
@@ -183,6 +207,7 @@ def _recruiter_overview(db: Session, user: User, now: datetime) -> dict:
         "role": "recruiter",
         "jobs": job_rows,
         "jobs_total": jobs_total,
+        "funnel": funnel,
         "quick_actions": {
             "draft_jobs": job_status_counts.get(JobStatus.DRAFT.value, 0),
             "published_jobs": job_status_counts.get(JobStatus.PUBLISHED.value, 0),
@@ -203,10 +228,21 @@ def _recruiter_overview(db: Session, user: User, now: datetime) -> dict:
     }
 
 
-def _admin_overview(db: Session) -> dict:
-    pending = (
-        db.query(func.count(User.id)).filter(User.requested_role == UserRole.RECRUITER).scalar()
-    )
+def _admin_overview(db: Session, user: User) -> dict:
+    """Admin / superuser dashboard.
+
+    Requests and the audit feed are scoped: an admin only sees their own sub
+    company's, the superuser sees everything. The system-health items (LLM
+    configuration, queue depth, quota) are global on purpose and untouched.
+    """
+    is_superuser = user.role == UserRole.SUPERUSER
+    pending_filter = [User.requested_role.isnot(None)]
+    if not is_superuser:
+        # An admin without a sub company matches nothing (default-deny).
+        pending_filter.append(
+            User.sub_company == user.sub_company if user.sub_company is not None else false()
+        )
+    pending = db.query(func.count(User.id)).filter(*pending_filter).scalar()
     unset_tasks = [
         t
         for (t,) in db.query(LLMConfig.task)
@@ -214,11 +250,30 @@ def _admin_overview(db: Session) -> dict:
         .order_by(LLMConfig.task)
         .all()
     ]
+    pending_users = (
+        db.query(User)
+        .filter(*pending_filter)
+        .order_by(User.created_at.asc())
+        .limit(5)
+        .all()
+    )
     depths = metrics.queue_depths()
-    recent = db.query(AuditLog).order_by(AuditLog.created_at.desc(), AuditLog.id.desc()).limit(10).all()
+    audit_query = db.query(AuditLog)
+    if not is_superuser:
+        audit_query = audit_query.filter(admin_scope(user))
+    recent = audit_query.order_by(AuditLog.created_at.desc(), AuditLog.id.desc()).limit(10).all()
     return {
         "role": "admin",
+        "is_superuser": is_superuser,
         "pending_recruiter_requests": pending,
+        "pending_recruiters": [
+            {
+                "id": str(u.id), "email": u.email, "full_name": u.full_name, "created_at": u.created_at,
+                "requested_role": _key(u.requested_role),
+                "sub_company": _key(u.sub_company.value) if u.sub_company else None,
+            }
+            for u in pending_users
+        ],
         "unset_llm_tasks": len(unset_tasks),
         "unset_llm_task_names": unset_tasks,
         "system_queue_depth": depths["total"] if depths else None,
@@ -243,4 +298,4 @@ def overview(db: Session = Depends(get_db), current_user: User = Depends(get_cur
         return _applicant_overview(db, current_user, now)
     if current_user.role == UserRole.RECRUITER:
         return _recruiter_overview(db, current_user, now)
-    return _admin_overview(db)
+    return _admin_overview(db, current_user)

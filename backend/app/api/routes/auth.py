@@ -32,11 +32,12 @@ def register(payload: UserCreate, db: Session = Depends(get_db)) -> User:
     if existing:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Email already registered")
 
-    # Signup never writes role=RECRUITER directly, no matter what was asked
-    # for. If they asked for RECRUITER, that request is only *recorded* in
-    # requested_role — the account is a plain, functional USER (role stays
-    # at the model default) until an admin approves it via PATCH .../active.
-    requested_role = payload.role if payload.role == UserRole.RECRUITER else None
+    # Signup never writes role=RECRUITER or ADMIN directly, no matter what was
+    # asked for. A request for either is only *recorded* in requested_role,
+    # together with the sub company they picked — the account is a plain,
+    # functional USER (role stays at the model default) until the superuser
+    # approves it via POST /users/{id}/approve-request.
+    requested_role = payload.role if payload.role in (UserRole.RECRUITER, UserRole.ADMIN) else None
 
     user = User(
         email=payload.email,
@@ -44,6 +45,7 @@ def register(payload: UserCreate, db: Session = Depends(get_db)) -> User:
         full_name=payload.full_name,
         phone=payload.phone,
         requested_role=requested_role,
+        sub_company=payload.sub_company if requested_role else None,
     )
     db.add(user)
     db.flush()  # assigns user.id before we snapshot it for the audit row
@@ -83,13 +85,11 @@ def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depend
     clear_failed_logins(email)
 
     if not user.is_active:
-        # New signups start is_active=False and stay that way until an
-        # admin approves them (or approves+promotes a recruiter request).
-        # Without this check they could log in and use the app immediately,
-        # which defeats the whole approval workflow in users.py.
+        # Accounts deactivated by an admin or the superuser land here; the
+        # same check runs on every request in core/deps.py.
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="Your account is inactive or pending admin approval.",
+            detail="Your account is inactive. Contact your administrator.",
         )
 
     user.last_login_at = datetime.now(timezone.utc)

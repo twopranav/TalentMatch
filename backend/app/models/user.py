@@ -19,6 +19,12 @@ class UserRole(str, PyEnum):
     RECRUITER = "recruiter"
     USER = "user"
 
+class SubCompany(str, PyEnum):
+    PHOTOVOLTAIC = "Emmvee Photovoltaic Power Limited"
+    SOLAR = "Emmvee Solar Private Limited"
+    TECHNOLOGIES = "Emmvee Technologies Private Limited"
+
+
 class User(Base):
     __tablename__ = "users"
     __table_args__ = (
@@ -65,6 +71,11 @@ class User(Base):
     # --- recruiter-specific ---
     company: Mapped[str | None] = mapped_column(String(255), nullable=True)
     title: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    # Which Emmvee entity this admin/recruiter belongs to (drives access scoping).
+    sub_company: Mapped[SubCompany | None] = mapped_column(
+        SAEnum(SubCompany, name="sub_company", native_enum=False, length=32),
+        nullable=True, index=True,
+    )
 
     # --- candidate-specific (role = USER); mirrors Job's matching fields ---
     skills: Mapped[list[str] | None] = mapped_column(JSONB, nullable=True)

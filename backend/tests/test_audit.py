@@ -1,5 +1,6 @@
-"""GET /api/audit (routes/audit.py): admin/superuser see everything, a
-recruiter sees only their own jobs, everyone else is refused."""
+"""GET /api/audit (routes/audit.py): the superuser sees everything, an admin
+only their sub company, a recruiter only their own jobs, everyone else is
+refused."""
 import uuid
 
 import pytest
@@ -64,9 +65,10 @@ def test_plain_user_gets_403(client, make_user, auth_headers, world):
     assert client.get("/api/audit", headers=auth_headers(world["c1"])).status_code == 403
 
 
-@pytest.mark.parametrize("role", [UserRole.ADMIN, UserRole.SUPERUSER])
-def test_admin_and_superuser_see_the_complete_trail(client, db, make_user, auth_headers, world, role):
-    # Rows about users / resumes only ever exist for admin-level eyes.
+def test_superuser_sees_the_complete_trail(client, db, make_user, auth_headers, world):
+    # Admins are scoped to their sub company (see test_sub_company_scoping.py);
+    # only the superuser sees every row, including users / resumes.
+    role = UserRole.SUPERUSER
     db.add_all([
         AuditLog(action="update", resource_type="user", resource_id=uuid.uuid4(), before={"a": 1}, after={"a": 2}),
         AuditLog(action="create", resource_type="resume", resource_id=uuid.uuid4(), after={"x": 1}),

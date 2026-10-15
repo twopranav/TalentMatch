@@ -1,3 +1,4 @@
+import emmveeLogo from '../assets/emmvee-logo.jpg'
 // frontend/src/pages/Login.jsx
 import { Link } from 'react-router-dom'
 import { useState } from 'react'
@@ -63,6 +64,7 @@ export default function Login() {
           onSubmit={handleSubmit}
           className="animate-slide-down-delay w-full rounded-2xl border border-white/50 border-t-gold-300/80 bg-white/90 p-8 shadow-2xl backdrop-blur-xl dark:border-white/10 dark:border-t-gold-400/50 dark:bg-slate-900/80"
         >
+          <img src={emmveeLogo} alt="Emmvee" className="mx-auto mb-4 h-14 w-auto" />
           <h1 className="mb-6 text-lg font-semibold text-slate-900 dark:text-slate-100">
             Log in
           </h1>

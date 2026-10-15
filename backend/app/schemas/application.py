@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime
 from pydantic import BaseModel, ConfigDict, Field, model_validator
-from app.models.application import ApplicationStatus, ShortlistStage
+from app.models.application import ApplicationStatus, InterviewStage, ShortlistStage
 
 class ApplicationCreate(BaseModel):
     job_id: uuid.UUID
@@ -32,6 +32,17 @@ class ShortlistStageUpdate(BaseModel):
         return self
 
 
+class InterviewUpdate(BaseModel):
+    stage: InterviewStage
+    interview_at: datetime | None = None  # omit to keep the current date
+
+    @model_validator(mode="after")
+    def _tz_required(self):
+        if self.interview_at is not None and self.interview_at.tzinfo is None:
+            raise ValueError("interview_at must include a timezone offset (e.g. 2026-10-20T14:30:00Z)")
+        return self
+
+
 class ApplicationRead(BaseModel):
     id: uuid.UUID
     user_id: uuid.UUID | None  # None = submitted by a recruiter for a candidate with no account
@@ -39,6 +50,7 @@ class ApplicationRead(BaseModel):
     resume_id: uuid.UUID | None
     status: ApplicationStatus
     shortlist_stage: ShortlistStage | None = None
+    interview_stage: InterviewStage | None = None
     interview_at: datetime | None = None
     applied_at: datetime
     updated_at: datetime

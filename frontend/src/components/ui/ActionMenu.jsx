@@ -1,91 +1,62 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 
-const MENU_WIDTH = 208
-const EDGE_GAP = 12
-
-export default function ActionMenu({ label = 'More actions', items = [], align = 'end', trigger = null }) {
+export default function ActionMenu({ label = 'Actions', items = [], trigger, align = 'end' }) {
+  const [open, setOpen] = useState(false)
+  const [position, setPosition] = useState(null)
   const triggerRef = useRef(null)
   const menuRef = useRef(null)
-  const [open, setOpen] = useState(false)
-  const [position, setPosition] = useState({ top: 0, left: 0 })
-  const enabledItems = items.filter((item) => item && !item.hidden)
-
-  const placeMenu = useCallback(() => {
-    const rect = triggerRef.current?.getBoundingClientRect()
-    if (!rect) return
-    const height = menuRef.current?.getBoundingClientRect().height ?? 240
-    const topBelow = rect.bottom + 6
-    const top = topBelow + height > window.innerHeight - EDGE_GAP
-      ? Math.max(EDGE_GAP, rect.top - height - 6)
-      : Math.min(topBelow, window.innerHeight - height - EDGE_GAP)
-    const desiredLeft = align === 'end' ? rect.right - MENU_WIDTH : rect.left
-    const left = Math.max(EDGE_GAP, Math.min(desiredLeft, window.innerWidth - MENU_WIDTH - EDGE_GAP))
-    setPosition({ top, left })
-  }, [align])
 
   useEffect(() => {
     if (!open) return undefined
-    placeMenu()
-    const raf = window.requestAnimationFrame(() => {
-      placeMenu()
-      menuRef.current?.querySelector('button:not(:disabled)')?.focus()
-    })
-    const dismiss = (event) => {
-      if (!triggerRef.current?.contains(event.target) && !menuRef.current?.contains(event.target)) setOpen(false)
+    const closeOutside = (event) => {
+      if (triggerRef.current?.contains(event.target) || menuRef.current?.contains(event.target)) return
+      setOpen(false)
     }
-    const keydown = (event) => {
+    const closeOnEscape = (event) => {
       if (event.key === 'Escape') {
-        event.stopPropagation()
         setOpen(false)
         triggerRef.current?.focus()
-        return
       }
-      if (!['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key) || !menuRef.current) return
-      const controls = [...menuRef.current.querySelectorAll('button:not(:disabled)')]
-      if (!controls.length) return
-      const activeIndex = controls.indexOf(document.activeElement)
-      let nextIndex = activeIndex
-      if (event.key === 'Home') nextIndex = 0
-      else if (event.key === 'End') nextIndex = controls.length - 1
-      else if (event.key === 'ArrowDown') nextIndex = (activeIndex + 1 + controls.length) % controls.length
-      else if (event.key === 'ArrowUp') nextIndex = (activeIndex <= 0 ? controls.length : activeIndex) - 1
-      event.preventDefault()
-      controls[nextIndex]?.focus()
     }
-    window.addEventListener('resize', placeMenu)
-    window.addEventListener('scroll', placeMenu, true)
-    document.addEventListener('pointerdown', dismiss)
-    document.addEventListener('keydown', keydown)
+    const closeOnViewportChange = () => setOpen(false)
+    document.addEventListener('mousedown', closeOutside)
+    document.addEventListener('keydown', closeOnEscape)
+    window.addEventListener('resize', closeOnViewportChange)
+    window.addEventListener('scroll', closeOnViewportChange, true)
     return () => {
-      window.cancelAnimationFrame(raf)
-      window.removeEventListener('resize', placeMenu)
-      window.removeEventListener('scroll', placeMenu, true)
-      document.removeEventListener('pointerdown', dismiss)
-      document.removeEventListener('keydown', keydown)
+      document.removeEventListener('mousedown', closeOutside)
+      document.removeEventListener('keydown', closeOnEscape)
+      window.removeEventListener('resize', closeOnViewportChange)
+      window.removeEventListener('scroll', closeOnViewportChange, true)
     }
-  }, [open, placeMenu])
+  }, [open])
+
+  useLayoutEffect(() => {
+    if (!open) { setPosition(null); return }
+    const button = triggerRef.current?.getBoundingClientRect()
+    const menu = menuRef.current?.getBoundingClientRect()
+    if (!button || !menu) return
+    const openAbove = button.bottom + menu.height + 8 > window.innerHeight && button.top > menu.height + 8
+    const left = align === 'start' ? button.left : button.right - menu.width
+    setPosition({ top: openAbove ? button.top - menu.height - 6 : button.bottom + 6, left: Math.max(8, Math.min(left, window.innerWidth - menu.width - 8)) })
+  }, [open, align, items.length])
+
+  const selectable = items.filter((item) => !item.disabled)
+  const select = (item) => {
+    setOpen(false)
+    item.onSelect?.()
+  }
 
   return <>
-    <button
-      ref={triggerRef}
-      type="button"
-      aria-haspopup="menu"
-      aria-expanded={open}
-      aria-label={label}
-      onClick={() => setOpen((value) => !value)}
-      className={trigger ? 'rounded-lg focus-visible:outline focus-visible:outline-2 focus-visible:outline-gold-500' : 'rounded-lg border border-slate-200 px-2.5 py-1.5 text-sm text-slate-600 hover:bg-slate-50 dark:border-slate-700 dark:text-slate-300 dark:hover:bg-slate-800'}
-    >
-      {trigger ?? '•••'}
+    <button ref={triggerRef} type="button" aria-label={label} aria-haspopup="menu" aria-expanded={open} onClick={() => setOpen((value) => !value)} className="inline-flex items-center justify-center rounded-xl border border-slate-200 bg-[#fbfaf7] px-3 py-2 text-sm font-medium text-slate-700 shadow-sm transition hover:border-indigo-200 hover:bg-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200 dark:hover:bg-slate-800">
+      {trigger ?? <><span>Actions</span><span aria-hidden="true" className="ml-1 text-slate-400">⌄</span></>}
     </button>
-    {open && createPortal(
-      <div ref={menuRef} role="menu" aria-label={label} style={{ position: 'fixed', top: position.top, left: position.left, width: MENU_WIDTH, zIndex: 100 }} className="rounded-xl border border-slate-200 bg-white p-1.5 shadow-xl dark:border-slate-700 dark:bg-slate-900">
-        {enabledItems.map((item) => <button key={item.key ?? item.label} role="menuitem" type="button" disabled={item.disabled} onClick={() => { setOpen(false); triggerRef.current?.focus(); item.onSelect?.() }} className={`flex w-full items-center justify-between gap-3 rounded-lg px-3 py-2 text-left text-sm disabled:opacity-50 ${item.danger ? 'text-red-600 hover:bg-red-50 dark:text-red-400 dark:hover:bg-red-950/50' : 'text-slate-700 hover:bg-slate-100 dark:text-slate-200 dark:hover:bg-slate-800'}`}>
-          <span>{item.label}</span>
-          {item.badge != null && Number(item.badge) > 0 && <span className="rounded-full bg-indigo-100 px-2 py-0.5 text-[10px] font-semibold tabular-nums text-indigo-800 dark:bg-indigo-950 dark:text-indigo-200">{item.badge}</span>}
-        </button>)}
-      </div>,
-      document.body,
-    )}
+    {open && createPortal(<div ref={menuRef} role="menu" aria-label={label} style={{ position: 'fixed', top: position?.top ?? 0, left: position?.left ?? 0, visibility: position ? 'visible' : 'hidden' }} className="z-[100] min-w-48 overflow-hidden rounded-xl border border-slate-200 bg-[#fbfaf7] p-1 shadow-xl shadow-slate-950/10 ring-1 ring-slate-950/5 dark:border-slate-700 dark:bg-slate-900 dark:ring-white/10">
+      {items.map((item, index) => <button key={`${item.label}-${index}`} type="button" role="menuitem" disabled={item.disabled} onClick={() => select(item)} className={`flex w-full items-center justify-between gap-3 rounded-lg px-3 py-2 text-left text-xs font-semibold transition disabled:opacity-50 ${item.danger ? 'text-red-600 hover:bg-red-50 dark:text-red-400 dark:hover:bg-red-950/50' : 'text-slate-700 hover:bg-indigo-50 hover:text-indigo-800 dark:text-slate-200 dark:hover:bg-indigo-950/50 dark:hover:text-indigo-200'}`}>
+        <span>{item.label}</span>{item.badge != null && Number(item.badge) > 0 && <span className="rounded-full bg-amber-400/20 px-1.5 py-0.5 text-[10px] font-bold tabular-nums text-amber-800 dark:text-amber-300">{item.badge}</span>}
+      </button>)}
+      {!selectable.length && <p className="px-3 py-2 text-xs text-slate-400">No actions available</p>}
+    </div>, document.body)}
   </>
 }

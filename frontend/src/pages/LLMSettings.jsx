@@ -3,24 +3,34 @@ import { fetchLLMConfigs, fetchLLMProviders, probeLLMConfig, updateLLMConfig } f
 import { useToast } from '../components/ui/Toast'
 import Spinner from '../components/ui/Spinner'
 import { formatEnumLabel, getErrorMessage } from '../utils/format'
+import PageHeader from '../components/ui/PageHeader'
+import StatusBadge from '../components/ui/StatusBadge'
+import Button from '../components/ui/Button'
 
 const inputClass =
   'w-full rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-indigo-500 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100'
 
 const isUnset = (c) => c.provider === 'unset' || c.model === 'unset'
 
-function TaskRow({ config, providers, onSaved }) {
+function TaskRow({ config, providers, onSaved, bulkTestResult, onProbeComplete, testingAll }) {
   const { showToast } = useToast()
   const [provider, setProvider] = useState(config.provider)
   const [model, setModel] = useState(config.model === 'unset' ? '' : config.model)
   const [saving, setSaving] = useState(false)
   const [probing, setProbing] = useState(false)
-  const [probeResult, setProbeResult] = useState(null)
+  const [probeResult, setProbeResult] = useState(config.last_test_result ?? null)
+  const [lastTestedAt, setLastTestedAt] = useState(config.last_tested_at ?? config.last_probe_at ?? null)
 
   const providerKnown = providers.includes(provider)
   const dirty = provider !== config.provider || model.trim() !== (config.model === 'unset' ? '' : config.model)
   const canSave = dirty && providerKnown && model.trim() !== '' && !saving
-  const canProbe = !dirty && !isUnset(config) && !probing && !saving
+  const canProbe = !dirty && !isUnset(config) && !probing && !saving && !testingAll
+
+  useEffect(() => {
+    if (!bulkTestResult) return
+    setProbeResult(bulkTestResult.result)
+    setLastTestedAt(bulkTestResult.testedAt)
+  }, [bulkTestResult])
 
   const save = async () => {
     setSaving(true)
@@ -28,6 +38,8 @@ function TaskRow({ config, providers, onSaved }) {
       const saved = await updateLLMConfig(config.task, provider, model.trim())
       onSaved(saved)
       setProbeResult(null) // any earlier test was against the old settings
+      setLastTestedAt(null)
+      onProbeComplete(config.task, null, null)
       showToast(`${formatEnumLabel(config.task)} now uses ${saved.provider} / ${saved.model}.`, 'success')
     } catch (err) {
       showToast(getErrorMessage(err, 'Could not save this configuration.'), 'error')
@@ -40,9 +52,17 @@ function TaskRow({ config, providers, onSaved }) {
     setProbing(true)
     setProbeResult(null)
     try {
-      setProbeResult(await probeLLMConfig(config.task))
+      const result = await probeLLMConfig(config.task)
+      const testedAt = new Date().toISOString()
+      setProbeResult(result)
+      setLastTestedAt(testedAt)
+      onProbeComplete(config.task, result, testedAt)
     } catch (err) {
-      setProbeResult({ ok: false, stage: 'request', error: getErrorMessage(err, 'The test request failed.') })
+      const result = { ok: false, stage: 'request', error: getErrorMessage(err, 'The test request failed.') }
+      const testedAt = new Date().toISOString()
+      setProbeResult(result)
+      setLastTestedAt(testedAt)
+      onProbeComplete(config.task, result, testedAt)
     } finally {
       setProbing(false)
     }
@@ -53,11 +73,7 @@ function TaskRow({ config, providers, onSaved }) {
       <div className="mb-3 flex items-center gap-2">
         <span className="font-medium text-slate-900 dark:text-slate-100">{formatEnumLabel(config.task)}</span>
         <span className="font-mono text-xs text-slate-400 dark:text-slate-500">{config.task}</span>
-        {isUnset(config) && (
-          <span className="rounded-full bg-amber-100 px-2 py-0.5 text-xs font-medium text-amber-800 dark:bg-amber-900/40 dark:text-amber-300">
-            Not set
-          </span>
-        )}
+        {isUnset(config) && <StatusBadge status="unset">Not set</StatusBadge>}
       </div>
 
       <div className="flex flex-wrap items-end gap-3">
@@ -112,6 +128,8 @@ function TaskRow({ config, providers, onSaved }) {
         <div className="mt-3"><Spinner size="sm" label="Testing connection" /></div>
       )}
 
+      {lastTestedAt && <p className="mt-3 text-[11px] text-slate-400 dark:text-slate-500">Last tested {new Date(lastTestedAt).toLocaleString()}</p>}
+
       {probeResult && (
         <p
           role="status"
@@ -140,6 +158,9 @@ export default function LLMSettings() {
   const [providers, setProviders] = useState([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
+  const [testingAll, setTestingAll] = useState(false)
+  const [bulkResults, setBulkResults] = useState({})
+  const { showToast } = useToast()
 
   const load = useCallback(() => {
     setLoading(true)
@@ -157,20 +178,38 @@ export default function LLMSettings() {
     load()
   }, [load])
 
-  const handleSaved = (saved) =>
+  const handleSaved = (saved) => {
     setConfigs((current) => current.map((c) => (c.task === saved.task ? saved : c)))
+    setBulkResults((current) => { const next = { ...current }; delete next[saved.task]; return next })
+  }
 
+  const recordProbe = (task, result, testedAt) => setBulkResults((current) => ({ ...current, [task]: result ? { result, testedAt } : undefined }))
   const unsetCount = configs.filter(isUnset).length
+  const testAll = async () => {
+    const eligible = configs.filter((config) => !isUnset(config))
+    if (!eligible.length || testingAll) return
+    setTestingAll(true)
+    let passed = 0
+    let failed = 0
+    for (const config of eligible) {
+      let result
+      try {
+        result = await probeLLMConfig(config.task)
+      } catch (err) {
+        result = { ok: false, stage: 'request', error: getErrorMessage(err, 'The test request failed.') }
+      }
+      const testedAt = new Date().toISOString()
+      recordProbe(config.task, result, testedAt)
+      if (result?.ok) passed += 1
+      else failed += 1
+    }
+    setTestingAll(false)
+    showToast(`Test all complete: ${passed} passed, ${failed} failed${unsetCount ? `, ${unsetCount} unset skipped` : ''}.`, failed ? 'error' : 'success')
+  }
 
   return (
-    <div className="mx-auto max-w-5xl px-6 py-8">
-      <div className="mb-6">
-        <h1 className="text-xl font-semibold text-slate-900 dark:text-slate-100">LLM settings</h1>
-        <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">
-          Choose the provider and model used by each extraction task. Changes apply to the very next extraction —
-          no deploy needed. API keys stay in server environment settings. Every change is recorded in the audit history.
-        </p>
-      </div>
+    <div className="mx-auto max-w-[1440px] px-8 py-8">
+      <PageHeader eyebrow="Administration" title="LLM configuration" description="Choose the provider and model used by each extraction task. Changes apply immediately; API keys remain in server environment settings and every change is audited." action={<Button onClick={testAll} disabled={loading || Boolean(error) || testingAll || configs.every(isUnset)}>{testingAll ? 'Testing models…' : 'Test all models'}</Button>} />
 
       {loading && (
         <div className="flex justify-center py-16">
@@ -203,7 +242,7 @@ export default function LLMSettings() {
       {!loading && !error && configs.length > 0 && (
         <div className="overflow-hidden rounded-lg border border-slate-200 bg-white dark:border-slate-800 dark:bg-slate-900">
           {configs.map((config) => (
-            <TaskRow key={config.task} config={config} providers={providers} onSaved={handleSaved} />
+            <TaskRow key={config.task} config={config} providers={providers} onSaved={handleSaved} bulkTestResult={bulkResults[config.task]} onProbeComplete={recordProbe} testingAll={testingAll} />
           ))}
         </div>
       )}

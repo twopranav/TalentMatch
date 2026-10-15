@@ -1,4 +1,4 @@
-from app.models.user import UserRole
+from app.models.user import SubCompany, UserRole
 
 # ---------------------------------------------------------------------------
 # POST /api/resumes — self-upload
@@ -126,7 +126,9 @@ def test_recruiter_library_only_shows_own_uploads(client, make_user, auth_header
     assert names1 == ["r1-a.pdf", "r1-b.pdf"]
     assert names2 == ["r2-a.pdf"]
 
-def test_superuser_and_admin_see_every_resume(client, make_user, auth_headers, pdf_bytes):
+def test_nobody_browses_anyone_elses_library_not_even_admin_or_superuser(client, make_user, auth_headers, pdf_bytes):
+    """Every resume library is private. An admin's or the superuser's list is
+    only what they uploaded themselves, never the rest of the organisation's."""
     candidate, _ = make_user(role=UserRole.USER)
     r1, _ = make_user(role=UserRole.RECRUITER)
     r2, _ = make_user(role=UserRole.RECRUITER)
@@ -136,8 +138,10 @@ def test_superuser_and_admin_see_every_resume(client, make_user, auth_headers, p
     _bulk_upload(client, auth_headers, r1, pdf_bytes, ["r1-a.pdf"])
     _bulk_upload(client, auth_headers, r2, pdf_bytes, ["r2-a.pdf"])
     for viewer in (superuser, admin):
-        listing = client.get("/api/resumes", headers=auth_headers(viewer)).json()
-        assert len(listing) == 3
+        assert client.get("/api/resumes", headers=auth_headers(viewer)).json() == []
+    _bulk_upload(client, auth_headers, admin, pdf_bytes, ["admin-own.pdf"])
+    names = [r["original_filename"] for r in client.get("/api/resumes", headers=auth_headers(admin)).json()]
+    assert names == ["admin-own.pdf"]
 
 def test_recruiter_can_view_own_upload_but_not_unrelated_resumes(client, make_user, auth_headers, pdf_bytes):
     candidate, _ = make_user(role=UserRole.USER)
@@ -156,14 +160,14 @@ def test_recruiter_can_view_own_upload_but_not_unrelated_resumes(client, make_us
 
 def test_recruiter_can_view_resume_of_applicant_to_their_job(client, make_user, auth_headers, pdf_bytes):
     """The applicants page opens each applicant's resume, so a recruiter must
-    reach candidate resumes attached to applications on jobs they created
-    (and only those)."""
+    reach candidate resumes attached to applications on jobs in their sub
+    company (and only those)."""
     from conftest import TestSessionLocal
     from app.models.resume import Resume, ResumeExtractionStatus
 
     candidate, _ = make_user(role=UserRole.USER)
     owner, _ = make_user(role=UserRole.RECRUITER)
-    other, _ = make_user(role=UserRole.RECRUITER)
+    other, _ = make_user(role=UserRole.RECRUITER, sub_company=SubCompany.PHOTOVOLTAIC)
     job_id = client.post(
         "/api/jobs", json={"title": "Job", "description": "Do the work"}, headers=auth_headers(owner),
     ).json()["id"]
@@ -186,13 +190,14 @@ def test_recruiter_can_view_resume_of_applicant_to_their_job(client, make_user, 
     assert client.get(f"/api/resumes/{resume_id}/file", headers=auth_headers(owner)).status_code == 200
     assert client.get(f"/api/resumes/{resume_id}/file", headers=auth_headers(other)).status_code == 404
 
-def test_superuser_can_view_any_resume(client, make_user, auth_headers, pdf_bytes):
+def test_superuser_cannot_open_a_library_resume_directly(client, make_user, auth_headers, pdf_bytes):
     owner, _ = make_user(role=UserRole.USER)
     superuser, _ = make_user(role=UserRole.SUPERUSER)
     resume_id = client.post(
         "/api/resumes", files={"file": ("resume.pdf", pdf_bytes("r"), "application/pdf")}, headers=auth_headers(owner),
     ).json()["id"]
-    assert client.get(f"/api/resumes/{resume_id}", headers=auth_headers(superuser)).status_code == 200
+    assert client.get(f"/api/resumes/{resume_id}", headers=auth_headers(superuser)).status_code == 404
+    assert client.get(f"/api/resumes/{resume_id}/file", headers=auth_headers(superuser)).status_code == 404
 
 def test_archived_resume_excluded_by_default(client, make_user, auth_headers, pdf_bytes):
     candidate, _ = make_user(role=UserRole.USER)
@@ -275,14 +280,16 @@ def test_uploading_recruiter_can_manage_sourced_resume(client, make_user, auth_h
     resp = client.delete(f"/api/resumes/{resume_id}", headers=auth_headers(recruiter))
     assert resp.status_code == 204
 
-def test_admin_can_manage_any_resume(client, make_user, auth_headers, pdf_bytes):
+def test_admin_cannot_manage_someone_elses_resume(client, make_user, auth_headers, pdf_bytes):
     candidate, _ = make_user(role=UserRole.USER)
     admin, _ = make_user(role=UserRole.ADMIN)
     resume_id = client.post(
         "/api/resumes", files={"file": ("resume.pdf", pdf_bytes("r"), "application/pdf")}, headers=auth_headers(candidate),
     ).json()["id"]
-    resp = client.delete(f"/api/resumes/{resume_id}", headers=auth_headers(admin))
-    assert resp.status_code == 204
+    assert client.delete(f"/api/resumes/{resume_id}", headers=auth_headers(admin)).status_code == 404
+    assert client.patch(f"/api/resumes/{resume_id}/archive", params={"archived": True}, headers=auth_headers(admin)).status_code == 404
+    # still there for its owner
+    assert client.get(f"/api/resumes/{resume_id}", headers=auth_headers(candidate)).status_code == 200
 
 def test_delete_requires_auth(client):
     import uuid

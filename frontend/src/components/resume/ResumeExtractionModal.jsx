@@ -1,22 +1,11 @@
 // frontend/src/components/resume/ResumeExtractionModal.jsx
 import Modal from '../ui/Modal'
 import { formatEnumLabel, formatExperienceMonths } from '../../utils/format'
-
-export const EXTRACTION_STATUS_STYLES = {
-  pending: 'bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-400',
-  processing: 'bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-300',
-  done: 'bg-emerald-100 text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-300',
-  failed: 'bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300',
-}
+import StatusBadge from '../ui/StatusBadge'
 
 export function ExtractionStatusBadge({ status }) {
   if (!status) return null
-  const key = String(status).toLowerCase()
-  return (
-    <span className={`inline-block rounded-full px-2 py-0.5 text-xs font-medium ${EXTRACTION_STATUS_STYLES[key] ?? EXTRACTION_STATUS_STYLES.pending}`}>
-      {formatEnumLabel(key)}
-    </span>
-  )
+  return <StatusBadge status={status}>{formatEnumLabel(status)}</StatusBadge>
 }
 
 function Chips({ items }) {

@@ -1,3 +1,4 @@
+import { canWriteJob } from '../../utils/permissions'
 import { useEffect, useState } from 'react'
 import Modal from '../ui/Modal'
 import ConfirmDialog from '../ui/ConfirmDialog'
@@ -7,21 +8,8 @@ import { updateJob, deleteJob, fetchJob, reextractJobSkills, updateJobSkills } f
 import SkillTagsEditor from './SkillTagsEditor'
 import { formatEnumLabel, formatExperienceMonths, getErrorMessage } from '../../utils/format'
 import { ExtractionStatusBadge } from '../resume/ResumeExtractionModal'
+import StatusBadge from '../ui/StatusBadge'
 
-
-const STATUS_STYLES = {
-  draft: 'bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-300',
-  published: 'bg-emerald-100 text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-300',
-  closed: 'bg-slate-200 text-slate-500 dark:bg-slate-800 dark:text-slate-500',
-}
-
-const APPLICATION_STATUS_STYLES = {
-  applied: 'bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-300',
-  under_review: 'bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-300',
-  shortlisted: 'bg-blue-100 text-blue-800 dark:bg-blue-900/40 dark:text-blue-300',
-  rejected: 'bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300',
-  hired: 'bg-emerald-100 text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-300',
-}
 
 function formatLabel(value) {
   return value ? formatEnumLabel(value) : '—'
@@ -48,7 +36,7 @@ export default function JobDetailsModal({ open, onClose, job, onEdit, onChanged,
 
   const isPrivileged = user?.role === 'admin' || user?.role === 'superuser'
   const isOwner = Boolean(job) && job.created_by_id === user?.id
-  const canManage = isPrivileged || isOwner
+  const canManage = canWriteJob(user, job)
   const isApplicant = user?.role === 'user'
 
   // Follows the backend while extraction runs. Local to this modal so a
@@ -171,6 +159,13 @@ export default function JobDetailsModal({ open, onClose, job, onEdit, onChanged,
                 Edit
               </button>
             </>
+          ) : user && user.role !== 'user' ? (
+            <button
+              onClick={() => window.open(`/jobs/${job.id}/applicants`, '_blank', 'noopener,noreferrer')}
+              className="rounded px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-slate-800"
+            >
+              Applicants
+            </button>
           ) : null
           // Applicants already have Apply/Withdraw on the job row in JobList —
           // this modal is opened from the "Metadata" button and is meant to be
@@ -180,13 +175,9 @@ export default function JobDetailsModal({ open, onClose, job, onEdit, onChanged,
       >
         <div className="space-y-3 text-sm">
           <div className="flex flex-wrap items-center gap-2">
-            <span className={`inline-block rounded-full px-2.5 py-0.5 text-xs font-medium ${STATUS_STYLES[job.status]}`}>
-              {formatEnumLabel(job.status)}
-            </span>
+            <StatusBadge status={job.status}>{formatEnumLabel(job.status)}</StatusBadge>
             {isApplicant && myApplication && (
-              <span className={`inline-block rounded-full px-2.5 py-0.5 text-xs font-medium ${APPLICATION_STATUS_STYLES[myApplication.status]}`}>
-                Your application: {formatEnumLabel(myApplication.status)}
-              </span>
+              <StatusBadge status={myApplication.status}>Your application: {formatEnumLabel(myApplication.status)}</StatusBadge>
             )}
           </div>
 

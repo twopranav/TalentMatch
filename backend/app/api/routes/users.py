@@ -3,8 +3,9 @@ import uuid
 from fastapi import APIRouter, Body, Depends, File, HTTPException, Query, UploadFile, status
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import RedirectResponse, Response
-from sqlalchemy import func
+from sqlalchemy import false, func
 from sqlalchemy.orm import Session
+from app.core.access import same_sub_company
 from app.core.audit import record_audit, snapshot
 from app.core.config import settings
 from app.core.resume_storage import build_blob_name, delete_resume_blob, get_resume_download_url, upload_resume_blob
@@ -15,7 +16,7 @@ from app.models.application import Application
 from app.models.job import Job
 from app.models.resume import Resume
 from app.models.user import User, UserRole
-from app.schemas.user import UserRead, UserPublicRead, UserRoleUpdate, UserActiveUpdate, UserProfileUpdate, ChangePassword, DeleteAccount
+from app.schemas.user import UserRead, UserPublicRead, UserRoleUpdate, UserActiveUpdate, UserProfileUpdate, ChangePassword, DeleteAccount, UserSubCompanyUpdate
 from app.core.security import verify_password, hash_password
 
 logger = logging.getLogger(__name__)
@@ -188,38 +189,31 @@ def list_users(
     limit: int = Query(default=50, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_recruiter_or_admin),
+    current_user: User = Depends(require_admin_or_superuser),
 ):
-    """
-    pending=true filters to accounts with an unreviewed recruiter request
-    (requested_role is not null). Only admins/superusers may use this filter
-    — a recruiter listing users has no legitimate reason to see who else is
-    waiting on approval, so this is checked separately from the normal
-    admin-vs-recruiter schema trim below.
-    """
-    if pending and current_user.role not in (UserRole.ADMIN, UserRole.SUPERUSER):
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Only admins can view pending requests.",
-        )
+    """Admin/superuser only (recruiters have no user directory at all).
 
+    An admin only ever sees users of their own sub company; the superuser
+    sees everyone. pending=true narrows to accounts with an unreviewed
+    recruiter/admin request. Admins can read the pending list but only the
+    superuser can act on it.
+    """
     query = db.query(User)
+    if current_user.role == UserRole.ADMIN:
+        query = query.filter(User.sub_company == current_user.sub_company if current_user.sub_company else false())
     if pending:
         query = query.filter(User.requested_role.isnot(None))
     users = query.order_by(User.created_at.desc()).offset(offset).limit(limit).all()
-
-    if current_user.role in (UserRole.ADMIN, UserRole.SUPERUSER):
-        return [UserRead.model_validate(u) for u in users]
-    return [UserPublicRead.model_validate(u) for u in users]
+    return [_serialize_user(u) for u in users]
 
 @router.get("/{user_id}")
-def get_user(user_id: uuid.UUID, db: Session = Depends(get_db), current_user: User = Depends(require_recruiter_or_admin)):
+def get_user(user_id: uuid.UUID, db: Session = Depends(get_db), current_user: User = Depends(require_admin_or_superuser)):
     user = db.get(User, user_id)
     if user is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
-    if current_user.role in (UserRole.ADMIN, UserRole.SUPERUSER):
-        return UserRead.model_validate(user)
-    return UserPublicRead.model_validate(user)
+    if not same_sub_company(current_user, user):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+    return _serialize_user(user)
 
 def _assert_can_edit_profile(current_user: User, target: User) -> None:
     """Permission rule for PATCH /users/{user_id} (admin/superuser editing
@@ -260,6 +254,8 @@ def update_user(
     target = db.get(User, user_id)
     if target is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+    if not same_sub_company(current_user, target):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
     _assert_can_edit_profile(current_user, target)
 
     before = snapshot(target, "user")
@@ -282,27 +278,23 @@ def update_user_active(
     db: Session = Depends(get_db),
     current_user: User = Depends(require_admin_or_superuser),
 ):
-    """Approve (activate) or deactivate a recruiter/user account.
-    Any admin or the superuser can do this — this is the routine,
-    frequent action, unlike role changes below.
+    """Activate or deactivate an account. An admin may do this for users in
+    their own sub company; the superuser for anyone.
 
-    If the account signed up requesting RECRUITER (requested_role is set)
-    and this call activates it (is_active=True), that request is granted:
-    role becomes RECRUITER and requested_role is cleared. Deactivating, or
-    activating an account with no pending request, never touches role —
-    an unapproved recruiter signup simply stays a USER.
+    This only flips is_active. It never grants a role: pending recruiter/admin
+    requests are decided by the superuser alone, through
+    POST /users/{id}/approve-request.
     """
     target = db.get(User, user_id)
     if target is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+    if not same_sub_company(current_user, target):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
     if target.role == UserRole.SUPERUSER:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Cannot deactivate the superuser account.")
 
     before = snapshot(target, "user")
     target.is_active = payload.is_active
-    if payload.is_active and target.requested_role == UserRole.RECRUITER:
-        target.role = UserRole.RECRUITER
-        target.requested_role = None
 
     record_audit(
         db, actor=current_user, action="update", resource_type="user",
@@ -312,38 +304,68 @@ def update_user_active(
     db.refresh(target)
     return target
 
-@router.post("/{user_id}/approve-recruiter-request", response_model=UserRead)
-def approve_recruiter_request(
+@router.patch("/{user_id}/sub-company", response_model=UserRead)
+def update_sub_company(
     user_id: uuid.UUID,
+    payload: UserSubCompanyUpdate,
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_admin_or_superuser),
+    current_user: User = Depends(require_superuser),
 ):
-    """
-    Grant a pending recruiter signup request. Counterpart to
-    reject_recruiter_request below. Needed because new accounts are active
-    by default, so the "activate" path in update_user_active (which also
-    grants a pending request) is never reachable for them.
+    """Superuser-only: assign or change anyone's sub company, including users
+    who already exist.
 
-    Sets role to RECRUITER, clears requested_role, and makes sure the
-    account is active. Only applies to accounts that are still plain USERs
-    with a pending RECRUITER request, so it can never demote an admin or
-    touch the superuser.
+    Admins and recruiters (and anyone with a pending request for either)
+    always belong to exactly one sub company, so it can be changed but not
+    cleared for them. Jobs keep the sub company they were posted under; they
+    do not move with the person.
     """
     target = db.get(User, user_id)
     if target is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
-    if target.requested_role != UserRole.RECRUITER:
+    if target.role == UserRole.SUPERUSER:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="The superuser does not belong to a sub company.")
+    needs_company = target.role in (UserRole.ADMIN, UserRole.RECRUITER) or target.requested_role is not None
+    if payload.sub_company is None and needs_company:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="This user has no pending recruiter request.",
+            detail="Admins, recruiters and pending requests must have a sub company. Choose a different one instead of clearing it.",
+        )
+    before = snapshot(target, "user")
+    target.sub_company = payload.sub_company
+    record_audit(
+        db, actor=current_user, action="update", resource_type="user",
+        resource_id=target.id, before=before, after=snapshot(target, "user"),
+    )
+    db.commit()
+    db.refresh(target)
+    return _serialize_user(target)
+
+def _approve_pending_request(user_id: uuid.UUID, db: Session, current_user: User) -> User:
+    target = db.get(User, user_id)
+    if target is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+    if target.requested_role not in (UserRole.RECRUITER, UserRole.ADMIN):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="This user has no pending recruiter or admin request.",
+        )
+    if target.sub_company is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="This request has no sub company. Assign one first, then approve.",
         )
     if target.role != UserRole.USER:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Only regular user accounts can be approved as recruiters.",
+            detail="Only regular user accounts can be approved from a request.",
         )
     before = snapshot(target, "user")
-    target.role = UserRole.RECRUITER
+    # Role and sub company are granted together: the sub company on the
+    # account (what they asked for at signup, or what the superuser has since
+    # set through PATCH /sub-company) becomes effective at the same moment as
+    # the role, since access checks only look at sub_company for admins and
+    # recruiters.
+    target.role = target.requested_role
     target.requested_role = None
     target.recruiter_rejected_at = None
     target.is_active = True
@@ -355,21 +377,45 @@ def approve_recruiter_request(
     db.refresh(target)
     return target
 
-@router.post("/{user_id}/reject-recruiter-request", response_model=UserRead)
-def reject_recruiter_request(
+@router.post("/{user_id}/approve-request", response_model=UserRead)
+def approve_request(
     user_id: uuid.UUID,
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_admin_or_superuser),
+    current_user: User = Depends(require_superuser),
+):
+    """Superuser-only: grant a pending signup request. Sets the account's role
+    to the role it asked for (recruiter or admin), keeps the sub company on the
+    account, clears requested_role and makes sure the account is active.
+
+    Only applies to accounts that are still plain USERs, so it can never
+    change an existing admin/recruiter or touch the superuser.
+    """
+    return _approve_pending_request(user_id, db, current_user)
+
+@router.post("/{user_id}/approve-recruiter-request", response_model=UserRead, deprecated=True)
+def approve_recruiter_request(
+    user_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_superuser),
+):
+    """Deprecated alias of POST /users/{id}/approve-request, kept so existing
+    clients keep working. Superuser-only like the new route."""
+    return _approve_pending_request(user_id, db, current_user)
+
+@router.post("/{user_id}/reject-request", response_model=UserRead)
+@router.post("/{user_id}/reject-recruiter-request", response_model=UserRead, deprecated=True)
+def reject_request(
+    user_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_superuser),
 ):
     """
-    Explicitly decline a pending recruiter signup request. This is the
-    counterpart to the auto-promotion in update_user_active above: that one
-    fires on approval, this one fires on denial. Clears requested_role (so
-    it drops out of the pending filter) and stamps recruiter_rejected_at,
-    which is the only way to later tell "never asked" apart from "asked,
-    got turned down" — both otherwise look identical (requested_role=None,
-    role=USER). role and is_active are untouched: rejecting a recruiter
-    request does not deactivate or otherwise punish the underlying account,
+    Superuser-only: decline a pending recruiter/admin signup request. Clears
+    requested_role (so it drops out of the pending filter) and stamps
+    recruiter_rejected_at, which is the only way to later tell "never asked"
+    apart from "asked, got turned down" — both otherwise look identical
+    (requested_role=None, role=USER). role and is_active are untouched:
+    rejecting a request does not deactivate or otherwise punish the account,
     it just closes out the request.
     """
     target = db.get(User, user_id)
@@ -378,7 +424,7 @@ def reject_recruiter_request(
     if target.requested_role is None:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="This user has no pending recruiter request.",
+            detail="This user has no pending request.",
         )
     before = snapshot(target, "user")
     target.requested_role = None
@@ -411,10 +457,17 @@ def update_admin_status(
     target = db.get(User, user_id)
     if target is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+    if not same_sub_company(current_user, target):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
     if target.role == UserRole.SUPERUSER:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Cannot change the superuser's role here. Use /transfer-superuser.",
+        )
+    if payload.role == UserRole.ADMIN and target.sub_company is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Assign a sub company to this user before promoting them to admin.",
         )
     before = snapshot(target, "user")
     target.role = payload.role
@@ -443,6 +496,8 @@ def transfer_superuser(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="You are already the superuser.")
     target = db.get(User, user_id)
     if target is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+    if not same_sub_company(current_user, target):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
 
     before_current = snapshot(current_user, "user")
@@ -474,6 +529,8 @@ def transfer_superuser(
 def delete_user(user_id: uuid.UUID, db: Session = Depends(get_db), current_user: User = Depends(require_admin_or_superuser)):
     target = db.get(User, user_id)
     if target is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+    if not same_sub_company(current_user, target):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
     if target.role == UserRole.SUPERUSER:
         raise HTTPException(

@@ -22,7 +22,7 @@ from app.core.config import settings
 from app.core.security import create_access_token, hash_password
 from app.db.session import get_db
 from app.main import app
-from app.models.user import User, UserRole
+from app.models.user import SubCompany, User, UserRole
 
 BACKEND_DIR = Path(__file__).resolve().parent.parent
 
@@ -130,12 +130,19 @@ def db():
 def client():
     return TestClient(app)
 
+_DEFAULT = object()
+DEFAULT_SUB_COMPANY = SubCompany.SOLAR
+
+
 @pytest.fixture()
 def make_user(db):
     """
     make_user(role=UserRole.RECRUITER) -> (User, raw_password)
     make_user(requested_role=UserRole.RECRUITER) -> a plain USER with a
     pending recruiter request, for testing the approval/rejection flow.
+    make_user(role=UserRole.ADMIN, sub_company=SubCompany.PHOTOVOLTAIC) -> an
+    admin in a specific sub company (default for everyone but the
+    superuser: SubCompany.SOLAR).
     is_active defaults to True for every role, matching the real app's
     current default (self-registration is active immediately — see
     models/user.py's default and test_register_is_active_immediately) —
@@ -146,9 +153,16 @@ def make_user(db):
         email: str | None = None,
         requested_role: UserRole | None = None,
         is_active: bool | None = None,
+        sub_company=_DEFAULT,
     ):
         if is_active is None:
             is_active = True
+        # Everyone except the superuser defaults to the same sub company, so
+        # tests that don't care about sub companies behave as if there were a
+        # single company. Pass sub_company=SubCompany.X to separate people, or
+        # sub_company=None for "no sub company assigned".
+        if sub_company is _DEFAULT:
+            sub_company = None if role == UserRole.SUPERUSER else DEFAULT_SUB_COMPANY
         email = email or f"{role.value}-{uuid.uuid4().hex[:8]}@test.com"
         password = "testpass123"
         user = User(
@@ -157,6 +171,7 @@ def make_user(db):
             role=role,
             requested_role=requested_role,
             is_active=is_active,
+            sub_company=sub_company,
         )
         db.add(user)
         db.commit()

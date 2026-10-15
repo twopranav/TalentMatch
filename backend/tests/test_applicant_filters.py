@@ -4,7 +4,7 @@ test_applications.py; tests/ is on sys.path, so a plain import works."""
 from conftest import TestSessionLocal
 
 from app.models.resume import Resume
-from app.models.user import UserRole
+from app.models.user import SubCompany, UserRole
 from test_applications import _bulk_upload_library, _published_job
 
 
@@ -136,6 +136,6 @@ def test_applicants_filter_by_any_resume_skill(client, make_user, auth_headers, 
 
 def test_applicant_filters_respect_job_ownership(client, make_user, auth_headers, pdf_bytes):
     job_id, _ = _library_with_filter_data(client, make_user, auth_headers, pdf_bytes)
-    other, _ = make_user(role=UserRole.RECRUITER)
+    other, _ = make_user(role=UserRole.RECRUITER, sub_company=SubCompany.PHOTOVOLTAIC)
     resp = client.get(f"/api/applications/job/{job_id}", params={"q": "amy"}, headers=auth_headers(other))
     assert resp.status_code == 403

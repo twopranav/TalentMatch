@@ -4,6 +4,8 @@ import Modal from '../ui/Modal'
 import Spinner from '../ui/Spinner'
 import { createJob, updateJob } from '../../api/jobs'
 import { useToast } from '../ui/Toast'
+import { useAuth } from '../../context/AuthContext'
+import { SUB_COMPANIES } from '../../utils/subCompany'
 
 const EMPLOYMENT_TYPES = ['full_time', 'part_time', 'contract', 'internship']
 const SENIORITY_LEVELS = ['entry', 'mid', 'senior', 'lead', 'executive']
@@ -14,6 +16,7 @@ const EMPTY_FORM = {
   description: '',
   location: '',
   employment_type: 'full_time',
+  sub_company: '',
   department: '',
   seniority: '',
   remote_type: '',
@@ -58,6 +61,7 @@ function toPayload(form) {
 }
 
 export default function JobFormDrawer({ open, onClose, job, onSaved }) {
+  const { user } = useAuth()
   const [form, setForm] = useState(EMPTY_FORM)
   const [submitting, setSubmitting] = useState(false)
   const { showToast } = useToast()
@@ -74,6 +78,7 @@ export default function JobFormDrawer({ open, onClose, job, onSaved }) {
     setSubmitting(true)
     try {
       const payload = toPayload(form)
+      if (isEdit || !payload.sub_company) delete payload.sub_company
       const saved = isEdit ? await updateJob(job.id, payload) : await createJob(payload)
       showToast(isEdit ? 'Job updated.' : 'Job created as draft.', 'success')
       onSaved(saved)
@@ -126,6 +131,16 @@ export default function JobFormDrawer({ open, onClose, job, onSaved }) {
             <input value={form.department} onChange={set('department')} className={INPUT_CLASSES} />
           </div>
         </div>
+
+        {user?.role === 'superuser' && !isEdit && (
+          <div>
+            <label className={LABEL_CLASSES}>Sub company</label>
+            <select value={form.sub_company} onChange={set('sub_company')} className={INPUT_CLASSES} required>
+              <option value="">Select…</option>
+              {SUB_COMPANIES.map((c) => <option key={c} value={c}>{c}</option>)}
+            </select>
+          </div>
+        )}
 
         <div className="grid grid-cols-3 gap-3">
           <div>

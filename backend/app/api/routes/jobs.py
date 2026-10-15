@@ -36,6 +36,7 @@ from app.models.job import (
     RemoteType,
     SeniorityLevel,
 )
+from app.core.access import apply_status_change, can_read_job, can_write_job, job_read_clause
 from app.models.user import User, UserRole
 from app.schemas.job import JobCreate, JobRead, JobSkillsUpdate, JobUpdate
 from app.core.dispatch import dispatch_extraction
@@ -73,6 +74,9 @@ def list_jobs(
     current_user: User = Depends(get_current_user),
 ):
     query = db.query(Job)
+
+    if current_user.role != UserRole.USER:
+        query = query.filter(job_read_clause(current_user))
 
     if current_user.role == UserRole.USER:
         query = query.filter(
@@ -141,10 +145,17 @@ def create_job(
     db: Session = Depends(get_db),
     current_user: User = Depends(require_recruiter_or_admin),
 ):
-    job = Job(
-        **payload.model_dump(),
-        created_by=current_user,
-    )
+    data = payload.model_dump()
+    requested = data.pop("sub_company", None)
+    if current_user.role == UserRole.SUPERUSER:
+        sub_company = requested
+        if sub_company is None:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Choose a sub company for this job.")
+    else:
+        sub_company = current_user.sub_company
+        if sub_company is None:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Your account has no sub company yet. Ask the superuser to assign one.")
+    job = Job(**data, sub_company=sub_company, created_by=current_user)
 
     db.add(job)
     db.flush()
@@ -191,6 +202,12 @@ def _get_visible_job(
             detail="Job not found",
         )
 
+    if current_user.role != UserRole.USER and not can_read_job(current_user, job):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Job not found",
+        )
+
     return job
 
 
@@ -206,18 +223,7 @@ def _get_owned_job(
     """
     job = db.get(Job, job_id)
 
-    is_privileged = current_user.role in (
-        UserRole.ADMIN,
-        UserRole.SUPERUSER,
-    )
-
-    if (
-        job is None
-        or (
-            not is_privileged
-            and job.created_by_id != current_user.id
-        )
-    ):
+    if job is None or not can_write_job(current_user, job):
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Job not found",
@@ -674,12 +680,7 @@ def bulk_update_application_status(
             results.append({"application_id": str(app_id), "success": True, "status": payload.status.value, "changed": False})
             continue
         before = snapshot(application, "application")
-        # Same sub-state rules as PATCH /applications/{id}/status.
-        application.shortlist_stage = (
-            ShortlistStage.SHORTLISTED if payload.status == ApplicationStatus.SHORTLISTED else None
-        )
-        application.interview_at = None
-        application.status = payload.status
+        apply_status_change(application, payload.status)
         record_audit(
             db, actor=current_user, action="update", resource_type="application",
             resource_id=application.id, before=before, after=snapshot(application, "application"),

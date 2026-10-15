@@ -12,6 +12,9 @@ from app.models.job import (
 )
 
 
+from app.models.user import SubCompany
+
+
 class JobCreate(BaseModel):
     title: str
     description: str | None = None
@@ -56,6 +59,9 @@ class JobUpdate(BaseModel):
 
     closes_at: datetime | None = None
 
+    # Only the superuser may choose; everyone else gets their own sub company.
+    sub_company: SubCompany | None = None
+
 
 class JobRead(BaseModel):
     id: uuid.UUID
@@ -85,6 +91,7 @@ class JobRead(BaseModel):
     closes_at: datetime | None
 
     created_by_id: uuid.UUID
+    sub_company: SubCompany | None = None
     created_at: datetime
     updated_at: datetime
 

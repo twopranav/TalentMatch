@@ -6,14 +6,14 @@ import Pagination from '../components/ui/Pagination'
 import Spinner from '../components/ui/Spinner'
 import { EmptyArt } from '../components/ui/Ornaments'
 import { formatEnumLabel, getErrorMessage } from '../utils/format'
+import PageHeader from '../components/ui/PageHeader'
+import StatusBadge from '../components/ui/StatusBadge'
+import Button from '../components/ui/Button'
+import { useToast } from '../components/ui/Toast'
+import { downloadCsv } from '../utils/csv'
 
 const PAGE_SIZE = 25
 
-const ACTION_STYLES = {
-  create: 'bg-emerald-100 text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-300',
-  update: 'bg-blue-100 text-blue-800 dark:bg-blue-900/40 dark:text-blue-300',
-  delete: 'bg-red-100 text-red-800 dark:bg-red-900/40 dark:text-red-300',
-}
 
 const RESOURCE_LABELS = {
   job: 'Job',
@@ -29,8 +29,8 @@ const RESOURCE_LABELS = {
 const RECRUITER_TYPES = ['job', 'application', 'application_note']
 const ADMIN_TYPES = [...RECRUITER_TYPES, 'user', 'resume', 'llm_config']
 
-const FILTER_KEYS = ['resource_type', 'action', 'job_id', 'resource_id', 'actor_id']
-const CHIP_LABELS = { job_id: 'Job', resource_id: 'Record', actor_id: 'Actor' }
+const FILTER_KEYS = ['resource_type', 'action', 'job_id', 'resource_id', 'actor_id', 'date_from', 'date_to']
+const CHIP_LABELS = { job_id: 'Job', resource_id: 'Record', actor_id: 'Actor', date_from: 'From', date_to: 'To' }
 
 const selectClass =
   'rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-sm text-slate-700 focus:outline-none focus:ring-2 focus:ring-indigo-500 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200'
@@ -87,8 +87,8 @@ function ChangeDetail({ entry }) {
 function AuditRow({ entry, expanded, onToggle, onFilter }) {
   const summary =
     entry.action === 'update'
-      ? entry.changed_fields.length
-        ? entry.changed_fields.join(', ')
+      ? (entry.changed_fields ?? []).length
+        ? (entry.changed_fields ?? []).join(', ')
         : 'no field changes'
       : entry.action === 'create'
         ? 'record created'
@@ -111,20 +111,18 @@ function AuditRow({ entry, expanded, onToggle, onFilter }) {
           {new Date(entry.created_at).toLocaleString()}
         </span>
 
-        <span className={`shrink-0 rounded-full px-2 py-0.5 text-xs font-medium capitalize ${ACTION_STYLES[entry.action] ?? ''}`}>
-          {entry.action}
-        </span>
+        <StatusBadge status={entry.action}>{formatEnumLabel(entry.action)}</StatusBadge>
 
         <div className="min-w-0 flex-1">
           <div className="text-sm text-slate-900 dark:text-slate-100">
-            <span className="font-medium">{entry.resource_label || resourceLabel(entry.resource_type)}</span>{' '}
+            {entry.resource_label || resourceLabel(entry.resource_type)}{' '}
             <button
               type="button"
               onClick={() => onFilter({ resource_id: entry.resource_id })}
-              title={`Show history of ${entry.resource_label || entry.resource_id || 'this resource'}`}
+              title={`Show history of ${entry.resource_id}`}
               className="font-mono text-xs text-indigo-600 hover:underline dark:text-indigo-400"
             >
-              {String(entry.resource_id ?? '').slice(0, 8)}
+              {entry.resource_id.slice(0, 8)}
             </button>
           </div>
           <div className="truncate text-xs text-slate-500 dark:text-slate-400">{summary}</div>
@@ -155,8 +153,30 @@ function AuditRow({ entry, expanded, onToggle, onFilter }) {
   )
 }
 
+async function fetchAllAuditRows(filters) {
+  const serverFilters = { ...filters, date_from: '', date_to: '' }
+  const rows = []
+  let offset = 0
+  let total = Infinity
+  const limit = 200
+  while (offset < total) {
+    const page = await fetchAuditPage(serverFilters, limit, offset)
+    rows.push(...page.items)
+    total = page.total
+    if (!page.items.length) break
+    offset += page.items.length
+  }
+  const from = filters.date_from ? new Date(`${filters.date_from}T00:00:00`).getTime() : -Infinity
+  const to = filters.date_to ? new Date(`${filters.date_to}T23:59:59.999`).getTime() : Infinity
+  return rows.filter((entry) => {
+    const time = new Date(entry.created_at).getTime()
+    return time >= from && time <= to
+  })
+}
+
 export default function AuditHistory() {
   const { user } = useAuth()
+  const { showToast } = useToast()
   const isAdmin = user?.role === 'admin' || user?.role === 'superuser'
   const resourceTypes = isAdmin ? ADMIN_TYPES : RECRUITER_TYPES
 
@@ -165,6 +185,8 @@ export default function AuditHistory() {
   const [searchParams, setSearchParams] = useSearchParams()
   const filters = Object.fromEntries(FILTER_KEYS.map((k) => [k, searchParams.get(k) ?? '']))
   const filterSignature = FILTER_KEYS.map((k) => filters[k]).join('|')
+  const [actorDraft, setActorDraft] = useState(filters.actor_id)
+  useEffect(() => setActorDraft(filters.actor_id), [filters.actor_id])
 
   const [page, setPage] = useState(1)
   const [items, setItems] = useState([])
@@ -172,28 +194,32 @@ export default function AuditHistory() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
   const [expandedId, setExpandedId] = useState(null)
+  const [exporting, setExporting] = useState(false)
   const requestId = useRef(0)
 
   const load = useCallback(() => {
     const id = ++requestId.current
     setLoading(true)
     setError(null)
-    fetchAuditPage(filters, PAGE_SIZE, (page - 1) * PAGE_SIZE)
-      .then(({ items: rows, total: count }) => {
-        if (id !== requestId.current) return // a newer request superseded this one
-        setItems(rows)
-        setTotal(count)
-      })
-      .catch((err) => {
-        if (id !== requestId.current) return
-        setItems([])
-        setTotal(0)
-        setError(getErrorMessage(err, 'Could not load the audit history. Please try again.'))
-      })
-      .finally(() => {
-        if (id === requestId.current) setLoading(false)
-      })
-    // filters is derived from filterSignature
+    const hasDateFilter = Boolean(filters.date_from || filters.date_to)
+    const serverFilters = { ...filters, date_from: '', date_to: '' }
+    const request = hasDateFilter
+      ? fetchAllAuditRows(filters).then((rows) => ({ items: rows, total: rows.length, allRowsLoaded: true }))
+      : fetchAuditPage(serverFilters, PAGE_SIZE, (page - 1) * PAGE_SIZE)
+    request.then(({ items: rows, total: count, allRowsLoaded }) => {
+      if (id !== requestId.current) return
+      setItems(rows)
+      setTotal(count)
+      if (allRowsLoaded && page > Math.max(1, Math.ceil(count / PAGE_SIZE))) setPage(Math.max(1, Math.ceil(count / PAGE_SIZE)))
+    }).catch((err) => {
+      if (id !== requestId.current) return
+      setItems([])
+      setTotal(0)
+      setError(getErrorMessage(err, 'Could not load the audit history. Please try again.'))
+    }).finally(() => {
+      if (id === requestId.current) setLoading(false)
+    })
+    // filters are tracked by a stable signature so URL-backed controls drive this effect.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [filterSignature, page])
 
@@ -212,20 +238,39 @@ export default function AuditHistory() {
     setExpandedId(null)
   }
 
+  const exportCsv = async () => {
+    setExporting(true)
+    try {
+      const rows = await fetchAllAuditRows(filters)
+      const count = downloadCsv('talentmatch-audit-history', rows.map((entry) => ({
+        timestamp: entry.created_at,
+        actor_email: entry.actor_email ?? '',
+        actor_id: entry.actor_id ?? '',
+        action: entry.action,
+        resource_type: entry.resource_type,
+        resource_label: entry.resource_label ?? resourceLabel(entry.resource_type),
+        resource_id: entry.resource_id,
+        changed_fields: (entry.changed_fields ?? []).join('; '),
+        before: entry.before ? JSON.stringify(entry.before) : '',
+        after: entry.after ? JSON.stringify(entry.after) : '',
+      })))
+      showToast(count ? `Exported ${rows.length} audit entries.` : 'No audit entries to export.', count ? 'success' : 'info')
+    } catch (err) {
+      showToast(getErrorMessage(err, 'Could not export audit history.'), 'error')
+    } finally {
+      setExporting(false)
+    }
+  }
+
   const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE))
   const activeChips = ['job_id', 'resource_id', 'actor_id'].filter((k) => filters[k])
   const hasFilters = FILTER_KEYS.some((k) => filters[k])
+  const dateRangeActive = Boolean(filters.date_from || filters.date_to)
+  const visibleItems = dateRangeActive ? items.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE) : items
 
   return (
-    <div className="mx-auto max-w-5xl px-6 py-8">
-      <div className="mb-6">
-        <h1 className="text-xl font-semibold text-slate-900 dark:text-slate-100">Audit history</h1>
-        <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">
-          {isAdmin
-            ? 'Every create, update and delete across the platform, newest first.'
-            : 'Changes to your jobs, and to the applications and notes on them, newest first.'}
-        </p>
-      </div>
+    <div className="mx-auto max-w-[1440px] px-8 py-8">
+      <PageHeader eyebrow="Activity & governance" title="Audit history" description={isAdmin ? 'Review changes made across the platform, newest first.' : 'Review changes to your jobs, applications, and notes.'} action={<Button variant="secondary" onClick={exportCsv} disabled={exporting || loading}>{exporting ? 'Exporting…' : 'Export CSV ↓'}</Button>} />
 
       <div className="mb-4 flex flex-wrap items-center gap-3">
         <select
@@ -251,6 +296,18 @@ export default function AuditHistory() {
           <option value="update">Updated</option>
           <option value="delete">Deleted</option>
         </select>
+
+        <label className="flex items-center gap-2 text-xs font-medium text-slate-500 dark:text-slate-400">From
+          <input type="date" aria-label="Audit start date" value={filters.date_from} max={filters.date_to || undefined} onChange={(event) => updateFilters({ date_from: event.target.value })} className={selectClass} />
+        </label>
+        <label className="flex items-center gap-2 text-xs font-medium text-slate-500 dark:text-slate-400">To
+          <input type="date" aria-label="Audit end date" value={filters.date_to} min={filters.date_from || undefined} onChange={(event) => updateFilters({ date_to: event.target.value })} className={selectClass} />
+        </label>
+        <form onSubmit={(event) => { event.preventDefault(); updateFilters({ actor_id: actorDraft.trim() }) }} className="flex items-center gap-2">
+          <label htmlFor="audit-actor-filter" className="sr-only">Filter by actor ID</label>
+          <input id="audit-actor-filter" aria-label="Filter by actor ID" value={actorDraft} onChange={(event) => setActorDraft(event.target.value)} placeholder="Actor UUID" className={`${selectClass} w-52`} />
+          <Button type="submit" variant="secondary" size="sm">Apply actor</Button>
+        </form>
 
         {activeChips.map((key) => (
           <span
@@ -308,13 +365,13 @@ export default function AuditHistory() {
         </div>
       )}
 
-      {items.length > 0 && (
+      {visibleItems.length > 0 && (
         <div
           className={`overflow-hidden rounded-lg border border-slate-200 bg-white transition-opacity dark:border-slate-800 dark:bg-slate-900 ${
             loading ? 'opacity-60' : ''
           }`}
         >
-          {items.map((entry) => (
+          {visibleItems.map((entry) => (
             <AuditRow
               key={entry.id}
               entry={entry}

@@ -6,8 +6,9 @@ export function changePassword(currentPassword, newPassword) { return apiClient.
 export function deleteMyAccount(password) { return apiClient.delete('/v1/users/me', { data: { password } }) }
 export function fetchUsers(pending = false) { return apiClient.get('/users', { params: pending ? { pending: true } : {} }).then((res) => res.data) }
 export function setUserActive(userId, isActive) { return apiClient.patch(`/users/${userId}/active`, { is_active: isActive }).then((res) => res.data) }
-export function approveRecruiterRequest(userId) { return apiClient.post(`/users/${userId}/approve-recruiter-request`).then((res) => res.data) }
-export function rejectRecruiterRequest(userId) { return apiClient.post(`/users/${userId}/reject-recruiter-request`).then((res) => res.data) }
+export function approveRequest(userId) { return apiClient.post(`/users/${userId}/approve-request`).then((res) => res.data) }
+export function rejectRequest(userId) { return apiClient.post(`/users/${userId}/reject-request`).then((res) => res.data) }
+export function setUserSubCompany(userId, subCompany) { return apiClient.patch(`/users/${userId}/sub-company`, { sub_company: subCompany }).then((res) => res.data) }
 export function setUserRole(userId, role) { return apiClient.patch(`/users/${userId}/admin-status`, { role }).then((res) => res.data) }
 export function transferSuperuser(userId) { return apiClient.post(`/users/${userId}/transfer-superuser`).then((res) => res.data) }
 export function deleteUser(userId) { return apiClient.delete(`/users/${userId}`) }

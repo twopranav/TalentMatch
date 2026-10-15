@@ -7,6 +7,7 @@ from fastapi.responses import Response
 from sqlalchemy.orm import Session, joinedload
 from app.core.audit import record_audit, snapshot
 from app.core.config import settings
+from app.core.access import applicant_resume_job_clause
 from app.core.deps import get_current_user, rate_limit_user, require_recruiter_or_admin
 from app.core.upload_safety import check_magic, content_disposition, read_capped
 from app.core.resume_storage import build_blob_name, delete_resume_blob, download_resume_blob, get_resume_download_url, upload_resume_blob
@@ -312,29 +313,32 @@ async def upload_resumes_bulk(
     return results
 
 
-def _applied_to_recruiters_job(resume_id: uuid.UUID, db: Session, recruiter_id: uuid.UUID) -> bool:
-    """True if this resume is attached to an application on a job the
-    recruiter created. Lets a recruiter open the resumes of their own
-    applicants (candidate self-uploads included) without being able to
-    browse the rest of the library."""
+def _attached_to_readable_job(resume_id: uuid.UUID, db: Session, user: User) -> bool:
+    """True if this resume is attached to an application on a job whose
+    applicants' resumes the user may open: any job in their sub company for an
+    admin, only jobs they posted for a recruiter, any job for the superuser.
+    Lets staff open the resume of an applicant they are reviewing -- candidate
+    self-uploads included -- without being able to browse anyone's resume
+    library."""
     return (
         db.query(Application.id)
         .join(Job, Job.id == Application.job_id)
-        .filter(Application.resume_id == resume_id, Job.created_by_id == recruiter_id)
+        .filter(Application.resume_id == resume_id, applicant_resume_job_clause(user))
         .first()
         is not None
     )
 
 
 def _get_visible_resume(resume_id: uuid.UUID, db: Session, current_user: User) -> Resume:
+    """Resume libraries are private: a resume is visible to the person it
+    belongs to and the person who uploaded it. The one exception is an
+    applicant's resume, which staff can open through an application on a job
+    whose applicants they may open (see applicant_resume_job_clause)."""
     resume = db.get(Resume, resume_id)
     if resume is not None:
-        if current_user.role in (UserRole.ADMIN, UserRole.SUPERUSER):
+        if resume.owner_id == current_user.id or resume.uploaded_by_id == current_user.id:
             return resume
-        if current_user.role == UserRole.RECRUITER:
-            if resume.uploaded_by_id == current_user.id or _applied_to_recruiters_job(resume.id, db, current_user.id):
-                return resume
-        elif resume.owner_id == current_user.id:
+        if current_user.role != UserRole.USER and _attached_to_readable_job(resume.id, db, current_user):
             return resume
     raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Resume not found")
 
@@ -343,10 +347,10 @@ def _get_manageable_resume(resume_id: uuid.UUID, db: Session, current_user: User
     resume = db.get(Resume, resume_id)
     if resume is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Resume not found")
-    is_admin = current_user.role in (UserRole.ADMIN, UserRole.SUPERUSER)
+    # Nobody manages someone else's library, admins and superuser included.
     is_owner = resume.owner_id == current_user.id
     is_uploader = resume.uploaded_by_id == current_user.id
-    if not (is_admin or is_owner or is_uploader):
+    if not (is_owner or is_uploader):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Resume not found")
     return resume
 
@@ -372,10 +376,11 @@ def list_resumes(
     query = db.query(Resume).options(joinedload(Resume.owner), joinedload(Resume.uploaded_by))
     if current_user.role == UserRole.USER:
         query = query.filter(Resume.owner_id == current_user.id)
-    elif current_user.role == UserRole.RECRUITER:
-        # A recruiter's library is what they uploaded themselves. Admins and
-        # superusers see everything.
-        query = query.filter(Resume.uploaded_by_id == current_user.id)    
+    else:
+        # A staff member's library is what they uploaded themselves. This
+        # holds for admins and the superuser too: nobody else in the
+        # organisation can browse anyone's library.
+        query = query.filter(Resume.uploaded_by_id == current_user.id)
     if not include_archived:
         query = query.filter(Resume.is_archived.is_(False))
     if q and q.strip():

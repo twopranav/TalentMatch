@@ -33,6 +33,7 @@ def _job(db, recruiter, *, skills=("python", "sql"), min_months=24,
          status=JobExtractionStatus.DONE):
     job = Job(
         title="Backend", description="x", created_by_id=recruiter.id,
+        sub_company=recruiter.sub_company,
         skills_result=list(skills) if skills is not None else None,
         skills_extraction_status=status, min_experience_months=min_months,
     )

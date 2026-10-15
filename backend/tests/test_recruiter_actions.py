@@ -11,7 +11,7 @@ from test_applications import _published_job, _upload_resume
 from app.models.application import Application
 from app.models.application_note import ApplicationNote
 from app.models.audit_log import AuditLog
-from app.models.user import UserRole
+from app.models.user import SubCompany, UserRole
 
 
 def _apply(client, auth_headers, recruiter, candidate, pdf_bytes):
@@ -106,7 +106,7 @@ def test_overlong_note_rejected(client, auth_headers, setup):
 
 
 def test_non_owning_recruiter_cannot_read_or_add_notes(client, make_user, auth_headers, setup):
-    other, _ = make_user(role=UserRole.RECRUITER)
+    other, _ = make_user(role=UserRole.RECRUITER, sub_company=SubCompany.PHOTOVOLTAIC)
     url = f"/api/applications/{setup['app_id']}/notes"
     assert client.get(url, headers=auth_headers(other)).status_code == 403
     assert client.post(url, json={"body": "hi"}, headers=auth_headers(other)).status_code == 403

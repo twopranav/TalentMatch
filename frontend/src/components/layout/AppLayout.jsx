@@ -5,7 +5,8 @@ import ThemeToggle from '../ui/ThemeToggle'
 import { fetchUsers } from '../../api/users'
 import { fetchLLMConfigs } from '../../api/llmConfig'
 import ActionMenu from '../ui/ActionMenu'
-import { Crest, DecoBackdrop, Flourish } from '../ui/Ornaments'
+import { DecoBackdrop, Flourish } from '../ui/Ornaments'
+import emmveeLogo from '../../assets/emmvee-logo.jpg'
 
 const navClass = ({ isActive }) => `relative px-3 py-2 text-sm font-medium transition after:absolute after:inset-x-3 after:-bottom-0.5 after:h-0.5 after:rounded-full after:transition-opacity ${isActive ? 'text-indigo-700 after:bg-indigo-600 after:opacity-100 dark:text-indigo-300 dark:after:bg-indigo-400' : 'text-slate-500 after:bg-indigo-500 after:opacity-0 hover:text-slate-900 dark:text-slate-400 dark:hover:text-slate-100'}`
 const ADMIN_ROLES = ['admin', 'superuser']
@@ -63,9 +64,8 @@ export default function AppLayout({ children }) {
     <header className="sticky top-0 z-30 border-b border-slate-200/70 bg-slate-50/90 px-6 py-3 backdrop-blur-md dark:border-slate-800/80 dark:bg-slate-950/90">
       <div className="mx-auto flex max-w-[1440px] items-center justify-between gap-8">
         <div className="flex min-w-0 items-center gap-7">
-          <Link to="/" className="flex shrink-0 items-center gap-2" aria-label="TalentMatch home">
-            <Crest className="h-9 w-9 drop-shadow-sm" />
-            <span className="font-display text-2xl font-semibold tracking-wide text-slate-900 dark:text-slate-100">TalentMatch</span>
+          <Link to="/" className="flex shrink-0 items-center" aria-label="Emmvee home">
+            <img src={emmveeLogo} alt="Emmvee" className="h-10 w-auto rounded-sm bg-white px-1" />
           </Link>
           <nav aria-label="Primary navigation" className="flex items-center gap-1">
             <NavLink to="/" end className={navClass}>Overview</NavLink>
@@ -73,14 +73,11 @@ export default function AppLayout({ children }) {
             {canManage && <NavLink to="/resumes" className={navClass}>Resume library</NavLink>}
             {isAdmin && <NavLink to="/admin/llm" className={navClass}>LLM Config</NavLink>}
             {isAdmin && <ActionMenu label="Admin navigation" align="start" items={[
-              { label: 'Recruiter requests', badge: pendingRequests, onSelect: () => navigate('/users?pending=true') },
+              { label: 'Access requests', badge: pendingRequests, onSelect: () => navigate('/users?pending=true') },
               { label: 'User management', onSelect: () => navigate('/users') },
               { label: 'Audit feed', onSelect: () => navigate('/audit') },
             ]} />}
-            {role === 'recruiter' && <ActionMenu label="Management navigation" align="start" items={[
-              { label: 'User management', onSelect: () => navigate('/users') },
-              { label: 'Audit feed', onSelect: () => navigate('/audit') },
-            ]} />}
+            {role === 'recruiter' && <NavLink to="/audit" className={navClass}>Audit feed</NavLink>}
           </nav>
         </div>
 
@@ -108,6 +105,6 @@ export default function AppLayout({ children }) {
     </div>}
 
     <main className="relative overflow-y-auto"><DecoBackdrop /><div className="relative">{children}</div></main>
-    <footer className="relative mx-auto max-w-[1440px] px-6 pb-10 pt-6 text-center" aria-hidden="true"><Flourish className="mx-auto h-4 w-52 text-gold-500/70 dark:text-gold-400/50" /><p className="font-display mt-2 text-xs font-semibold uppercase tracking-[0.35em] text-slate-400 dark:text-slate-600">TalentMatch</p></footer>
+    <footer className="relative mx-auto max-w-[1440px] px-6 pb-10 pt-6 text-center" aria-hidden="true"><Flourish className="mx-auto h-4 w-52 text-gold-500/70 dark:text-gold-400/50" /><p className="font-display mt-2 text-xs font-semibold uppercase tracking-[0.35em] text-slate-400 dark:text-slate-600">Emmvee</p></footer>
   </div>
 }

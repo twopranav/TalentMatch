@@ -1,7 +1,10 @@
 """Read access to the audit trail (written by app/core/audit.py: record_audit).
 
 Who sees what:
-  * superuser / admin: the complete audit trail, every resource type.
+  * superuser: the complete audit trail, every resource type.
+  * admin: only entries about their own sub company -- its jobs, the
+    applications / notes on those jobs, and its users. Never another sub
+    company's, and never resumes (the resume library is private).
   * recruiter: only entries about their own jobs -- the job itself, and
     applications / application notes on those jobs. Never users, resumes, or
     anything about another recruiter's jobs.
@@ -14,6 +17,7 @@ from fastapi import APIRouter, Depends, Query, Response
 from sqlalchemy import String, and_, cast, func, or_, select
 from sqlalchemy.orm import Session, aliased
 
+from app.core.audit_scope import JOB_SCOPED_TYPES as _JOB_SCOPED_TYPES, admin_scope, job_ref as _job_ref, recruiter_scope
 from app.core.deps import require_recruiter_or_admin
 from app.db.session import get_db
 from app.models.audit_log import AuditLog
@@ -24,49 +28,12 @@ from app.schemas.audit import AuditLogRead
 
 router = APIRouter()
 
-# Audit rows that belong to a job via a job_id inside their JSON snapshot.
-_JOB_SCOPED_TYPES = ("application", "application_note")
-
 # Left out of the *response* (they stay in the database): match_details is a
 # big JSON blob repeated in every application snapshot, which would make a
 # page of history many times larger without telling anyone what changed.
 _HEAVY_KEYS = {"match_details"}
 # Changes on every write, so it would show up as a "change" in every row.
 _NOISY_KEYS = {"updated_at"}
-
-
-def _job_ref(model):
-    """The job id (as text) stored in a row's snapshot. `after` is empty on a
-    delete and `before` is empty on a create, so take whichever exists."""
-    return func.coalesce(model.after["job_id"].astext, model.before["job_id"].astext)
-
-
-def _recruiter_scope(user: User):
-    """SQL condition limiting audit rows to this recruiter's jobs.
-
-    "Their jobs" is the jobs they own now PLUS jobs they once owned: a deleted
-    job is gone from the jobs table, but its audit rows must stay visible, so
-    ownership is also recovered from the audit trail (the job's snapshot
-    carries created_by_id).
-    """
-    live_jobs = select(cast(Job.id, String)).where(Job.created_by_id == user.id)
-    job_audit = aliased(AuditLog)  # separate alias so it isn't confused with the outer query
-    ever_owned_jobs = select(cast(job_audit.resource_id, String)).where(
-        job_audit.resource_type == "job",
-        func.coalesce(
-            job_audit.after["created_by_id"].astext, job_audit.before["created_by_id"].astext
-        ) == str(user.id),
-    )
-
-    def mine(job_id_text):
-        return or_(job_id_text.in_(live_jobs), job_id_text.in_(ever_owned_jobs))
-
-    return or_(
-        # The job's own audit rows: its resource_id IS the job id.
-        and_(AuditLog.resource_type == "job", mine(cast(AuditLog.resource_id, String))),
-        # Applications / notes: the job id is inside the snapshot.
-        and_(AuditLog.resource_type.in_(_JOB_SCOPED_TYPES), mine(_job_ref(AuditLog))),
-    )
 
 
 def _strip_heavy(snapshot: dict[str, Any] | None) -> dict[str, Any] | None:
@@ -109,10 +76,12 @@ def list_audit_logs(
     back in the X-Total-Count header so the client can draw page numbers.
     Filters combine with AND, and always on top of the caller's role scope."""
     filters = []
-    if current_user.role not in (UserRole.ADMIN, UserRole.SUPERUSER):
+    if current_user.role == UserRole.ADMIN:
+        filters.append(admin_scope(current_user))
+    elif current_user.role != UserRole.SUPERUSER:
         # Default-deny shape: anyone who got past the dependency but isn't an
         # admin/superuser is scoped, rather than the reverse.
-        filters.append(_recruiter_scope(current_user))
+        filters.append(recruiter_scope(current_user))
     if resource_type:
         filters.append(AuditLog.resource_type == resource_type)
     if resource_id:

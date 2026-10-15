@@ -9,7 +9,7 @@ from app.models.user import UserRole
 
 @pytest.mark.parametrize("role,expected_status", [
     (UserRole.USER, 403),
-    (UserRole.RECRUITER, 200),
+    (UserRole.RECRUITER, 403),
     (UserRole.ADMIN, 200),
     (UserRole.SUPERUSER, 200),
 ])
@@ -19,11 +19,11 @@ def test_list_users_access(client, make_user, auth_headers, role, expected_statu
     assert resp.status_code == expected_status
 
 
-def test_recruiter_gets_trimmed_schema(client, make_user, auth_headers):
+def test_recruiter_cannot_fetch_a_user(client, make_user, auth_headers):
     recruiter, _ = make_user(role=UserRole.RECRUITER)
-    make_user(role=UserRole.USER)
-    resp = client.get("/api/users", headers=auth_headers(recruiter))
-    assert "created_at" not in resp.json()[0]
+    other, _ = make_user(role=UserRole.USER)
+    resp = client.get(f"/api/users/{other.id}", headers=auth_headers(recruiter))
+    assert resp.status_code == 403
 
 
 def test_admin_gets_full_schema(client, make_user, auth_headers):
@@ -65,9 +65,12 @@ def test_pending_filter_empty_when_nothing_pending(client, make_user, auth_heade
 # PATCH /api/users/{id}/active — approval, and the auto-promotion side effect
 # ---------------------------------------------------------------------------
 
-def test_activating_pending_recruiter_promotes_role(client, make_user, auth_headers):
+def test_activating_never_grants_a_requested_role(client, make_user, auth_headers):
+    """Role grants are the superuser's call alone (POST .../approve-request);
+    flipping is_active, even by an admin of the same sub company, must not
+    smuggle one in."""
     admin, _ = make_user(role=UserRole.ADMIN)
-    pending_user, _ = make_user(requested_role=UserRole.RECRUITER)
+    pending_user, _ = make_user(requested_role=UserRole.RECRUITER, is_active=False)
     resp = client.patch(
         f"/api/users/{pending_user.id}/active",
         json={"is_active": True},
@@ -75,10 +78,9 @@ def test_activating_pending_recruiter_promotes_role(client, make_user, auth_head
     )
     assert resp.status_code == 200
     body = resp.json()
-    assert body["role"] == UserRole.RECRUITER.value
+    assert body["role"] == UserRole.USER.value
     assert body["is_active"] is True
-    assert body["requested_role"] is None
-
+    assert body["requested_role"] == UserRole.RECRUITER.value
 
 def test_activating_plain_user_does_not_change_role(client, make_user, auth_headers):
     admin, _ = make_user(role=UserRole.ADMIN)
@@ -108,13 +110,20 @@ def test_deactivating_does_not_touch_role(client, make_user, auth_headers):
 def test_cannot_change_active_status_of_superuser(client, make_user, auth_headers):
     admin, _ = make_user(role=UserRole.ADMIN)
     superuser, _ = make_user(role=UserRole.SUPERUSER, is_active=True)
+    # An admin can't even see the superuser (they sit outside every sub company)...
     resp = client.patch(
         f"/api/users/{superuser.id}/active",
         json={"is_active": False},
         headers=auth_headers(admin),
     )
+    assert resp.status_code == 404
+    # ...and the superuser can't switch themselves off either.
+    resp = client.patch(
+        f"/api/users/{superuser.id}/active",
+        json={"is_active": False},
+        headers=auth_headers(superuser),
+    )
     assert resp.status_code == 400
-
 
 @pytest.mark.parametrize("role", [UserRole.USER, UserRole.RECRUITER])
 def test_active_patch_forbidden_for_non_admins(client, make_user, auth_headers, role):
@@ -133,7 +142,7 @@ def test_active_patch_forbidden_for_non_admins(client, make_user, auth_headers, 
 # ---------------------------------------------------------------------------
 
 def test_reject_clears_pending_request_without_changing_role(client, make_user, auth_headers, db):
-    admin, _ = make_user(role=UserRole.ADMIN)
+    admin, _ = make_user(role=UserRole.SUPERUSER)
     pending_user, _ = make_user(requested_role=UserRole.RECRUITER)
     resp = client.post(
         f"/api/users/{pending_user.id}/reject-recruiter-request",
@@ -151,7 +160,7 @@ def test_reject_clears_pending_request_without_changing_role(client, make_user, 
 
 
 def test_reject_without_pending_request_is_400(client, make_user, auth_headers):
-    admin, _ = make_user(role=UserRole.ADMIN)
+    admin, _ = make_user(role=UserRole.SUPERUSER)
     plain_user, _ = make_user()  # nothing pending
     resp = client.post(
         f"/api/users/{plain_user.id}/reject-recruiter-request",
@@ -177,7 +186,7 @@ def test_rejected_then_reregistered_recruiter_request_can_still_be_approved(clie
     a mistaken rejection), approval still works. This guards against the
     reject action accidentally leaving stale state that blocks a future
     legitimate request."""
-    admin, _ = make_user(role=UserRole.ADMIN)
+    admin, _ = make_user(role=UserRole.SUPERUSER)
     user, _ = make_user(requested_role=UserRole.RECRUITER)
     client.post(f"/api/users/{user.id}/reject-recruiter-request", headers=auth_headers(admin))
 
@@ -189,11 +198,7 @@ def test_rejected_then_reregistered_recruiter_request_can_still_be_approved(clie
     fresh.requested_role = UserRole.RECRUITER
     db.commit()
 
-    resp = client.patch(
-        f"/api/users/{user.id}/active",
-        json={"is_active": True},
-        headers=auth_headers(admin),
-    )
+    resp = client.post(f"/api/users/{user.id}/approve-request", headers=auth_headers(admin))
     assert resp.status_code == 200
     assert resp.json()["role"] == UserRole.RECRUITER.value
 
@@ -323,7 +328,7 @@ def test_admin_cannot_delete_superuser(client, make_user, auth_headers):
     admin, _ = make_user(role=UserRole.ADMIN)
     superuser, _ = make_user(role=UserRole.SUPERUSER, is_active=True)
     resp = client.delete(f"/api/users/{superuser.id}", headers=auth_headers(admin))
-    assert resp.status_code == 400
+    assert resp.status_code == 404
 
 
 def test_admin_can_delete_other_admin(client, make_user, auth_headers):
@@ -363,9 +368,8 @@ def _audit_rows_for(db, user_id):
     return db.query(AuditLog).filter(AuditLog.resource_id == user_id).all()
 
 
-@pytest.mark.parametrize("role", [UserRole.ADMIN, UserRole.SUPERUSER])
-def test_approve_promotes_to_recruiter_and_clears_request(client, make_user, auth_headers, db, role):
-    actor, _ = make_user(role=role)
+def test_approve_promotes_to_recruiter_and_clears_request(client, make_user, auth_headers, db):
+    actor, _ = make_user(role=UserRole.SUPERUSER)
     pending, _ = make_user(requested_role=UserRole.RECRUITER)
     resp = client.post(
         f"/api/users/{pending.id}/approve-recruiter-request",
@@ -384,7 +388,7 @@ def test_approve_promotes_to_recruiter_and_clears_request(client, make_user, aut
 
 
 def test_approve_reactivates_an_inactive_account(client, make_user, auth_headers, db):
-    admin, _ = make_user(role=UserRole.ADMIN)
+    admin, _ = make_user(role=UserRole.SUPERUSER)
     pending, _ = make_user(requested_role=UserRole.RECRUITER, is_active=False)
     resp = client.post(
         f"/api/users/{pending.id}/approve-recruiter-request",
@@ -397,7 +401,7 @@ def test_approve_reactivates_an_inactive_account(client, make_user, auth_headers
 
 def test_approve_clears_an_earlier_rejection_stamp(client, make_user, auth_headers, db):
     from datetime import datetime, timezone
-    admin, _ = make_user(role=UserRole.ADMIN)
+    admin, _ = make_user(role=UserRole.SUPERUSER)
     pending, _ = make_user(requested_role=UserRole.RECRUITER)
     pending.recruiter_rejected_at = datetime.now(timezone.utc)
     db.commit()
@@ -412,7 +416,7 @@ def test_approve_clears_an_earlier_rejection_stamp(client, make_user, auth_heade
 
 
 def test_approved_user_gains_recruiter_access(client, make_user, auth_headers):
-    admin, _ = make_user(role=UserRole.ADMIN)
+    admin, _ = make_user(role=UserRole.SUPERUSER)
     pending, _ = make_user(requested_role=UserRole.RECRUITER)
     # GET /api/audit is recruiter/admin only; a plain user is refused.
     assert client.get("/api/audit", headers=auth_headers(pending)).status_code == 403
@@ -422,7 +426,7 @@ def test_approved_user_gains_recruiter_access(client, make_user, auth_headers):
 
 
 def test_approve_writes_one_audit_entry_without_the_password_hash(client, make_user, auth_headers, db):
-    admin, _ = make_user(role=UserRole.ADMIN)
+    admin, _ = make_user(role=UserRole.SUPERUSER)
     pending, _ = make_user(requested_role=UserRole.RECRUITER)
     client.post(f"/api/users/{pending.id}/approve-recruiter-request", headers=auth_headers(admin))
 
@@ -439,7 +443,7 @@ def test_approve_writes_one_audit_entry_without_the_password_hash(client, make_u
 
 
 def test_approve_without_pending_request_is_400_and_audits_nothing(client, make_user, auth_headers, db):
-    admin, _ = make_user(role=UserRole.ADMIN)
+    admin, _ = make_user(role=UserRole.SUPERUSER)
     plain_user, _ = make_user()
     resp = client.post(
         f"/api/users/{plain_user.id}/approve-recruiter-request",
@@ -453,9 +457,14 @@ def test_approve_without_pending_request_is_400_and_audits_nothing(client, make_
 def test_approve_never_changes_a_non_user_account(client, make_user, auth_headers, db, role):
     """A pending request on an account that is already a recruiter/admin/
     superuser must be refused, so approval can never demote or alter it."""
-    actor_role = UserRole.ADMIN if role != UserRole.ADMIN else UserRole.SUPERUSER
-    actor, _ = make_user(role=actor_role)
-    target, _ = make_user(role=role, requested_role=UserRole.RECRUITER)
+    actor, _ = make_user(role=UserRole.SUPERUSER)
+    if role == UserRole.SUPERUSER:
+        # there is only ever one superuser, so the actor is also the target
+        actor.requested_role = UserRole.RECRUITER
+        db.commit()
+        target = actor
+    else:
+        target, _ = make_user(role=role, requested_role=UserRole.RECRUITER)
     resp = client.post(
         f"/api/users/{target.id}/approve-recruiter-request",
         headers=auth_headers(actor),
@@ -469,7 +478,7 @@ def test_approve_never_changes_a_non_user_account(client, make_user, auth_header
 
 
 def test_approving_twice_second_call_is_400(client, make_user, auth_headers):
-    admin, _ = make_user(role=UserRole.ADMIN)
+    admin, _ = make_user(role=UserRole.SUPERUSER)
     pending, _ = make_user(requested_role=UserRole.RECRUITER)
     url = f"/api/users/{pending.id}/approve-recruiter-request"
     assert client.post(url, headers=auth_headers(admin)).status_code == 200
@@ -477,7 +486,7 @@ def test_approving_twice_second_call_is_400(client, make_user, auth_headers):
 
 
 def test_cannot_approve_a_request_that_was_already_rejected(client, make_user, auth_headers):
-    admin, _ = make_user(role=UserRole.ADMIN)
+    admin, _ = make_user(role=UserRole.SUPERUSER)
     pending, _ = make_user(requested_role=UserRole.RECRUITER)
     client.post(f"/api/users/{pending.id}/reject-recruiter-request", headers=auth_headers(admin))
     resp = client.post(
@@ -489,7 +498,7 @@ def test_cannot_approve_a_request_that_was_already_rejected(client, make_user, a
 
 def test_approve_unknown_user_is_404(client, make_user, auth_headers):
     import uuid
-    admin, _ = make_user(role=UserRole.ADMIN)
+    admin, _ = make_user(role=UserRole.SUPERUSER)
     resp = client.post(
         f"/api/users/{uuid.uuid4()}/approve-recruiter-request",
         headers=auth_headers(admin),
@@ -498,7 +507,7 @@ def test_approve_unknown_user_is_404(client, make_user, auth_headers):
 
 
 def test_approve_malformed_id_is_422(client, make_user, auth_headers):
-    admin, _ = make_user(role=UserRole.ADMIN)
+    admin, _ = make_user(role=UserRole.SUPERUSER)
     resp = client.post(
         "/api/users/not-a-uuid/approve-recruiter-request",
         headers=auth_headers(admin),
@@ -512,8 +521,8 @@ def test_approve_requires_authentication(client, make_user):
     assert resp.status_code == 401
 
 
-@pytest.mark.parametrize("role", [UserRole.USER, UserRole.RECRUITER])
-def test_approve_forbidden_for_non_admins(client, make_user, auth_headers, db, role):
+@pytest.mark.parametrize("role", [UserRole.USER, UserRole.RECRUITER, UserRole.ADMIN])
+def test_approve_forbidden_for_everyone_but_the_superuser(client, make_user, auth_headers, db, role):
     actor, _ = make_user(role=role)
     pending, _ = make_user(requested_role=UserRole.RECRUITER)
     resp = client.post(
@@ -628,7 +637,8 @@ def test_admin_cannot_edit_admins_or_the_superuser(client, make_user, auth_heade
     actor, _ = make_user(role=UserRole.ADMIN)
     target, _ = make_user(role=target_role)
     resp = client.patch(f"/api/users/{target.id}", json={"full_name": "Hacked"}, headers=auth_headers(actor))
-    assert resp.status_code == 403
+    # another admin in the same company: forbidden; the superuser: not visible at all
+    assert resp.status_code == (403 if target_role == UserRole.ADMIN else 404)
     db.expire_all()
     assert db.get(type(target), target.id).full_name != "Hacked"
 

@@ -26,24 +26,39 @@ def test_register_duplicate_email_rejected(client, make_user):
     resp = client.post("/api/auth/register", json={"email": user.email, "password": "whatever123"})
     assert resp.status_code == 400
 
-def test_register_recruiter_request_stays_user_until_approved(client):
-    """Signing up asking for RECRUITER never grants it directly — role
-    stays USER, the ask is only recorded in requested_role (see auth.py's
-    comment on this: 'Signup never writes role=RECRUITER directly')."""
+@pytest.mark.parametrize("role", ["recruiter", "admin"])
+def test_register_staff_request_stays_user_until_approved(client, role):
+    """Signing up asking for RECRUITER or ADMIN never grants it directly —
+    role stays USER, the ask (and the sub company picked) is only recorded
+    until the superuser approves it."""
     resp = client.post(
         "/api/auth/register",
-        json={"email": "wannabe-recruiter@test.com", "password": "pass1234", "role": "recruiter"},
+        json={
+            "email": f"wannabe-{role}@test.com", "password": "pass1234", "role": role,
+            "sub_company": "Emmvee Solar Private Limited",
+        },
     )
     assert resp.status_code == 201
     body = resp.json()
     assert body["role"] == UserRole.USER.value
-    assert body["requested_role"] == UserRole.RECRUITER.value
+    assert body["requested_role"] == role
+    assert body["sub_company"] == "Emmvee Solar Private Limited"
 
-@pytest.mark.parametrize("role", ["admin", "superuser"])
-def test_register_cannot_request_admin_or_superuser(client, role):
+@pytest.mark.parametrize("role", ["recruiter", "admin"])
+def test_register_staff_request_requires_a_sub_company(client, role):
     resp = client.post(
         "/api/auth/register",
-        json={"email": f"sneaky-{role}@test.com", "password": "pass1234", "role": role},
+        json={"email": f"nocompany-{role}@test.com", "password": "pass1234", "role": role},
+    )
+    assert resp.status_code == 422
+
+def test_register_cannot_request_superuser(client):
+    resp = client.post(
+        "/api/auth/register",
+        json={
+            "email": "sneaky-superuser@test.com", "password": "pass1234", "role": "superuser",
+            "sub_company": "Emmvee Solar Private Limited",
+        },
     )
     assert resp.status_code == 422
 

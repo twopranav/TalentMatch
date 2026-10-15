@@ -16,6 +16,7 @@ from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.session import Base
+from app.models.user import SubCompany
 
 if TYPE_CHECKING:
     from app.models.application import Application
@@ -313,6 +314,13 @@ class Job(Base):
         UUID(as_uuid=True),
         ForeignKey("users.id", ondelete="CASCADE"),
         nullable=False,
+    )
+
+    # Copied from the creating user (superuser picks it explicitly).
+    sub_company: Mapped[SubCompany | None] = mapped_column(
+        SAEnum(SubCompany, name="sub_company", native_enum=False, length=32),
+        nullable=True,
+        index=True,
     )
 
     created_at: Mapped[datetime] = mapped_column(

@@ -1,6 +1,8 @@
 import { Fragment, useCallback, useEffect, useRef, useState } from 'react'
 import Spinner from '../ui/Spinner'
 import { useToast } from '../ui/Toast'
+import { useAuth } from '../../context/AuthContext'
+import { canWriteJob } from '../../utils/permissions'
 import {
   fetchJobApplicationsPage,
   rescoreJobApplications,
@@ -27,6 +29,8 @@ import ApplicantNotesModal from './ApplicantNotesModal'
 import { openResumeFile } from '../../api/resumes'
 import ConfirmDialog from '../ui/ConfirmDialog'
 import Button from '../ui/Button'
+import { downloadCsv } from '../../utils/csv'
+import { downloadInterviewIcs } from '../../utils/calendar'
 
 const DEFAULT_PAGE_SIZE = 10
 
@@ -150,7 +154,7 @@ function ManualScoreCell({ applicant, onSaved }) {
         disabled={saving}
         placeholder="0-100"
         aria-label={`Manual score for ${name}, 0 to 100`}
-        className="w-16 rounded border border-slate-200 bg-white px-2 py-1 text-xs dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100 [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none [-moz-appearance:textfield]"
+        className="no-number-spinner w-16 rounded border border-slate-200 bg-white px-2 py-1 text-xs dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100"
       />
       <button
         type="button"
@@ -188,8 +192,11 @@ function ManualScoreCell({ applicant, onSaved }) {
 // applicants page instead of inside a cramped modal.
 // mode='shortlisted' lists only shortlisted applicants (same pagination and
 // filters) and adds the shortlist stage + interview time controls.
-export default function ApplicantsPanel({ job, active = true, fullPage = false, refreshKey = 0, mode = 'all' }) {
+export default function ApplicantsPanel({ job, active = true, fullPage = false, refreshKey = 0, mode = 'all', onTotalChange }) {
   const { showToast } = useToast()
+  const { user: currentUser } = useAuth()
+  // Mirrors the server: admins open resumes in their sub company, recruiters only on jobs they posted.
+  const canOpenResume = canWriteJob(currentUser, job)
   const isShortlist = mode === 'shortlisted'
   const jobId = job?.id
   const [applicants, setApplicants] = useState([])
@@ -240,15 +247,17 @@ export default function ApplicantsPanel({ job, active = true, fullPage = false, 
   useEffect(() => {
     if (!active || !jobId) {
       setApplicants([])
-      setTotal(0)
       return
     }
     runFetch(true)
   }, [active, jobId, runFetch, refreshKey])
 
+  useEffect(() => { if (active) onTotalChange?.(total) }, [total, onTotalChange, active])
+
   const [openingResumeId, setOpeningResumeId] = useState(null)
   const [expandedId, setExpandedId] = useState(null)
   const [rescoring, setRescoring] = useState(false)
+  const [exportingCsv, setExportingCsv] = useState(false)
   const [notesFor, setNotesFor] = useState(null) // the applicant whose notes popup is open (shortlist tab)
 
   // While any row on this page is still being scored, quietly re-fetch every
@@ -269,6 +278,44 @@ export default function ApplicantsPanel({ job, active = true, fullPage = false, 
     setFilters(next)
     setPage(1)
     setSelectedIds([])
+  }
+
+  const handleExportCsv = async () => {
+    if (!total || exportingCsv) return
+    setExportingCsv(true)
+    try {
+      const params = filtersToParams(filters)
+      if (isShortlist) params.set('status', 'shortlisted')
+      const exportRows = []
+      let offset = 0
+      let exportTotal = total
+      const limit = 200
+      while (offset < exportTotal) {
+        const result = await fetchJobApplicationsPage(jobId, params, limit, offset)
+        exportRows.push(...result.items)
+        exportTotal = result.total
+        if (!result.items.length) break
+        offset += result.items.length
+      }
+      const exported = downloadCsv(`applicants-${job?.title ?? jobId}-${isShortlist ? 'shortlisted' : 'all'}`.replace(/[^a-z0-9_-]+/gi, '-'), exportRows.map((item) => ({
+        applicant_name: item.applicant_name ?? '',
+        applicant_email: item.applicant_email ?? '',
+        job_title: job?.title ?? '',
+        application_status: item.status ?? '',
+        shortlist_stage: item.shortlist_stage ?? '',
+        applied_at: item.applied_at ?? '',
+        interview_at: item.interview_at ?? '',
+        match_score: item.match_score ?? '',
+        manual_score: item.manual_score ?? '',
+        resume_filename: item.resume_filename ?? item.original_filename ?? '',
+      })))
+      if (exported) showToast(`Exported ${exportRows.length} applicant records.`, 'success')
+      else showToast('There are no applicant records to export.', 'info')
+    } catch (err) {
+      showToast(getErrorMessage(err, 'Could not export applicant data.'), 'error')
+    } finally {
+      setExportingCsv(false)
+    }
   }
 
   const handleRescore = async () => {
@@ -371,13 +418,11 @@ export default function ApplicantsPanel({ job, active = true, fullPage = false, 
 
   const handleStageChange = async (application, stage) => {
     if (stage === 'interview_scheduled') {
+      // An interview needs a date and time first; nothing changes until saved.
       setSchedulingId(application.id)
-
       const localValue = isoToLocalInput(application.interview_at)
-
       setScheduleDate(localValue ? localValue.slice(0, 10) : '')
       setScheduleTime(localValue ? localValue.slice(11, 16) : '')
-
       return
     }
     setSchedulingId(null)
@@ -392,19 +437,26 @@ export default function ApplicantsPanel({ job, active = true, fullPage = false, 
     }
   }
 
+  const handleMoveToInterviewing = async (application) => {
+    try {
+      await updateApplicationStatus(application.id, 'interviewing')
+      showToast('Moved to Interviewing.', 'success')
+      runFetch(false)
+    } catch (err) {
+      showToast(getErrorMessage(err, 'Could not move to interviewing.'), 'error')
+    }
+  }
+
   const handleSaveInterview = async (applicationId) => {
     if (!scheduleDate || !scheduleTime) {
       showToast('Select both an interview date and time.', 'error')
       return
     }
-
     const iso = localInputToIso(`${scheduleDate}T${scheduleTime}`)
-
     if (!iso) {
       showToast('Select a valid interview date and time.', 'error')
       return
     }
-
     setSavingSchedule(true)
     try {
       await updateShortlistStage(applicationId, 'interview_scheduled', iso)
@@ -419,7 +471,7 @@ export default function ApplicantsPanel({ job, active = true, fullPage = false, 
     }
   }
 
-  // Shortlist tab has extra columns (manual score, notes) on top of the usual ones.
+  // Shortlist tab has two extra columns (manual score, notes) on top of the usual six.
   const columnCount = isShortlist ? 9 : 7
   const offset = (page - 1) * pageSize
   const shownFrom = total === 0 ? 0 : offset + 1
@@ -432,7 +484,8 @@ export default function ApplicantsPanel({ job, active = true, fullPage = false, 
           {isShortlist ? 'Shortlisted' : 'Applicants'} ({total}){filtersActive ? ' matching filters' : ''} · best AI score first, ties by earliest applied
         </span>
         <span className="flex items-center gap-3">
-          {total > 0 && <button onClick={() => setRescoreConfirmOpen(true)} disabled={rescoring} className="font-semibold text-indigo-700 underline hover:no-underline disabled:opacity-50 dark:text-indigo-300">{rescoring ? 'Queuing…' : 'Re-score all'}</button>}
+          {total > 0 && <button type="button" onClick={handleExportCsv} disabled={exportingCsv} className="rounded-lg border border-slate-200 bg-white px-3 py-1.5 font-semibold text-slate-700 transition hover:border-indigo-200 hover:text-indigo-700 disabled:opacity-50 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300 dark:hover:text-indigo-300">{exportingCsv ? 'Exporting…' : 'Export CSV'}</button>}
+          {total > 0 && <button type="button" onClick={() => setRescoreConfirmOpen(true)} disabled={rescoring} className="font-semibold text-indigo-700 underline hover:no-underline disabled:opacity-50 dark:text-indigo-300">{rescoring ? 'Queuing…' : 'Re-score all'}</button>}
         </span>
       </dt>
 
@@ -504,12 +557,12 @@ export default function ApplicantsPanel({ job, active = true, fullPage = false, 
                         {new Date(a.applied_at).toLocaleDateString()}
                       </td>
                       <td className="px-3 py-2">
-                        {a.resume_id ? (
+                        {a.resume_id && canOpenResume ? (
                           <button onClick={() => handleViewResume(a.id, a.resume_id)} disabled={openingResumeId === a.id} className="font-medium text-slate-700 underline hover:no-underline disabled:opacity-50 dark:text-slate-300">
                             {openingResumeId === a.id ? 'Opening…' : 'View'}
                           </button>
                         ) : (
-                          <span className="text-slate-400 dark:text-slate-500">No resume</span>
+                          <span className="text-slate-400 dark:text-slate-500">{a.resume_id ? 'Restricted' : 'No resume'}</span>
                         )}
                       </td>
                       {!isShortlist && (
@@ -537,6 +590,9 @@ export default function ApplicantsPanel({ job, active = true, fullPage = false, 
                               <option key={s} value={s}>{stageLabel(s)}</option>
                             ))}
                           </select>
+                          <button type="button" onClick={() => handleMoveToInterviewing(a)} className="ml-2 rounded-md border border-indigo-200 bg-white px-2 py-1 font-medium text-indigo-700 hover:bg-indigo-50 dark:border-indigo-800 dark:bg-slate-900 dark:text-indigo-300">
+                            Move to interviewing
+                          </button>
                           {a.shortlist_stage === 'interview_scheduled' && a.interview_at && (
                             <div className="mt-1 text-slate-500 dark:text-slate-400">
                               {formatInterviewTime(a.interview_at)}
@@ -546,6 +602,13 @@ export default function ApplicantsPanel({ job, active = true, fullPage = false, 
                                 className="ml-2 underline hover:no-underline"
                               >
                                 Change
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => downloadInterviewIcs({ title: `TalentMatch interview — ${job?.title ?? 'Job'}`, description: `Interview with ${a.applicant_name ?? a.applicant_email ?? 'candidate'} for ${job?.title ?? 'a job'}.`, start: a.interview_at, location: job?.location ?? '' })}
+                                className="ml-2 inline-flex rounded-md border border-indigo-200 bg-white px-2 py-1 font-medium text-indigo-700 hover:bg-indigo-50 dark:border-indigo-800 dark:bg-slate-900 dark:text-indigo-300 dark:hover:bg-indigo-950"
+                              >
+                                Add to calendar
                               </button>
                             </div>
                           )}
@@ -569,56 +632,15 @@ export default function ApplicantsPanel({ job, active = true, fullPage = false, 
                         <td colSpan={columnCount} className="px-4 py-3">
                           <div className="flex flex-wrap items-end gap-4">
                             <div>
-                              <label
-                                htmlFor={`interview-date-${a.id}`}
-                                className="mb-1.5 block text-xs font-medium text-slate-600 dark:text-slate-300"
-                              >
-                                Interview date
-                              </label>
-
-                              <input
-                                id={`interview-date-${a.id}`}
-                                type="date"
-                                value={scheduleDate}
-                                onChange={(e) => setScheduleDate(e.target.value)}
-                                className="interview-date-input rounded-xl border border-slate-300 bg-[#faf9f6] px-3 py-2 text-sm text-slate-900 shadow-sm outline-none transition focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/20 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100"
-                              />
+                              <label htmlFor={`interview-date-${a.id}`} className="mb-1.5 block text-xs font-medium text-slate-600 dark:text-slate-300">Interview date</label>
+                              <input id={`interview-date-${a.id}`} type="date" value={scheduleDate} onChange={(e) => setScheduleDate(e.target.value)} className="interview-date-input rounded-xl border border-slate-300 bg-[#fbfaf7] px-3 py-2 text-sm text-slate-900 shadow-sm outline-none transition focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/20 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100" />
                             </div>
-
                             <div>
-                              <label
-                                htmlFor={`interview-time-${a.id}`}
-                                className="mb-1.5 block text-xs font-medium text-slate-600 dark:text-slate-300"
-                              >
-                                Interview time
-                              </label>
-
-                              <input
-                                id={`interview-time-${a.id}`}
-                                type="time"
-                                value={scheduleTime}
-                                onChange={(e) => setScheduleTime(e.target.value)}
-                                className="interview-time-input rounded-xl border border-slate-300 bg-[#faf9f6] px-3 py-2 text-sm text-slate-900 shadow-sm outline-none transition focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/20 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100"
-                              />
+                              <label htmlFor={`interview-time-${a.id}`} className="mb-1.5 block text-xs font-medium text-slate-600 dark:text-slate-300">Interview time</label>
+                              <input id={`interview-time-${a.id}`} type="time" value={scheduleTime} onChange={(e) => setScheduleTime(e.target.value)} className="interview-time-input rounded-xl border border-slate-300 bg-[#fbfaf7] px-3 py-2 text-sm text-slate-900 shadow-sm outline-none transition focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/20 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100" />
                             </div>
-
-                            <button
-                              type="button"
-                              onClick={() => handleSaveInterview(a.id)}
-                              disabled={savingSchedule || !scheduleDate || !scheduleTime}
-                              className="rounded-xl bg-indigo-600 px-4 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-indigo-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-amber-400 disabled:cursor-not-allowed disabled:opacity-50"
-                            >
-                              {savingSchedule ? 'Saving…' : 'Save interview'}
-                            </button>
-
-                            <button
-                              type="button"
-                              onClick={() => setSchedulingId(null)}
-                              disabled={savingSchedule}
-                              className="rounded-xl border border-slate-200 px-4 py-2 text-sm font-medium text-slate-600 transition hover:bg-slate-100 dark:border-slate-700 dark:text-slate-300 dark:hover:bg-slate-800"
-                            >
-                              Cancel
-                            </button>
+                            <button type="button" onClick={() => handleSaveInterview(a.id)} disabled={savingSchedule || !scheduleDate || !scheduleTime} className="rounded-xl bg-indigo-600 px-4 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-indigo-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-amber-400 disabled:cursor-not-allowed disabled:opacity-50">{savingSchedule ? 'Saving…' : 'Save interview'}</button>
+                            <button type="button" onClick={() => setSchedulingId(null)} disabled={savingSchedule} className="rounded-xl border border-slate-200 px-4 py-2 text-sm font-medium text-slate-600 transition hover:bg-slate-100 dark:border-slate-700 dark:text-slate-300 dark:hover:bg-slate-800">Cancel</button>
                           </div>
                         </td>
                       </tr>
