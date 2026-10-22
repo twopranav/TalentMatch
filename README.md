@@ -1,4 +1,4 @@
-# TalentMatch — AI-Assisted Recruitment & Resume Screening
+# TalentMatch- AI-Assisted Recruitment & Resume Screening
 
 **An end-to-end recruitment management platform that combines resume intelligence, job management, candidate matching, and hiring workflow automation.**
 
