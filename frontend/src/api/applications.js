@@ -19,3 +19,8 @@ export function bulkUpdateApplicationStatus(jobId, applicationIds, status) {
 }
 export function updateInterview(applicationId, stage, interviewAt = null) { return apiClient.patch(`/applications/${applicationId}/interview`, { stage, interview_at: interviewAt }).then((res) => res.data) }
 export function fetchStageCounts() { return apiClient.get('/applications/stage-counts').then((res) => res.data) }
+// Upload resume files and apply each to this job in one request (POST /applications/job/{id}/bulk-upload).
+export function bulkUploadAndApply(jobId, files) {
+  const form = new FormData(); files.forEach((file) => form.append('files', file))
+  return apiClient.post(`/applications/job/${jobId}/bulk-upload`, form, { headers: { 'Content-Type': 'multipart/form-data' } }).then((res) => res.data)
+}

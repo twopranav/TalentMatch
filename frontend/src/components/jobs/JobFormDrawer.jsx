@@ -1,7 +1,9 @@
-import { formatEnumLabel } from '../../utils/format'
+import { formatEnumLabel, getErrorMessage } from '../../utils/format'
 import { useEffect, useState } from 'react'
 import Modal from '../ui/Modal'
 import Spinner from '../ui/Spinner'
+import Button from '../ui/Button'
+import Field from '../ui/Field'
 import { createJob, updateJob } from '../../api/jobs'
 import { useToast } from '../ui/Toast'
 import { useAuth } from '../../context/AuthContext'
@@ -26,10 +28,6 @@ const EMPTY_FORM = {
   max_experience_years: '',
   education_requirement: '',
 }
-
-const INPUT_CLASSES =
-  'w-full rounded border border-slate-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100 dark:focus:ring-slate-500'
-const LABEL_CLASSES = 'mb-1 block text-sm font-medium text-slate-700 dark:text-slate-300'
 
 function toFormState(job) {
   if (!job) return EMPTY_FORM
@@ -60,12 +58,27 @@ function toPayload(form) {
   return payload
 }
 
+// Catches the obvious range mistakes before a round trip to the server.
+function validate(form) {
+  const errors = {}
+  const num = (value) => (value === '' ? null : Number(value))
+  const [smin, smax, emin, emax] = [num(form.salary_min), num(form.salary_max), num(form.min_experience_years), num(form.max_experience_years)]
+  if (smin != null && smax != null && smin > smax) errors.salary_max = 'Maximum salary must be at least the minimum.'
+  if (emin != null && emax != null && emin > emax) errors.max_experience_years = 'Maximum experience must be at least the minimum.'
+  for (const [key, value] of [['salary_min', smin], ['salary_max', smax], ['min_experience_years', emin], ['max_experience_years', emax]]) {
+    if (value != null && value < 0) errors[key] = 'Cannot be negative.'
+  }
+  return errors
+}
+
 export default function JobFormDrawer({ open, onClose, job, onSaved }) {
   const { user } = useAuth()
   const [form, setForm] = useState(EMPTY_FORM)
   const [submitting, setSubmitting] = useState(false)
   const { showToast } = useToast()
   const isEdit = Boolean(job)
+  const errors = validate(form)
+  const hasErrors = Object.keys(errors).length > 0
 
   useEffect(() => {
     if (open) setForm(toFormState(job))
@@ -75,6 +88,7 @@ export default function JobFormDrawer({ open, onClose, job, onSaved }) {
 
   const handleSubmit = async (e) => {
     e.preventDefault()
+    if (hasErrors || submitting) return
     setSubmitting(true)
     try {
       const payload = toPayload(form)
@@ -84,7 +98,7 @@ export default function JobFormDrawer({ open, onClose, job, onSaved }) {
       onSaved(saved)
       onClose()
     } catch (err) {
-      showToast('Could not save the job. Please check the fields and try again.', 'error')
+      showToast(getErrorMessage(err, 'Could not save the job. Please check the fields and try again.'), 'error')
     } finally {
       setSubmitting(false)
     }
@@ -97,106 +111,54 @@ export default function JobFormDrawer({ open, onClose, job, onSaved }) {
       title={isEdit ? 'Edit job' : 'New job'}
       footer={
         <>
-          <button onClick={onClose} className="rounded px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-slate-800">
-            Cancel
-          </button>
-          <button
-            onClick={handleSubmit}
-            disabled={submitting}
-            className="flex items-center gap-2 rounded bg-slate-800 px-4 py-2 text-sm font-medium text-white hover:bg-slate-900 disabled:opacity-60 dark:bg-slate-700 dark:hover:bg-slate-600"
-          >
+          <Button variant="secondary" onClick={onClose} disabled={submitting}>Cancel</Button>
+          <Button type="submit" form="job-form" disabled={submitting || hasErrors}>
             {submitting ? <Spinner size="sm" label="Saving" /> : isEdit ? 'Save changes' : 'Create draft'}
-          </button>
+          </Button>
         </>
       }
     >
-      <form onSubmit={handleSubmit} className="space-y-4">
-        <div>
-          <label className={LABEL_CLASSES}>Title</label>
-          <input required value={form.title} onChange={set('title')} className={INPUT_CLASSES} />
-        </div>
+      <form id="job-form" onSubmit={handleSubmit} className="space-y-4">
+        <Field label="Title" required value={form.title} onChange={set('title')} placeholder="e.g. Senior Process Engineer" />
+        <Field label="Description" as="textarea" rows={3} value={form.description} onChange={set('description')} hint="A short summary. Upload a full job description file afterwards so candidates can be matched." />
 
-        <div>
-          <label className={LABEL_CLASSES}>Description</label>
-          <textarea value={form.description} onChange={set('description')} rows={3} className={INPUT_CLASSES} />
-        </div>
-
-        <div className="grid grid-cols-2 gap-3">
-          <div>
-            <label className={LABEL_CLASSES}>Location</label>
-            <input value={form.location} onChange={set('location')} className={INPUT_CLASSES} />
-          </div>
-          <div>
-            <label className={LABEL_CLASSES}>Department</label>
-            <input value={form.department} onChange={set('department')} className={INPUT_CLASSES} />
-          </div>
+        <div className="grid grid-cols-2 gap-4">
+          <Field label="Location" value={form.location} onChange={set('location')} />
+          <Field label="Department" value={form.department} onChange={set('department')} />
         </div>
 
         {user?.role === 'superuser' && !isEdit && (
-          <div>
-            <label className={LABEL_CLASSES}>Sub company</label>
-            <select value={form.sub_company} onChange={set('sub_company')} className={INPUT_CLASSES} required>
-              <option value="">Select…</option>
-              {SUB_COMPANIES.map((c) => <option key={c} value={c}>{c}</option>)}
-            </select>
-          </div>
+          <Field label="Sub company" as="select" required value={form.sub_company} onChange={set('sub_company')}>
+            <option value="">Select…</option>
+            {SUB_COMPANIES.map((c) => <option key={c} value={c}>{c}</option>)}
+          </Field>
         )}
 
-        <div className="grid grid-cols-3 gap-3">
-          <div>
-            <label className={LABEL_CLASSES}>Employment type</label>
-            <select value={form.employment_type} onChange={set('employment_type')} className={INPUT_CLASSES}>
-              {EMPLOYMENT_TYPES.map((v) => (
-                <option key={v} value={v}>{formatEnumLabel(v)}</option>
-               ))}
-            </select>
-          </div>
-          <div>
-            <label className={LABEL_CLASSES}>Seniority</label>
-            <select value={form.seniority} onChange={set('seniority')} className={INPUT_CLASSES}>
-              <option value="">—</option>
-              {SENIORITY_LEVELS.map((v) => (
-                <option key={v} value={v}>{formatEnumLabel(v)}</option>
-               ))}
-            </select>
-          </div>
-          <div>
-            <label className={LABEL_CLASSES}>Remote</label>
-            <select value={form.remote_type} onChange={set('remote_type')} className={INPUT_CLASSES}>
-              <option value="">—</option>
-              {REMOTE_TYPES.map((v) => (
-                <option key={v} value={v}>{formatEnumLabel(v)}</option>
-               ))}
-            </select>
-          </div>
+        <div className="grid grid-cols-3 gap-4">
+          <Field label="Employment type" as="select" value={form.employment_type} onChange={set('employment_type')}>
+            {EMPLOYMENT_TYPES.map((v) => <option key={v} value={v}>{formatEnumLabel(v)}</option>)}
+          </Field>
+          <Field label="Seniority" as="select" value={form.seniority} onChange={set('seniority')}>
+            <option value="">—</option>
+            {SENIORITY_LEVELS.map((v) => <option key={v} value={v}>{formatEnumLabel(v)}</option>)}
+          </Field>
+          <Field label="Remote" as="select" value={form.remote_type} onChange={set('remote_type')}>
+            <option value="">—</option>
+            {REMOTE_TYPES.map((v) => <option key={v} value={v}>{formatEnumLabel(v)}</option>)}
+          </Field>
         </div>
 
-        <div className="grid grid-cols-2 gap-3">
-          <div>
-            <label className={LABEL_CLASSES}>Salary min</label>
-            <input type="number" value={form.salary_min} onChange={set('salary_min')} className={INPUT_CLASSES} />
-          </div>
-          <div>
-            <label className={LABEL_CLASSES}>Salary max</label>
-            <input type="number" value={form.salary_max} onChange={set('salary_max')} className={INPUT_CLASSES} />
-          </div>
+        <div className="grid grid-cols-2 gap-4">
+          <Field label="Salary min" type="number" min="0" value={form.salary_min} onChange={set('salary_min')} error={errors.salary_min} />
+          <Field label="Salary max" type="number" min="0" value={form.salary_max} onChange={set('salary_max')} error={errors.salary_max} />
         </div>
 
-        <div className="grid grid-cols-2 gap-3">
-          <div>
-            <label className={LABEL_CLASSES}>Min experience (yrs)</label>
-            <input type="number" value={form.min_experience_years} onChange={set('min_experience_years')} className={INPUT_CLASSES} />
-          </div>
-          <div>
-            <label className={LABEL_CLASSES}>Max experience (yrs)</label>
-            <input type="number" value={form.max_experience_years} onChange={set('max_experience_years')} className={INPUT_CLASSES} />
-          </div>
+        <div className="grid grid-cols-2 gap-4">
+          <Field label="Min experience (yrs)" type="number" min="0" value={form.min_experience_years} onChange={set('min_experience_years')} error={errors.min_experience_years} />
+          <Field label="Max experience (yrs)" type="number" min="0" value={form.max_experience_years} onChange={set('max_experience_years')} error={errors.max_experience_years} />
         </div>
 
-        <div>
-          <label className={LABEL_CLASSES}>Education requirement</label>
-          <input value={form.education_requirement} onChange={set('education_requirement')} className={INPUT_CLASSES} />
-        </div>
+        <Field label="Education requirement" value={form.education_requirement} onChange={set('education_requirement')} />
       </form>
     </Modal>
   )

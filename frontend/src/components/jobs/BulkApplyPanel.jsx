@@ -2,7 +2,8 @@ import { useCallback, useEffect, useState } from 'react'
 import Spinner from '../ui/Spinner'
 import { useToast } from '../ui/Toast'
 import { fetchAllResumes } from '../../api/resumes'
-import { bulkApplyResumes, fetchJobApplications } from '../../api/applications'
+import { bulkApplyResumes, bulkUploadAndApply, fetchJobApplications } from '../../api/applications'
+import FilePicker from '../ui/FilePicker'
 import { getErrorMessage } from '../../utils/format'
 import { ExtractionStatusBadge } from '../resume/ResumeExtractionModal'
 
@@ -24,6 +25,9 @@ export default function BulkApplyPanel({ job, onApplied }) {
   const [selected, setSelected] = useState(() => new Set())
   const [submitting, setSubmitting] = useState(false)
   const [results, setResults] = useState(null)
+  const [files, setFiles] = useState([])
+  const [uploading, setUploading] = useState(false)
+  const [uploadResults, setUploadResults] = useState(null)
 
   const load = useCallback(() => {
     setLoading(true)
@@ -63,6 +67,37 @@ export default function BulkApplyPanel({ job, onApplied }) {
   const toggleAll = () =>
     setSelected(allSelected ? new Set() : new Set(resumes.map((r) => r.id)))
 
+  // Upload new files and make each one an applicant in a single request.
+  // They also land in the Resume Library (unowned), same as a bulk upload.
+  const handleUploadAndApply = async () => {
+    if (files.length === 0) return
+    if (files.length > 200) {
+      showToast('Upload at most 200 files at a time.', 'error')
+      return
+    }
+    setUploading(true)
+    setUploadResults(null)
+    try {
+      const outcome = await bulkUploadAndApply(job.id, files)
+      setUploadResults(outcome)
+      const ok = outcome.filter((r) => r.success).length
+      const failed = outcome.length - ok
+      showToast(
+        failed === 0
+          ? `${ok} resume${ok === 1 ? '' : 's'} uploaded and added as applicants.`
+          : `${ok} added, ${failed} failed.`,
+        failed === 0 ? 'success' : 'error',
+      )
+      setFiles([])
+      load()
+      if (ok > 0 && onApplied) onApplied()
+    } catch (err) {
+      showToast(getErrorMessage(err, 'Could not upload those files.'), 'error')
+    } finally {
+      setUploading(false)
+    }
+  }
+
   const handleApply = async () => {
     if (selected.size === 0) return
     setSubmitting(true)
@@ -101,6 +136,33 @@ export default function BulkApplyPanel({ job, onApplied }) {
 
       {open && (
         <div className="mt-3">
+          <div className="mb-5 rounded border border-slate-100 p-3 dark:border-slate-700">
+            <h3 className="mb-1 text-xs font-semibold text-slate-800 dark:text-slate-200">Upload new resumes</h3>
+            <p className="mb-3 text-xs text-slate-500 dark:text-slate-400">
+              Upload PDF or DOCX files and add each as an applicant in one step. They are also saved to your Resume Library.
+            </p>
+            <div className="flex flex-wrap items-center gap-3">
+              <FilePicker files={files} onChange={setFiles} accept=".pdf,.docx" multiple disabled={uploading} label="Choose resume files" />
+              <button
+                onClick={handleUploadAndApply}
+                disabled={files.length === 0 || uploading}
+                className="flex items-center gap-2 rounded bg-slate-800 px-4 py-2 text-sm font-medium text-white hover:bg-slate-900 disabled:opacity-60 dark:bg-slate-700 dark:hover:bg-slate-600"
+              >
+                {uploading ? <Spinner size="sm" label="Uploading" /> : `Upload & add ${files.length || ''} applicant${files.length === 1 ? '' : 's'}`}
+              </button>
+            </div>
+            {uploadResults && (
+              <ul className="mt-3 space-y-1 text-xs">
+                {uploadResults.map((r, i) => (
+                  <li key={i} className={r.success ? 'text-emerald-700 dark:text-emerald-400' : 'text-red-600 dark:text-red-400'}>
+                    {r.success ? '✓' : '✗'} {r.original_filename}{!r.success && r.error ? ` — ${r.error}` : ''}
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+
+          <h3 className="mb-1 text-xs font-semibold text-slate-800 dark:text-slate-200">Or choose from your library</h3>
           <p className="mb-3 text-xs text-slate-500 dark:text-slate-400">
             Resumes without a candidate account that aren't on this job yet. Each one becomes an applicant and is
             scored against the job's required skills. Resumes still being read are fine; they score once ready.

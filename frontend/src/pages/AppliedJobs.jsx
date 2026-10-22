@@ -9,7 +9,7 @@ import StatusBadge from '../components/ui/StatusBadge'
 import PageHeader from '../components/ui/PageHeader'
 import { useToast } from '../components/ui/Toast'
 import { formatEnumLabel } from '../utils/format'
-import { downloadInterviewIcs } from '../utils/calendar'
+import AddToCalendar from '../components/ui/AddToCalendar'
 
 const STAGES = [
   { key: 'applied', label: 'Applied' },
@@ -118,7 +118,7 @@ export default function AppliedJobs() {
 
   return (
     <div className="mx-auto max-w-[1440px] px-8 py-8">
-      <PageHeader eyebrow="Candidate workspace" title="Applied jobs" description="Track each application from submission through interview and decision." meta={<span className="text-xs text-slate-500 dark:text-slate-400">{applications.length} {applications.length === 1 ? 'application' : 'applications'}</span>} />
+      <PageHeader eyebrow="Candidate" title="Applied jobs" description="Track each application from submission through interview and decision." meta={<span className="text-xs text-slate-500 dark:text-slate-400">{applications.length} {applications.length === 1 ? 'application' : 'applications'}</span>} />
 
       <div className="mb-5 flex flex-wrap gap-2 border-b border-slate-200 pb-3 dark:border-slate-800" role="tablist" aria-label="Filter applications">
         {filters.map(([key, label]) => (
@@ -149,7 +149,7 @@ export default function AppliedJobs() {
               </div>
             </div>
             <StageTimeline application={app} />
-            {interviewAt && <div className="mt-4 flex items-center justify-between gap-3 rounded-xl border border-indigo-100 bg-indigo-50/70 px-3 py-2.5 dark:border-indigo-900/70 dark:bg-indigo-950/40"><div><p className="text-xs font-semibold text-indigo-900 dark:text-indigo-200">Interview scheduled</p><p className="mt-0.5 text-xs text-indigo-800/80 dark:text-indigo-300/80">{new Date(interviewAt).toLocaleString()}</p></div><button type="button" onClick={() => downloadInterviewIcs({ title: `TalentMatch interview — ${app.job_title || 'Job'}`, description: `Interview for ${app.job_title || 'a job application'}.`, start: interviewAt, location: app.location || '' })} className="shrink-0 rounded-lg border border-indigo-200 bg-white px-3 py-2 text-xs font-semibold text-indigo-700 transition hover:bg-indigo-100 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-amber-400 dark:border-indigo-800 dark:bg-slate-900 dark:text-indigo-300 dark:hover:bg-indigo-950">Add to calendar ↓</button></div>}
+            {interviewAt && <div className="mt-4 flex items-center justify-between gap-3 rounded-xl border border-indigo-100 bg-indigo-50/70 px-3 py-2.5 dark:border-indigo-900/70 dark:bg-indigo-950/40"><div><p className="text-xs font-semibold text-indigo-900 dark:text-indigo-200">Interview scheduled</p><p className="mt-0.5 text-xs text-indigo-800/80 dark:text-indigo-300/80">{new Date(interviewAt).toLocaleString()}</p></div><AddToCalendar event={{ title: `Interview — ${app.job_title || 'Job'}`, description: `Interview for ${app.job_title || 'a job application'}.`, start: interviewAt, location: app.location || '' }} /></div>}
           </article>
         })}
       </div>}

@@ -68,7 +68,7 @@ def fake_model(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# Access control — every route is admin/superuser only
+# Access control — reads: admin/superuser; PUT and probe: superuser only
 # ---------------------------------------------------------------------------
 
 _ROUTES = [
@@ -108,6 +108,37 @@ def test_inactive_admin_is_refused(client, make_user, auth_headers):
     assert client.get(BASE, headers=auth_headers(admin)).status_code == 403
 
 
+_WRITE_ROUTES = [
+    ("put", f"{BASE}/resume_skills", {"provider": "groq", "model": "m"}),
+    ("post", f"{BASE}/resume_skills/probe", None),
+]
+
+
+@pytest.mark.parametrize("method,path,body", _WRITE_ROUTES)
+def test_admin_cannot_change_or_probe_the_global_llm_config(client, make_user, auth_headers, db, method, path, body):
+    admin, _ = make_user(role=UserRole.ADMIN)
+    before = _row(db, "resume_skills")
+    snapshot = (before.provider, before.model)
+    resp = client.request(method.upper(), path, json=body, headers=auth_headers(admin))
+    assert resp.status_code == 403
+    db.expire_all()
+    after = _row(db, "resume_skills")
+    assert (after.provider, after.model) == snapshot
+
+
+def test_admin_probe_never_reaches_the_provider(client, make_user, auth_headers, fake_model):
+    model = fake_model()
+    admin, _ = make_user(role=UserRole.ADMIN)
+    client.post(f"{BASE}/resume_skills/probe", headers=auth_headers(admin))
+    assert model.tasks == [] and model.prompts == []
+
+
+def test_admin_put_writes_no_audit_entry(client, make_user, auth_headers, db):
+    admin, _ = make_user(role=UserRole.ADMIN)
+    client.put(f"{BASE}/resume_skills", json={"provider": "groq", "model": "m"}, headers=auth_headers(admin))
+    assert db.query(AuditLog).filter(AuditLog.resource_type == "llm_config").count() == 0
+
+
 # ---------------------------------------------------------------------------
 # GET /api/admin/llm-config and /providers
 # ---------------------------------------------------------------------------
@@ -144,7 +175,7 @@ def test_providers_lists_the_registry_sorted(client, make_user, auth_headers):
 # PUT /api/admin/llm-config/{task}
 # ---------------------------------------------------------------------------
 
-@pytest.mark.parametrize("role", [UserRole.ADMIN, UserRole.SUPERUSER])
+@pytest.mark.parametrize("role", [UserRole.SUPERUSER])
 def test_put_updates_provider_and_model(client, make_user, auth_headers, db, role):
     actor, _ = make_user(role=role)
     resp = client.put(
@@ -159,7 +190,7 @@ def test_put_updates_provider_and_model(client, make_user, auth_headers, db, rol
 
 
 def test_put_only_touches_the_named_task(client, make_user, auth_headers, db):
-    admin, _ = make_user(role=UserRole.ADMIN)
+    admin, _ = make_user(role=UserRole.SUPERUSER)
     other = _row(db, "jd_skills")
     other_before = (other.provider, other.model)
     client.put(
@@ -172,7 +203,7 @@ def test_put_only_touches_the_named_task(client, make_user, auth_headers, db):
 
 
 def test_put_writes_an_audit_entry_with_before_and_after(client, make_user, auth_headers, db):
-    admin, _ = make_user(role=UserRole.ADMIN)
+    admin, _ = make_user(role=UserRole.SUPERUSER)
     _set_config(db, "resume_skills", "openai", "old-model")
     client.put(
         f"{BASE}/resume_skills",
@@ -190,7 +221,7 @@ def test_put_writes_an_audit_entry_with_before_and_after(client, make_user, auth
 
 
 def test_put_unknown_task_is_404_and_writes_nothing(client, make_user, auth_headers, db):
-    admin, _ = make_user(role=UserRole.ADMIN)
+    admin, _ = make_user(role=UserRole.SUPERUSER)
     resp = client.put(
         f"{BASE}/no_such_task",
         json={"provider": "groq", "model": "m"},
@@ -204,7 +235,7 @@ def test_put_unknown_task_is_404_and_writes_nothing(client, make_user, auth_head
 def test_put_rejects_unregistered_provider_and_leaves_row_alone(
     client, make_user, auth_headers, db, provider
 ):
-    admin, _ = make_user(role=UserRole.ADMIN)
+    admin, _ = make_user(role=UserRole.SUPERUSER)
     _set_config(db, "resume_skills", "groq", "keep-me")
     resp = client.put(
         f"{BASE}/resume_skills",
@@ -218,7 +249,7 @@ def test_put_rejects_unregistered_provider_and_leaves_row_alone(
 
 
 def test_put_422_message_lists_available_providers(client, make_user, auth_headers):
-    admin, _ = make_user(role=UserRole.ADMIN)
+    admin, _ = make_user(role=UserRole.SUPERUSER)
     resp = client.put(
         f"{BASE}/resume_skills",
         json={"provider": "nope", "model": "m"},
@@ -229,7 +260,7 @@ def test_put_422_message_lists_available_providers(client, make_user, auth_heade
 
 @pytest.mark.parametrize("body", [{}, {"provider": "groq"}, {"model": "m"}])
 def test_put_requires_both_fields(client, make_user, auth_headers, body):
-    admin, _ = make_user(role=UserRole.ADMIN)
+    admin, _ = make_user(role=UserRole.SUPERUSER)
     resp = client.put(f"{BASE}/resume_skills", json=body, headers=auth_headers(admin))
     assert resp.status_code == 422
 
@@ -240,7 +271,7 @@ def test_put_requires_both_fields(client, make_user, auth_headers, body):
     "Remove this marker once the schema rejects it.",
 )
 def test_put_rejects_blank_model(client, make_user, auth_headers):
-    admin, _ = make_user(role=UserRole.ADMIN)
+    admin, _ = make_user(role=UserRole.SUPERUSER)
     resp = client.put(
         f"{BASE}/resume_skills",
         json={"provider": "groq", "model": "   "},
@@ -255,7 +286,7 @@ def test_put_rejects_blank_model(client, make_user, auth_headers):
 
 def test_probe_success_reports_reply_and_timing(client, make_user, auth_headers, fake_model):
     model = fake_model(content="ok")
-    admin, _ = make_user(role=UserRole.ADMIN)
+    admin, _ = make_user(role=UserRole.SUPERUSER)
     resp = client.post(f"{BASE}/jd_skills/probe", headers=auth_headers(admin))
     assert resp.status_code == 200
     body = resp.json()
@@ -275,7 +306,7 @@ def test_probe_truncates_long_replies_to_80_chars(client, make_user, auth_header
 
 def test_probe_config_error_is_reported_not_raised(client, make_user, auth_headers, fake_model):
     fake_model(error=LLMConfigError("GROQ_API_KEY is not set"))
-    admin, _ = make_user(role=UserRole.ADMIN)
+    admin, _ = make_user(role=UserRole.SUPERUSER)
     resp = client.post(f"{BASE}/resume_skills/probe", headers=auth_headers(admin))
     assert resp.status_code == 200
     assert resp.json() == {"ok": False, "stage": "config", "error": "GROQ_API_KEY is not set"}
@@ -283,7 +314,7 @@ def test_probe_config_error_is_reported_not_raised(client, make_user, auth_heade
 
 def test_probe_provider_failure_is_reported_not_raised(client, make_user, auth_headers, fake_model):
     fake_model(error=RuntimeError("rate limited"))
-    admin, _ = make_user(role=UserRole.ADMIN)
+    admin, _ = make_user(role=UserRole.SUPERUSER)
     resp = client.post(f"{BASE}/resume_skills/probe", headers=auth_headers(admin))
     assert resp.status_code == 200
     assert resp.json() == {
@@ -295,7 +326,7 @@ def test_probe_provider_failure_is_reported_not_raised(client, make_user, auth_h
 
 def test_probe_changes_nothing_and_writes_no_audit(client, make_user, auth_headers, fake_model, db):
     fake_model()
-    admin, _ = make_user(role=UserRole.ADMIN)
+    admin, _ = make_user(role=UserRole.SUPERUSER)
     _set_config(db, "resume_skills", "groq", "stay")
     client.post(f"{BASE}/resume_skills/probe", headers=auth_headers(admin))
     row = _row(db, "resume_skills")

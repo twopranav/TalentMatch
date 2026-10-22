@@ -14,6 +14,8 @@ import ResumeLibrary from './pages/ResumeLibrary'
 import AuditHistory from './pages/AuditHistory'
 import LLMSettings from './pages/LLMSettings'
 import Overview from './pages/Overview'
+import Forbidden from './pages/Forbidden'
+import NotFound from './pages/NotFound'
 
 function LoginRoute() {
   const { isAuthenticated } = useAuth()
@@ -145,7 +147,9 @@ function App() {
           }
         />
 
-        <Route path="*" element={<Navigate to="/" replace />} />
+        <Route path="/403" element={<ProtectedRoute><Forbidden /></ProtectedRoute>} />
+
+        <Route path="*" element={<ProtectedRoute><NotFound /></ProtectedRoute>} />
       </Routes>
     </BrowserRouter>
   )

@@ -334,29 +334,45 @@ def test_rejected_stage_keeps_the_application_status_shortlisted(client, make_us
     assert body["status"] == "shortlisted"
 
 
+def _schedule_interview(client, auth_headers, user, app_id, **extra):
+    """Moves an application into Interviewing, then sets its interview time
+    through the Interviewing endpoint (the shortlist-stage endpoint no longer
+    accepts interview_scheduled)."""
+    moved = client.patch(
+        f"/api/applications/{app_id}/status", json={"status": "interviewing"}, headers=auth_headers(user),
+    )
+    assert moved.status_code == 200
+    return client.patch(
+        f"/api/applications/{app_id}/interview",
+        json={"stage": "scheduled", **extra},
+        headers=auth_headers(user),
+    )
+
+
 def test_interview_scheduled_stores_the_time(client, make_user, auth_headers, pdf_bytes):
     from datetime import datetime, timezone
     recruiter, _, app_id = _make_application(client, make_user, auth_headers, pdf_bytes)
-    resp = _set_stage(
-        client, auth_headers, recruiter, app_id, "interview_scheduled",
-        interview_at="2030-01-15T14:30:00Z",
-    )
+    resp = _schedule_interview(client, auth_headers, recruiter, app_id, interview_at="2030-01-15T14:30:00Z")
     assert resp.status_code == 200
     body = resp.json()
-    assert body["shortlist_stage"] == "interview_scheduled"
+    assert body["interview_stage"] == "scheduled"
     assert datetime.fromisoformat(body["interview_at"]) == datetime(2030, 1, 15, 14, 30, tzinfo=timezone.utc)
 
 
 def test_interview_time_with_a_utc_offset_is_the_same_instant(client, make_user, auth_headers, pdf_bytes):
     from datetime import datetime, timezone
     recruiter, _, app_id = _make_application(client, make_user, auth_headers, pdf_bytes)
-    resp = _set_stage(
-        client, auth_headers, recruiter, app_id, "interview_scheduled",
-        interview_at="2030-01-15T14:30:00+05:30",
-    )
+    resp = _schedule_interview(client, auth_headers, recruiter, app_id, interview_at="2030-01-15T14:30:00+05:30")
     assert resp.status_code == 200
     got = datetime.fromisoformat(resp.json()["interview_at"])
     assert got == datetime(2030, 1, 15, 9, 0, tzinfo=timezone.utc)
+
+
+def test_shortlist_stage_endpoint_points_interview_scheduling_at_interviewing(client, make_user, auth_headers, pdf_bytes):
+    recruiter, _, app_id = _make_application(client, make_user, auth_headers, pdf_bytes)
+    resp = _set_stage(client, auth_headers, recruiter, app_id, "interview_scheduled", interview_at="2030-01-15T14:30:00Z")
+    assert resp.status_code == 400
+    assert "Interviewing" in resp.text
 
 
 def test_interview_scheduled_requires_interview_at(client, make_user, auth_headers, pdf_bytes):

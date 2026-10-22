@@ -14,6 +14,7 @@ import { formatEnumLabel, getErrorMessage } from '../utils/format'
 import { applyToJob, fetchStageCounts, withdrawApplication } from '../api/applications'
 import { useToast } from '../components/ui/Toast'
 import Button from '../components/ui/Button'
+import PageHeader from '../components/ui/PageHeader'
 
 const STATUS_OPTIONS = ['all', 'draft', 'published', 'closed']
 const PAGE_SIZE = 25
@@ -88,10 +89,7 @@ export default function JobDashboard() {
   const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE))
 
   return <div className="mx-auto max-w-[1440px] px-8 py-8">
-    <div className="mb-6 flex items-end justify-between gap-6">
-      <div><p className="mb-2 text-xs font-semibold uppercase tracking-[0.18em] text-indigo-600 dark:text-indigo-300">Opportunity directory</p><h1 className="text-5xl font-semibold text-slate-900 dark:text-slate-100">{isApplicant ? 'Find your next role' : 'Jobs'}</h1><p className="mt-2 text-sm text-slate-500 dark:text-slate-400">Search roles, refine the results, and open any listing for its full details.</p></div>
-      {canManageJobs && <Button onClick={openCreate}>+ New job</Button>}
-    </div>
+    <PageHeader eyebrow="Opportunities" title={isApplicant ? 'Find your next role' : 'Jobs'} description="Search roles, refine the results, and open any listing for its full details." action={canManageJobs ? <Button onClick={openCreate}>+ New job</Button> : null} />
 
     {isApplicant && resumes.length === 0 && <div className="mb-5 flex items-center justify-between gap-4 rounded-xl border border-indigo-200 bg-indigo-50 px-5 py-4 dark:border-indigo-900 dark:bg-indigo-950/60"><div><p className="text-sm font-semibold text-indigo-950 dark:text-indigo-100">Upload your resume to start applying</p><p className="mt-1 text-xs text-indigo-800 dark:text-indigo-200">You can browse jobs now. Add a resume before submitting an application.</p></div><Button size="sm" onClick={() => navigate('/profile')}>Upload resume</Button></div>}
 

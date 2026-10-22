@@ -8,7 +8,7 @@ function toIcsDate(value) {
   return date.toISOString().replace(/[-:]/g, '').replace(/\.\d{3}Z$/, 'Z')
 }
 
-export function downloadInterviewIcs({ title = 'TalentMatch interview', description = '', start, durationMinutes = 60, location = '' }) {
+export function downloadInterviewIcs({ title = 'Interview', description = '', start, durationMinutes = 60, location = '' }) {
   const startDate = new Date(start)
   if (!start || Number.isNaN(startDate.getTime())) return false
   const endDate = new Date(startDate.getTime() + durationMinutes * 60_000)
@@ -31,4 +31,37 @@ export function downloadInterviewIcs({ title = 'TalentMatch interview', descript
   anchor.remove()
   URL.revokeObjectURL(url)
   return true
+}
+
+// Web calendars open straight from a link, so nobody has to find and open a
+// downloaded .ics file. The .ics download stays available as a fallback.
+function eventWindow({ start, durationMinutes = 60 }) {
+  const startDate = new Date(start)
+  return { startDate, endDate: new Date(startDate.getTime() + durationMinutes * 60_000) }
+}
+
+export function googleCalendarUrl({ title = 'Interview', description = '', start, durationMinutes = 60, location = '' }) {
+  const { startDate, endDate } = eventWindow({ start, durationMinutes })
+  const params = new URLSearchParams({
+    action: 'TEMPLATE',
+    text: title,
+    dates: `${toIcsDate(startDate)}/${toIcsDate(endDate)}`,
+    details: description,
+    location,
+  })
+  return `https://calendar.google.com/calendar/render?${params.toString()}`
+}
+
+export function outlookCalendarUrl({ title = 'Interview', description = '', start, durationMinutes = 60, location = '' }) {
+  const { startDate, endDate } = eventWindow({ start, durationMinutes })
+  const params = new URLSearchParams({
+    path: '/calendar/action/compose',
+    rru: 'addevent',
+    subject: title,
+    startdt: startDate.toISOString(),
+    enddt: endDate.toISOString(),
+    body: description,
+    location,
+  })
+  return `https://outlook.office.com/calendar/0/deeplink/compose?${params.toString()}`
 }

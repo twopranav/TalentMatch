@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
+import { useAuth } from '../context/AuthContext'
 import { fetchLLMConfigs, fetchLLMProviders, probeLLMConfig, updateLLMConfig } from '../api/llmConfig'
 import { useToast } from '../components/ui/Toast'
 import Spinner from '../components/ui/Spinner'
@@ -12,7 +13,7 @@ const inputClass =
 
 const isUnset = (c) => c.provider === 'unset' || c.model === 'unset'
 
-function TaskRow({ config, providers, onSaved, bulkTestResult, onProbeComplete, testingAll }) {
+function TaskRow({ config, providers, onSaved, bulkTestResult, onProbeComplete, testingAll, canEdit }) {
   const { showToast } = useToast()
   const [provider, setProvider] = useState(config.provider)
   const [model, setModel] = useState(config.model === 'unset' ? '' : config.model)
@@ -23,8 +24,8 @@ function TaskRow({ config, providers, onSaved, bulkTestResult, onProbeComplete, 
 
   const providerKnown = providers.includes(provider)
   const dirty = provider !== config.provider || model.trim() !== (config.model === 'unset' ? '' : config.model)
-  const canSave = dirty && providerKnown && model.trim() !== '' && !saving
-  const canProbe = !dirty && !isUnset(config) && !probing && !saving && !testingAll
+  const canSave = canEdit && dirty && providerKnown && model.trim() !== '' && !saving
+  const canProbe = canEdit && !dirty && !isUnset(config) && !probing && !saving && !testingAll
 
   useEffect(() => {
     if (!bulkTestResult) return
@@ -82,7 +83,8 @@ function TaskRow({ config, providers, onSaved, bulkTestResult, onProbeComplete, 
           <select
             value={provider}
             onChange={(e) => setProvider(e.target.value)}
-            className={`${inputClass} mt-1`}
+            disabled={!canEdit}
+            className={`${inputClass} mt-1 disabled:cursor-not-allowed disabled:opacity-60`}
           >
             {!providerKnown && <option value={provider} disabled>Select a provider…</option>}
             {providers.map((p) => (
@@ -99,11 +101,12 @@ function TaskRow({ config, providers, onSaved, bulkTestResult, onProbeComplete, 
             onChange={(e) => setModel(e.target.value)}
             placeholder="e.g. gpt-4o-mini"
             spellCheck={false}
-            className={`${inputClass} mt-1 font-mono`}
+            disabled={!canEdit}
+            className={`${inputClass} mt-1 font-mono disabled:cursor-not-allowed disabled:opacity-60`}
           />
         </label>
 
-        <div className="flex items-center gap-2">
+        {canEdit && <div className="flex items-center gap-2">
           <button
             type="button"
             onClick={save}
@@ -121,7 +124,7 @@ function TaskRow({ config, providers, onSaved, bulkTestResult, onProbeComplete, 
           >
             {probing ? 'Testing…' : 'Test'}
           </button>
-        </div>
+        </div>}
       </div>
 
       {probing && (
@@ -154,6 +157,9 @@ function TaskRow({ config, providers, onSaved, bulkTestResult, onProbeComplete, 
 }
 
 export default function LLMSettings() {
+  const { user } = useAuth()
+  // The server only lets the superuser save or test; admins can view the configuration.
+  const canEdit = user?.role === 'superuser'
   const [configs, setConfigs] = useState([])
   const [providers, setProviders] = useState([])
   const [loading, setLoading] = useState(true)
@@ -209,7 +215,9 @@ export default function LLMSettings() {
 
   return (
     <div className="mx-auto max-w-[1440px] px-8 py-8">
-      <PageHeader eyebrow="Administration" title="LLM configuration" description="Choose the provider and model used by each extraction task. Changes apply immediately; API keys remain in server environment settings and every change is audited." action={<Button onClick={testAll} disabled={loading || Boolean(error) || testingAll || configs.every(isUnset)}>{testingAll ? 'Testing models…' : 'Test all models'}</Button>} />
+      <PageHeader eyebrow="Administration" title="LLM configuration" description="Choose the provider and model used by each extraction task. Changes apply immediately; API keys remain in server environment settings and every change is audited." action={canEdit ? <Button onClick={testAll} disabled={loading || Boolean(error) || testingAll || configs.every(isUnset)}>{testingAll ? 'Testing models…' : 'Test all models'}</Button> : null} />
+
+      {!canEdit && <p role="status" className="mb-4 rounded-lg bg-slate-100 px-4 py-3 text-sm text-slate-700 dark:bg-slate-800 dark:text-slate-300">You can view this configuration. Only the superuser can change providers and models or run connection tests.</p>}
 
       {loading && (
         <div className="flex justify-center py-16">
@@ -227,7 +235,7 @@ export default function LLMSettings() {
       {!loading && !error && unsetCount > 0 && (
         <p className="mb-4 rounded-lg bg-amber-50 px-4 py-3 text-sm text-amber-900 dark:bg-amber-950 dark:text-amber-200">
           {unsetCount} {unsetCount === 1 ? 'task has' : 'tasks have'} no model chosen yet. Extraction for
-          {unsetCount === 1 ? ' it' : ' them'} will fail until one is set.
+          {unsetCount === 1 ? ' it' : ' them'} will fail until one is set{canEdit ? '.' : '. Ask the superuser to set it.'}
         </p>
       )}
 
@@ -242,7 +250,7 @@ export default function LLMSettings() {
       {!loading && !error && configs.length > 0 && (
         <div className="overflow-hidden rounded-lg border border-slate-200 bg-white dark:border-slate-800 dark:bg-slate-900">
           {configs.map((config) => (
-            <TaskRow key={config.task} config={config} providers={providers} onSaved={handleSaved} bulkTestResult={bulkResults[config.task]} onProbeComplete={recordProbe} testingAll={testingAll} />
+            <TaskRow key={config.task} config={config} providers={providers} onSaved={handleSaved} bulkTestResult={bulkResults[config.task]} onProbeComplete={recordProbe} testingAll={testingAll} canEdit={canEdit} />
           ))}
         </div>
       )}

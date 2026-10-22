@@ -5,8 +5,9 @@ import ThemeToggle from '../ui/ThemeToggle'
 import { fetchUsers } from '../../api/users'
 import { fetchLLMConfigs } from '../../api/llmConfig'
 import ActionMenu from '../ui/ActionMenu'
-import { DecoBackdrop, Flourish } from '../ui/Ornaments'
-import emmveeLogo from '../../assets/emmvee-logo.jpg'
+import { DecoBackdrop } from '../ui/Ornaments'
+import { TalentMatchFooter } from '../ui/TalentMatchMark'
+import BrandLogo from '../ui/BrandLogo'
 
 const navClass = ({ isActive }) => `relative px-3 py-2 text-sm font-medium transition after:absolute after:inset-x-3 after:-bottom-0.5 after:h-0.5 after:rounded-full after:transition-opacity ${isActive ? 'text-indigo-700 after:bg-indigo-600 after:opacity-100 dark:text-indigo-300 dark:after:bg-indigo-400' : 'text-slate-500 after:bg-indigo-500 after:opacity-0 hover:text-slate-900 dark:text-slate-400 dark:hover:text-slate-100'}`
 const ADMIN_ROLES = ['admin', 'superuser']
@@ -24,6 +25,7 @@ export default function AppLayout({ children }) {
   const canManage = MANAGER_ROLES.includes(role)
   const isAdmin = ADMIN_ROLES.includes(role)
   const isApplicant = role === 'user'
+  const isSuperuser = role === 'superuser'
   const [pendingRequests, setPendingRequests] = useState(0)
   const [unsetModels, setUnsetModels] = useState([])
   const displayName = user?.name || user?.full_name || user?.email?.split('@')[0] || 'Account'
@@ -64,15 +66,15 @@ export default function AppLayout({ children }) {
     <header className="sticky top-0 z-30 border-b border-slate-200/70 bg-slate-50/90 px-6 py-3 backdrop-blur-md dark:border-slate-800/80 dark:bg-slate-950/90">
       <div className="mx-auto flex max-w-[1440px] items-center justify-between gap-8">
         <div className="flex min-w-0 items-center gap-7">
-          <Link to="/" className="flex shrink-0 items-center" aria-label="Emmvee home">
-            <img src={emmveeLogo} alt="Emmvee" className="h-10 w-auto rounded-sm bg-white px-1" />
+          <Link to="/" className="flex shrink-0 items-center" aria-label="TalentMatch home">
+            <BrandLogo className="h-11" />
           </Link>
           <nav aria-label="Primary navigation" className="flex items-center gap-1">
             <NavLink to="/" end className={navClass}>Overview</NavLink>
             <NavLink to="/jobs" className={navClass}>Jobs</NavLink>
             {canManage && <NavLink to="/resumes" className={navClass}>Resume library</NavLink>}
-            {isAdmin && <NavLink to="/admin/llm" className={navClass}>LLM Config</NavLink>}
-            {isAdmin && <ActionMenu label="Admin navigation" align="start" items={[
+            {isAdmin && <NavLink to="/admin/llm" className={navClass}>{isSuperuser ? 'LLM Config' : 'LLM Status'}</NavLink>}
+            {isAdmin && <ActionMenu label="Admin navigation" align="start" trigger={<><span>Admin</span>{pendingRequests > 0 && <span className="ml-1.5 rounded-full bg-amber-400/25 px-1.5 py-0.5 text-[10px] font-bold tabular-nums text-amber-800 dark:text-amber-300">{pendingRequests}</span>}<span aria-hidden="true" className="ml-1 text-slate-400">⌄</span></>} items={[
               { label: 'Access requests', badge: pendingRequests, onSelect: () => navigate('/users?pending=true') },
               { label: 'User management', onSelect: () => navigate('/users') },
               { label: 'Audit feed', onSelect: () => navigate('/audit') },
@@ -90,7 +92,7 @@ export default function AppLayout({ children }) {
         </div>
       </div>
       {(location.pathname.startsWith('/jobs') || location.pathname === '/jobs') && <div className="mx-auto mt-2 flex max-w-[1440px] items-center gap-2 border-t border-slate-200/70 pt-2 dark:border-slate-800/70">
-        <span className="mr-2 text-[10px] font-semibold uppercase tracking-[0.18em] text-slate-400">Workspace</span>
+        <span className="mr-2 text-[10px] font-semibold uppercase tracking-[0.18em] text-slate-400">Jobs</span>
         <NavLink to="/jobs" end className={({ isActive }) => `rounded-md px-2.5 py-1 text-xs font-medium ${isActive ? 'bg-indigo-50 text-indigo-800 dark:bg-indigo-950 dark:text-indigo-200' : 'text-slate-500 hover:bg-slate-100 dark:text-slate-400 dark:hover:bg-slate-800'}`}>All jobs</NavLink>
         {isApplicant && <NavLink to="/jobs/applied" className={({ isActive }) => `rounded-md px-2.5 py-1 text-xs font-medium ${isActive ? 'bg-indigo-50 text-indigo-800 dark:bg-indigo-950 dark:text-indigo-200' : 'text-slate-500 hover:bg-slate-100 dark:text-slate-400 dark:hover:bg-slate-800'}`}>Applied</NavLink>}
         {canManage && <NavLink to="/jobs/mine" className={({ isActive }) => `rounded-md px-2.5 py-1 text-xs font-medium ${isActive ? 'bg-indigo-50 text-indigo-800 dark:bg-indigo-950 dark:text-indigo-200' : 'text-slate-500 hover:bg-slate-100 dark:text-slate-400 dark:hover:bg-slate-800'}`}>My jobs</NavLink>}
@@ -100,11 +102,13 @@ export default function AppLayout({ children }) {
     {isAdmin && unsetModels.length > 0 && <div role="status" className="border-b border-amber-300 bg-amber-50 px-6 py-2.5 dark:border-amber-900 dark:bg-amber-950/60">
       <div className="mx-auto flex max-w-[1440px] items-center justify-between gap-4 text-sm text-amber-900 dark:text-amber-200">
         <span><strong>LLM configuration needs attention.</strong> No model is set for {unsetModels.join(', ')}.</span>
-        <Link to="/admin/llm" className="shrink-0 font-semibold underline underline-offset-2">Configure models →</Link>
+        {isSuperuser
+        ? <Link to="/admin/llm" className="shrink-0 font-semibold underline underline-offset-2">Configure models →</Link>
+        : <span className="shrink-0 font-semibold">Ask the superuser to configure them.</span>}
       </div>
     </div>}
 
     <main className="relative overflow-y-auto"><DecoBackdrop /><div className="relative">{children}</div></main>
-    <footer className="relative mx-auto max-w-[1440px] px-6 pb-10 pt-6 text-center" aria-hidden="true"><Flourish className="mx-auto h-4 w-52 text-gold-500/70 dark:text-gold-400/50" /><p className="font-display mt-2 text-xs font-semibold uppercase tracking-[0.35em] text-slate-400 dark:text-slate-600">Emmvee</p></footer>
+    <TalentMatchFooter />
   </div>
 }

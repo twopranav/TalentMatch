@@ -565,14 +565,12 @@ def test_get_user_forbidden_for_plain_users(client, make_user, auth_headers):
     assert client.get(f"/api/users/{target.id}", headers=auth_headers(actor)).status_code == 403
 
 
-def test_recruiter_gets_the_trimmed_public_view(client, make_user, auth_headers):
+def test_recruiter_has_no_user_directory(client, make_user, auth_headers):
     recruiter, _ = make_user(role=UserRole.RECRUITER)
     target, _ = make_user()
     resp = client.get(f"/api/users/{target.id}", headers=auth_headers(recruiter))
-    assert resp.status_code == 200
-    body = resp.json()
-    assert set(body) == _PUBLIC_FIELDS
-    assert body["id"] == str(target.id) and body["email"] == target.email
+    assert resp.status_code == 403
+    assert target.email not in resp.text
 
 
 @pytest.mark.parametrize("role", [UserRole.ADMIN, UserRole.SUPERUSER])
@@ -586,7 +584,7 @@ def test_admin_and_superuser_get_the_full_view(client, make_user, auth_headers, 
     assert body["requested_role"] == UserRole.RECRUITER.value
 
 
-@pytest.mark.parametrize("role", [UserRole.RECRUITER, UserRole.ADMIN])
+@pytest.mark.parametrize("role", [UserRole.ADMIN, UserRole.SUPERUSER])
 def test_get_user_never_leaks_the_password_hash(client, make_user, auth_headers, role):
     actor, _ = make_user(role=role)
     target, _ = make_user()

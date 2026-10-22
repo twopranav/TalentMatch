@@ -12,3 +12,5 @@ export function setUserSubCompany(userId, subCompany) { return apiClient.patch(`
 export function setUserRole(userId, role) { return apiClient.patch(`/users/${userId}/admin-status`, { role }).then((res) => res.data) }
 export function transferSuperuser(userId) { return apiClient.post(`/users/${userId}/transfer-superuser`).then((res) => res.data) }
 export function deleteUser(userId) { return apiClient.delete(`/users/${userId}`) }
+// Admin / superuser editing someone else's profile fields (PATCH /users/{id}). Role, active state and email have their own endpoints.
+export function updateUser(userId, payload) { return apiClient.patch(`/users/${userId}`, payload).then((res) => res.data) }

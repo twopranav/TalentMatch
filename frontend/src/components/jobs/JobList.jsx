@@ -17,6 +17,8 @@ const TOGGLE_BUTTON_CLASSES = (active) =>
 function JobRow({ job, onOpenDetails, onUploadJD, isApplicant, myApplication, onApply, onWithdraw, applying, counts }) {
   const { user } = useAuth()
   const canManage = canWriteJob(user, job)
+  // Same roles the /jobs/:jobId/applicants route allows.
+  const canViewApplicants = ['recruiter', 'admin', 'superuser'].includes(user?.role)
   const [expanded, setExpanded] = useState(null) // 'description' | 'jd' | null
 
   const toggle = (section) => (e) => {
@@ -24,7 +26,7 @@ function JobRow({ job, onOpenDetails, onUploadJD, isApplicant, myApplication, on
     setExpanded((cur) => (cur === section ? null : section))
   }
 
-  const subline = [job.location, formatEnumLabel(job.employment_type), formatEnumLabel(job.remote_type)]
+  const subline = [job.sub_company, job.location, formatEnumLabel(job.employment_type), formatEnumLabel(job.remote_type)]
     .filter(Boolean)
     .join(' · ')
 
@@ -58,8 +60,20 @@ function JobRow({ job, onOpenDetails, onUploadJD, isApplicant, myApplication, on
           onClick={() => onOpenDetails(job)}
           className={TOGGLE_BUTTON_CLASSES(false)}
         >
-          Metadata
+          Details
         </button>
+
+        {canViewApplicants && (
+          <button
+            onClick={(e) => {
+              e.stopPropagation()
+              window.open(`/jobs/${job.id}/applicants`, '_blank', 'noopener,noreferrer')
+            }}
+            className={TOGGLE_BUTTON_CLASSES(false)}
+          >
+            Applicants
+          </button>
+        )}
 
         {isApplicant && job.status === 'published' && (
           myApplication ? (

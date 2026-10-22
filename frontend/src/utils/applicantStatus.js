@@ -8,7 +8,7 @@ export const APPLICATION_STATUS_LABELS = {
   under_review: 'Reviewing',
   shortlisted: 'Shortlisted',
   interviewing: 'Interviewing',
-  rejected: 'Not proceeding',
+  rejected: 'Rejected',
   hired: 'Hired',
 }
 
@@ -28,11 +28,17 @@ export function statusOptionsFor(current) {
 // Shortlist sub-states. "shortlisted" is the default on entering the shortlist.
 export const SHORTLIST_STAGE_OPTIONS = ['shortlisted', 'review', 'rejected']
 
+// What the row dropdown on the Shortlist tab offers. "Interviewing" is not a
+// shortlist stage: choosing it changes the applicant's status, which moves them
+// to the Interviewing tab where the interview is scheduled.
+export const SHORTLIST_ROW_OPTIONS = ['shortlisted', 'interviewing', 'review', 'rejected']
+
 export const SHORTLIST_STAGE_LABELS = {
   shortlisted: 'Shortlisted',
-  review: 'Review',
+  review: 'Reviewing',
+  interviewing: 'Interviewing',
   interview_scheduled: 'Interview scheduled',
-  rejected: 'Not proceeding',
+  rejected: 'Rejected',
 }
 
 export function stageLabel(value) {

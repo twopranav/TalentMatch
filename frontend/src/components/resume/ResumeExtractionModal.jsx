@@ -28,7 +28,7 @@ function formatEducationEntry(edu) {
 
 // resume: a ResumeRead object (already has extraction_status, extracted_*
 // fields, extracted_profile from the API — no separate fetch needed).
-export default function ResumeExtractionModal({ open, onClose, resume }) {
+export default function ResumeExtractionModal({ open, onClose, resume, onRerun, rerunning = false }) {
   if (!resume) return null
 
   // Skills come from the standalone skills pipeline (skills_* fields).
@@ -50,6 +50,11 @@ export default function ResumeExtractionModal({ open, onClose, resume }) {
             <span className="text-xs text-slate-400 dark:text-slate-500">
               Extracted {new Date(extractedAt).toLocaleString()}
             </span>
+          )}
+          {onRerun && status !== 'processing' && (
+            <button type="button" onClick={onRerun} disabled={rerunning} className="ml-auto text-xs font-medium text-slate-700 underline hover:no-underline disabled:opacity-50 dark:text-slate-300">
+              {rerunning ? 'Restarting…' : 'Re-run extraction'}
+            </button>
           )}
         </div>
 

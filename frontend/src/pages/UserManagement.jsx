@@ -10,7 +10,10 @@ import Modal from '../components/ui/Modal'
 import PageHeader from '../components/ui/PageHeader'
 import StatusBadge from '../components/ui/StatusBadge'
 import Pagination from '../components/ui/Pagination'
-import { setUserActive, setUserRole, transferSuperuser, deleteUser, approveRequest, rejectRequest, setUserSubCompany } from '../api/users'
+import { setUserActive, setUserRole, transferSuperuser, deleteUser, approveRequest, rejectRequest, setUserSubCompany, updateUser } from '../api/users'
+import Button from '../components/ui/Button'
+import ProfileFields from '../components/profile/ProfileFields'
+import { toFormState, toPayload } from '../utils/profileForm'
 import { formatEnumLabel, getErrorMessage } from '../utils/format'
 import { SUB_COMPANIES } from '../utils/subCompany'
 
@@ -105,6 +108,10 @@ function UserActionsMenu({ user: u, currentUser, isSuperuser, isAdminOrSuperuser
   }
 
   const items = []
+  // Mirrors backend _assert_can_edit_profile: superuser edits anyone, an admin only user/recruiter accounts.
+  if (isSuperuser || u.role === 'user' || u.role === 'recruiter') {
+    items.push({ key: 'edit', label: 'Edit profile', style: 'default' })
+  }
   if (u.is_active) {
     items.push({ key: 'deactivate', label: 'Deactivate', style: 'destructive' })
   } else {
@@ -223,6 +230,8 @@ export default function UserManagement() {
   const [selectedUser, setSelectedUser] = useState(null)
   const [subTarget, setSubTarget] = useState(null)
   const [subValue, setSubValue] = useState('')
+  const [editTarget, setEditTarget] = useState(null)
+  const [editForm, setEditForm] = useState(() => toFormState(null))
   const [search, setSearch] = useState('')
   const [roleFilter, setRoleFilter] = useState('')
   const [page, setPage] = useState(1)
@@ -264,6 +273,12 @@ export default function UserManagement() {
     else if (type === 'delete') runAction(target.id, () => deleteUser(target.id), 'User deleted.', 'Could not delete user.')
   }
 
+  const saveProfile = () => {
+    if (!editTarget) return
+    const target = editTarget
+    runAction(target.id, () => updateUser(target.id, toPayload(editForm, target.role)), 'Profile updated.', 'Could not update this profile.', () => { setEditTarget(null); refetch() })
+  }
+
   const saveSubCompany = () => {
     if (!subTarget || !subValue) return
     const target = subTarget
@@ -275,7 +290,7 @@ export default function UserManagement() {
       <PageHeader eyebrow="Administration" title="User management" description="Review accounts, manage permissions, and review recruiter and admin access requests. Only the superuser can approve requests or change a sub company." />
 
         {isAdminOrSuperuser && (
-          <div className="flex gap-2">
+          <div className="mb-4 flex gap-2" role="tablist" aria-label="User views">
             {['all', 'pending'].map((t) => (
               <button
                 key={t}
@@ -287,10 +302,12 @@ export default function UserManagement() {
                   else next.delete('pending')
                   setSearchParams(next)
                 }}
-                className={`rounded px-3 py-1.5 text-sm font-medium ${
+                role="tab"
+                aria-selected={tab === t}
+                className={`rounded-xl px-3.5 py-2 text-xs font-semibold transition ${
                   tab === t
-                    ? 'bg-slate-800 text-white dark:bg-slate-700'
-                    : 'bg-slate-100 text-slate-600 hover:bg-slate-200 dark:bg-slate-800 dark:text-slate-300 dark:hover:bg-slate-700'
+                    ? 'bg-indigo-700 text-white shadow-sm'
+                    : 'border border-slate-200 bg-white/80 text-slate-600 hover:border-indigo-200 hover:text-indigo-700 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300 dark:hover:text-indigo-300'
                 }`}
               >
                 {t === 'pending' ? 'Pending requests' : 'All users'}
@@ -360,7 +377,7 @@ export default function UserManagement() {
                           isSuperuser={isSuperuser}
                           isAdminOrSuperuser={isAdminOrSuperuser}
                           busy={busy}
-                          onSelect={(type) => { if (type === 'subCompany') { setSubTarget(u); setSubValue(u.sub_company || '') } else setPendingAction({ type, target: u }) }}
+                          onSelect={(type) => { if (type === 'subCompany') { setSubTarget(u); setSubValue(u.sub_company || '') } else if (type === 'edit') { setEditTarget(u); setEditForm(toFormState(u)) } else setPendingAction({ type, target: u }) }}
                         />
                       </td>
                     )}
@@ -368,7 +385,7 @@ export default function UserManagement() {
                       <button
                         type="button"
                         onClick={() => setSelectedUser(u)}
-                        className="rounded border border-slate-200 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200 dark:hover:bg-slate-800"
+                        className="rounded-lg border border-slate-200 bg-[#fbfaf7] px-3 py-1.5 text-xs font-semibold text-slate-700 transition hover:border-indigo-200 hover:bg-white hover:text-indigo-700 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200 dark:hover:bg-slate-800"
                       >
                         View details
                       </button>
@@ -394,6 +411,25 @@ export default function UserManagement() {
       />
 
       <UserDetailsModal user={selectedUser} onClose={() => setSelectedUser(null)} />
+
+      <Modal
+        open={Boolean(editTarget)}
+        onClose={() => setEditTarget(null)}
+        title="Edit profile"
+        size="md"
+        footer={<>
+          <Button variant="secondary" onClick={() => setEditTarget(null)}>Cancel</Button>
+          <Button onClick={saveProfile} disabled={!editTarget || busyId === editTarget?.id}>{editTarget && busyId === editTarget.id ? 'Saving…' : 'Save'}</Button>
+        </>}
+      >
+        {editTarget && (
+          <div>
+            <p className="mb-4 text-sm text-slate-600 dark:text-slate-300">{editTarget.email} · {formatEnumLabel(editTarget.role)}</p>
+            <ProfileFields role={editTarget.role} form={editForm} onChange={setEditForm} idPrefix="admin-edit" />
+            <p className="mt-4 text-xs text-slate-500 dark:text-slate-400">Role, active status and sub company are changed from the Actions menu.</p>
+          </div>
+        )}
+      </Modal>
 
       {isSuperuser && (
         <Modal open={Boolean(subTarget)} onClose={() => setSubTarget(null)} title="Change sub company" size="md">

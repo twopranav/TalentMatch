@@ -20,7 +20,7 @@ function normalizeProfile(profile, current) {
     ...profile,
     id: profile.id ?? current?.id,
     role: profile.role ?? current?.role,
-    name: profile.name ?? profile.full_name ?? current?.name ?? '',
+    name: profile.full_name ?? profile.name ?? current?.name ?? '',
     email: profile.email ?? current?.email ?? '',
     avatar_url: profile.avatar_url ?? current?.avatar_url ?? null,
     requested_role: profile.requested_role ?? current?.requested_role ?? null,

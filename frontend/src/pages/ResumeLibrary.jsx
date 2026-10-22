@@ -1,6 +1,6 @@
 import { EmptyArt } from '../components/ui/Ornaments'
 import { useEffect, useState } from 'react'
-import { fetchResumes, uploadResumesBulk, archiveResume, deleteResume, openResumeFile } from '../api/resumes'
+import { fetchResumes, uploadResumesBulk, archiveResume, deleteResume, openResumeFile, rerunResumeExtraction } from '../api/resumes'
 import ConfirmDialog from '../components/ui/ConfirmDialog'
 import Spinner from '../components/ui/Spinner'
 import FilePicker from '../components/ui/FilePicker'
@@ -8,6 +8,8 @@ import { useToast } from '../components/ui/Toast'
 import { formatEnumLabel, getErrorMessage } from '../utils/format'
 import ResumeExtractionModal, { ExtractionStatusBadge } from '../components/resume/ResumeExtractionModal'
 import StatusBadge from '../components/ui/StatusBadge'
+import PageHeader from '../components/ui/PageHeader'
+import Button from '../components/ui/Button'
 
 function formatSize(bytes) {
   if (bytes < 1024) return `${bytes} B`
@@ -46,20 +48,16 @@ function BulkUpload({ onDone }) {
   }
 
   return (
-    <div className="mb-6 rounded-lg border border-slate-200 bg-white p-5 dark:border-slate-800 dark:bg-slate-900">
-      <h2 className="mb-3 text-sm font-semibold text-slate-900 dark:text-slate-100">Bulk upload</h2>
-      <p className="mb-3 text-xs text-slate-500 dark:text-slate-400">
-        Source resumes for candidates who don't have an account yet. One bad file in the batch won't stop the rest.
+    <div className="mb-6 rounded-2xl border border-slate-200/80 bg-[#fbfaf7]/95 p-6 shadow-sm dark:border-slate-800 dark:bg-slate-900/90">
+      <h2 className="font-display mb-1 text-2xl font-semibold text-slate-900 dark:text-slate-100">Bulk upload</h2>
+      <p className="mb-4 text-xs text-slate-500 dark:text-slate-400">
+        Source resumes for candidates who don't have an account yet (PDF or DOCX). One bad file in the batch won't stop the rest.
       </p>
       <div className="flex flex-wrap items-center gap-3">
         <FilePicker files={files} onChange={setFiles} accept=".pdf,.docx" multiple disabled={submitting} label="Choose resume files" />
-        <button
-          onClick={handleSubmit}
-          disabled={files.length === 0 || submitting}
-          className="flex items-center gap-2 rounded bg-slate-800 px-4 py-2 text-sm font-medium text-white hover:bg-slate-900 disabled:opacity-60 dark:bg-slate-700 dark:hover:bg-slate-600"
-        >
-          {submitting ? <Spinner size="sm" label="Uploading" /> : `Upload ${files.length || ''} file${files.length === 1 ? '' : 's'}`}
-        </button>
+        <Button onClick={handleSubmit} disabled={files.length === 0 || submitting}>
+          {submitting ? <Spinner size="sm" label="Uploading" /> : files.length ? `Upload ${files.length} file${files.length === 1 ? '' : 's'}` : 'Upload files'}
+        </Button>
       </div>
 
       {results && (
@@ -85,6 +83,8 @@ export default function ResumeLibrary() {
   const [busyId, setBusyId] = useState(null)
   const [deleteTarget, setDeleteTarget] = useState(null)
   const [extractionTarget, setExtractionTarget] = useState(null)
+  const [rerunning, setRerunning] = useState(false)
+  const [search, setSearch] = useState('')
 
   const load = () => {
     setLoading(true)
@@ -120,6 +120,11 @@ export default function ResumeLibrary() {
     return () => clearInterval(id)
   }, [hasInFlight, showArchived])
 
+  const term = search.trim().toLowerCase()
+  const visibleResumes = term
+    ? resumes.filter((r) => [r.original_filename, r.candidate_name, r.candidate_email, r.owner_email, r.uploaded_by_email].some((v) => String(v ?? '').toLowerCase().includes(term)))
+    : resumes
+
   // The open modal should follow the refreshed data, not a stale snapshot.
   const liveExtractionTarget = extractionTarget
     ? resumes.find((r) => r.id === extractionTarget.id) ?? extractionTarget
@@ -133,6 +138,21 @@ export default function ResumeLibrary() {
       showToast('Could not open that resume.', 'error')
     } finally {
       setOpeningId(null)
+    }
+  }
+
+  // Flips the row to Pending on the server; the in-flight poll above then follows it to Done/Failed.
+  const handleRerun = async () => {
+    if (!extractionTarget) return
+    setRerunning(true)
+    try {
+      const updated = await rerunResumeExtraction(extractionTarget.id)
+      setResumes((current) => current.map((r) => (r.id === updated.id ? { ...r, ...updated } : r)))
+      showToast('Extraction restarted.', 'success')
+    } catch (err) {
+      showToast(getErrorMessage(err, 'Could not restart extraction.'), 'error')
+    } finally {
+      setRerunning(false)
     }
   }
 
@@ -165,24 +185,27 @@ export default function ResumeLibrary() {
   }
 
   return (
-    <div className="mx-auto max-w-5xl px-6 py-8">
-      <div className="mb-6 flex flex-wrap items-center justify-between gap-3">
-        <h1 className="text-xl font-semibold text-slate-900 dark:text-slate-100">Resume Library</h1>
-        <button
-          onClick={() => setShowArchived((v) => !v)}
-          className={`rounded px-3 py-1.5 text-sm font-medium ${
-            showArchived
-              ? 'bg-slate-800 text-white dark:bg-slate-700'
-              : 'bg-slate-100 text-slate-600 hover:bg-slate-200 dark:bg-slate-800 dark:text-slate-300 dark:hover:bg-slate-700'
-          }`}
-        >
-          {showArchived ? 'Showing archived' : 'Show archived'}
-        </button>
-      </div>
+    <div className="mx-auto max-w-[1440px] px-8 py-8">
+      <PageHeader
+        eyebrow="Talent pool"
+        title="Resume library"
+        description="Resumes you can add to a job as applicants. Open one to review its extracted skills."
+        meta={!loading && !error && <span className="text-xs tabular-nums text-slate-500 dark:text-slate-400">{resumes.length} {showArchived ? 'resumes including archived' : resumes.length === 1 ? 'resume' : 'resumes'}</span>}
+      />
 
       <BulkUpload onDone={load} />
 
-      <div className="overflow-x-auto rounded-lg border border-slate-200 bg-white dark:border-slate-800 dark:bg-slate-900">
+      <div className="mb-4 flex flex-wrap items-center gap-3 rounded-2xl border border-slate-200 bg-[#fbfaf7]/90 p-3 dark:border-slate-800 dark:bg-slate-900/90">
+        <label htmlFor="resume-search" className="sr-only">Search resumes</label>
+        <input id="resume-search" value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search by file, candidate, or uploader" className="min-w-72 flex-1 rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-sm text-slate-800 placeholder:text-slate-400 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-100" />
+        <label className="flex cursor-pointer items-center gap-2 text-sm font-medium text-slate-600 dark:text-slate-300">
+          <input type="checkbox" checked={showArchived} onChange={(e) => setShowArchived(e.target.checked)} />
+          Include archived
+        </label>
+        {term && <span className="text-xs tabular-nums text-slate-500 dark:text-slate-400">{visibleResumes.length} match{visibleResumes.length === 1 ? '' : 'es'}</span>}
+      </div>
+
+      <div className="overflow-x-auto rounded-2xl border border-slate-200/80 bg-[#fbfaf7]/95 shadow-sm dark:border-slate-800 dark:bg-slate-900/90">
         {loading ? (
           <div className="flex justify-center py-16"><Spinner size="lg" label="Loading resumes" /></div>
         ) : error ? (
@@ -192,14 +215,14 @@ export default function ResumeLibrary() {
               Try again
             </button>
           </div>
-        ) : resumes.length === 0 ? (
+        ) : visibleResumes.length === 0 ? (
           <div className="px-6 py-16 text-center">
             <EmptyArt variant="resumes" />
-            <p className="text-sm text-slate-500 dark:text-slate-400">No resumes yet.</p>
+            <p className="text-sm text-slate-500 dark:text-slate-400">{term ? 'No resumes match this search.' : 'No resumes yet. Use bulk upload above to add some.'}</p>
           </div>
         ) : (
           <table className="w-full text-left text-sm">
-            <thead className="bg-slate-50 text-xs text-slate-400 dark:bg-slate-800 dark:text-slate-500">
+            <thead className="bg-slate-50 text-xs text-slate-500 dark:bg-slate-800 dark:text-slate-400">
               <tr>
                 <th className="px-4 py-2 font-medium">File</th>
                 <th className="px-4 py-2 font-medium">Candidate</th>
@@ -212,8 +235,8 @@ export default function ResumeLibrary() {
               </tr>
             </thead>
             <tbody>
-              {resumes.map((r) => (
-                <tr key={r.id} className="border-t border-slate-100 dark:border-slate-800">
+              {visibleResumes.map((r) => (
+                <tr key={r.id} className="border-t border-slate-100 hover:bg-slate-50/70 dark:border-slate-800 dark:hover:bg-slate-800/40">
                   <td className="px-4 py-2 text-slate-700 dark:text-slate-300">{r.original_filename}</td>
                   <td className="px-4 py-2 text-slate-600 dark:text-slate-400">
                     {r.candidate_name || r.candidate_email || r.owner_email || 'Unclaimed'}
@@ -239,16 +262,10 @@ export default function ResumeLibrary() {
                   </td>
                   <td className="px-4 py-2 text-slate-500 dark:text-slate-400">{new Date(r.created_at).toLocaleDateString()}</td>
                   <td className="px-4 py-2">
-                    <div className="flex items-center gap-3 text-xs">
-                      <button onClick={() => handleView(r)} disabled={openingId === r.id} className="font-medium text-slate-700 underline hover:no-underline disabled:opacity-50 dark:text-slate-300">
-                        {openingId === r.id ? 'Opening…' : 'View'}
-                      </button>
-                      <button onClick={() => handleToggleArchive(r)} disabled={busyId === r.id} className="font-medium text-slate-700 underline hover:no-underline disabled:opacity-50 dark:text-slate-300">
-                        {r.is_archived ? 'Restore' : 'Archive'}
-                      </button>
-                      <button onClick={() => setDeleteTarget(r)} disabled={busyId === r.id} className="font-medium text-red-600 underline hover:no-underline disabled:opacity-50 dark:text-red-400">
-                        Delete
-                      </button>
+                    <div className="flex items-center gap-1.5">
+                      <Button size="sm" variant="secondary" onClick={() => handleView(r)} disabled={openingId === r.id}>{openingId === r.id ? 'Opening…' : 'View'}</Button>
+                      <Button size="sm" variant="subtle" onClick={() => handleToggleArchive(r)} disabled={busyId === r.id}>{r.is_archived ? 'Restore' : 'Archive'}</Button>
+                      <Button size="sm" variant="subtle" onClick={() => setDeleteTarget(r)} disabled={busyId === r.id} className="!text-red-600 hover:!bg-red-50 dark:!text-red-400 dark:hover:!bg-red-950/50">Delete</Button>
                     </div>
                   </td>
                 </tr>
@@ -272,6 +289,8 @@ export default function ResumeLibrary() {
         open={Boolean(extractionTarget)}
         onClose={() => setExtractionTarget(null)}
         resume={liveExtractionTarget}
+        onRerun={handleRerun}
+        rerunning={rerunning}
       />
     </div>
   )

@@ -3,7 +3,7 @@ from sqlalchemy.orm import Session
 
 from app.core.audit import record_audit, snapshot
 from app.core.config import settings
-from app.core.deps import require_admin_or_superuser
+from app.core.deps import require_admin_or_superuser, require_superuser
 import time
 from app.core import llm_quota
 from app.core.llm_client import get_chat_model_for_task
@@ -38,7 +38,7 @@ def update_llm_config(
     task: str,
     payload: LLMConfigUpdate,
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_admin_or_superuser),
+    current_user: User = Depends(require_superuser),
 ):
     row = db.query(LLMConfig).filter(LLMConfig.task == task).first()
     if row is None:
@@ -69,7 +69,7 @@ def update_llm_config(
 @router.post("/{task}/probe")
 def probe_llm_config(
     task: str,
-    _: User = Depends(require_admin_or_superuser),
+    _: User = Depends(require_superuser),
 ):
     result = _run_probe(task)
     # A busy quota says nothing about the model, so it is not a probe result.

@@ -41,6 +41,11 @@ export default function JobApplicants() {
   const [error, setError] = useState(null)
 
   useEffect(() => {
+    document.title = job?.title ? `${job.title} · Applicants — TalentMatch` : 'Applicants — TalentMatch'
+    return () => { document.title = 'TalentMatch' }
+  }, [job?.title])
+
+  useEffect(() => {
     setLoading(true)
     setError(null)
     fetchJob(jobId)
@@ -60,22 +65,23 @@ export default function JobApplicants() {
   if (error || !job) {
     return (
       <div className="mx-auto max-w-[1440px] px-8 py-8">
-        <PageHeader eyebrow="Recruiter workspace" title="Applicants unavailable" description={error || 'This job could not be found.'} />
-        <Link to="/jobs/mine" className="inline-flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-700 transition hover:border-indigo-200 hover:text-indigo-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-amber-400 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200 dark:hover:text-indigo-300">← Back to My Jobs</Link>
+ <PageHeader eyebrow="Recruiting" title="Applicants unavailable" description={error || 'This job could not be found.'} />
+        <Link to="/jobs" className="inline-flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-700 transition hover:border-indigo-200 hover:text-indigo-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-amber-400 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200 dark:hover:text-indigo-300">← Back to jobs</Link>
       </div>
     )
   }
 
   const canBulkApply = canWriteJob(user, job)
+  const backTo = canBulkApply ? '/jobs/mine' : '/jobs'
 
   return (
     <div className="mx-auto max-w-[1440px] px-8 py-8">
       <PageHeader
-        eyebrow="Recruiter workspace"
+        eyebrow="Recruiting"
         title={job.title}
         description={[job.location, formatEnumLabel(job.employment_type), formatEnumLabel(job.remote_type)].filter(Boolean).join(' · ')}
         meta={<StatusBadge status={job.status}>{formatEnumLabel(job.status)}</StatusBadge>}
-        action={<Link to="/jobs/mine" className="inline-flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-700 transition hover:border-indigo-200 hover:text-indigo-700 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200 dark:hover:text-indigo-300">← My jobs</Link>}
+        action={<Link to={backTo} className="inline-flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-700 transition hover:border-indigo-200 hover:text-indigo-700 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200 dark:hover:text-indigo-300">{canBulkApply ? '← My jobs' : '← All jobs'}</Link>}
       />
 
       {canBulkApply && (

@@ -2,6 +2,7 @@
 import { useState } from 'react'
 import Modal from '../ui/Modal'
 import Spinner from '../ui/Spinner'
+import Button from '../ui/Button'
 import FilePicker from '../ui/FilePicker'
 import { uploadResume } from '../../api/resumes'
 import { useToast } from '../ui/Toast'
@@ -42,16 +43,10 @@ export default function ResumeUploadModal({ open, onClose, currentResume, onUplo
       title="Upload your resume"
       footer={
         <>
-          <button onClick={onClose} className="rounded px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-slate-800">
-            Cancel
-          </button>
-          <button
-            onClick={handleSubmit}
-            disabled={!file || submitting}
-            className="flex items-center gap-2 rounded bg-slate-800 px-4 py-2 text-sm font-medium text-white hover:bg-slate-900 disabled:opacity-60 dark:bg-slate-700 dark:hover:bg-slate-600"
-          >
+          <Button variant="secondary" onClick={onClose} disabled={submitting}>Cancel</Button>
+          <Button onClick={handleSubmit} disabled={!file || submitting}>
             {submitting ? <Spinner size="sm" label="Uploading" /> : 'Upload'}
-          </button>
+          </Button>
         </>
       }
     >

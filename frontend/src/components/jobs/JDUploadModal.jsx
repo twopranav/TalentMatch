@@ -2,6 +2,7 @@
 import { useState } from 'react'
 import Modal from '../ui/Modal'
 import Spinner from '../ui/Spinner'
+import Button from '../ui/Button'
 import FilePicker from '../ui/FilePicker'
 import { uploadJobDescription } from '../../api/jobs'
 import { useToast } from '../ui/Toast'
@@ -42,22 +43,17 @@ export default function JDUploadModal({ open, onClose, job, onUploaded }) {
       title={`Upload job description — ${job?.title ?? ''}`}
       footer={
         <>
-          <button onClick={onClose} className="rounded px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-slate-800">
-            Cancel
-          </button>
-          <button
-            onClick={handleSubmit}
-            disabled={!file || submitting}
-            className="flex items-center gap-2 rounded bg-slate-800 px-4 py-2 text-sm font-medium text-white hover:bg-slate-900 disabled:opacity-60 dark:bg-slate-700 dark:hover:bg-slate-600"
-          >
+          <Button variant="secondary" onClick={onClose} disabled={submitting}>Cancel</Button>
+          <Button onClick={handleSubmit} disabled={!file || submitting}>
             {submitting ? <Spinner size="sm" label="Uploading" /> : 'Upload'}
-          </button>
+          </Button>
         </>
       }
     >
       <form onSubmit={handleSubmit}>
         <label className="mb-1 block text-sm font-medium text-slate-700 dark:text-slate-300">File</label>
         <FilePicker files={file ? [file] : []} onChange={(fs) => setFile(fs[0] ?? null)} disabled={submitting} />
+        <p className="mt-2 text-xs text-slate-500 dark:text-slate-400">Skills are extracted from the file automatically after upload.</p>
         {job?.jd_raw_text && (
           <p className="mt-3 text-xs text-slate-400 dark:text-slate-500">
             This job already has an extracted JD on file — uploading a new one replaces it.

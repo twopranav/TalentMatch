@@ -28,4 +28,6 @@ export function deleteResume(resumeId) { return apiClient.delete(`/resumes/${res
 export async function fetchResumeBlobUrl(resumeId) { const res = await apiClient.get(`/resumes/${resumeId}/file`, { responseType: 'blob' }); return window.URL.createObjectURL(res.data) }
 export async function openResumeFile(resumeId) { const url = await fetchResumeBlobUrl(resumeId); window.open(url, '_blank', 'noopener,noreferrer'); setTimeout(() => window.URL.revokeObjectURL(url), 30000) }
 export function fetchAllResumes() { return apiClient.get('/resumes', { params: { limit: 200 } }).then((res) => Array.isArray(res.data) ? res.data : (res.data.items ?? [])) }
-export function retryResumeExtraction(resumeId) { return apiClient.post(`/resumes/${resumeId}/retry-extraction`).then((res) => res.data) }
+// Backend route is POST /resumes/{id}/extract-skills (it resets status to PENDING and queues the task).
+export function rerunResumeExtraction(resumeId) { return apiClient.post(`/resumes/${resumeId}/extract-skills`).then((res) => res.data) }
+export const retryResumeExtraction = rerunResumeExtraction

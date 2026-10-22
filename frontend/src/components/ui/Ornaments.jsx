@@ -6,42 +6,6 @@ import { useId } from 'react'
 
 const uid = (raw) => raw.replace(/[^a-zA-Z0-9]/g, '')
 
-/** The TalentMatch crest: a gold-trimmed shield bearing a "T". */
-export function Crest({ className = 'h-9 w-9' }) {
-  const id = uid(useId())
-  return (
-    <svg viewBox="0 0 40 44" className={className} aria-hidden="true">
-      <defs>
-        <linearGradient id={`${id}g`} x1="0" y1="0" x2="1" y2="1">
-          <stop offset="0" stopColor="#ecdcae" />
-          <stop offset="1" stopColor="#b58c3e" />
-        </linearGradient>
-        <linearGradient id={`${id}f`} x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0" stopColor="#24366a" />
-          <stop offset="1" stopColor="#121b38" />
-        </linearGradient>
-      </defs>
-      <path
-        d="M20 2 36 8.5v14.2c0 9.6-6.6 15.4-16 19.3C10.6 38.100 4 32.300 4 22.700V8.500Z"
-        fill={`url(#${id}f)`}
-        stroke={`url(#${id}g)`}
-        strokeWidth="1.6"
-        strokeLinejoin="round"
-      />
-      <path
-        d="M20 6.200 32.400 11v11.500c0 7.400-5.100 12-12.400 15.400-7.300-3.400-12.400-8-12.400-15.400V11Z"
-        fill="none"
-        stroke={`url(#${id}g)`}
-        strokeWidth=".6"
-        opacity=".7"
-      />
-      <path d="M13 15h14M20 15v14" stroke={`url(#${id}g)`} strokeWidth="2.6" strokeLinecap="round" />
-      <path d="M16.500 29h7" stroke={`url(#${id}g)`} strokeWidth="1.200" strokeLinecap="round" opacity=".8" />
-      <circle cx="20" cy="9.800" r="1" fill={`url(#${id}g)`} />
-    </svg>
-  )
-}
-
 /** Hairline divider with a centred diamond. Colour comes from `text-*`. */
 export function Flourish({ className = 'h-4 w-52' }) {
   const id = uid(useId())

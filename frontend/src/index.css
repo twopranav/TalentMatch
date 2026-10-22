@@ -242,7 +242,7 @@ main h1::after {
 .font-display { font-family: var(--font-display); }
 
 
-/* Consistent, easier-to-hit checkbox controls across TalentMatch. */
+/* Consistent, easier-to-hit checkbox controls across the app. */
 input[type="checkbox"] {
   width: 1rem;
   height: 1rem;

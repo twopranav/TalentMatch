@@ -12,7 +12,7 @@ import {
   bulkUpdateApplicationStatus,
 } from '../../api/applications'
 import {
-  SHORTLIST_STAGE_OPTIONS,
+  SHORTLIST_ROW_OPTIONS,
   formatInterviewTime,
   isoToLocalInput,
   localInputToIso,
@@ -30,7 +30,7 @@ import { openResumeFile } from '../../api/resumes'
 import ConfirmDialog from '../ui/ConfirmDialog'
 import Button from '../ui/Button'
 import { downloadCsv } from '../../utils/csv'
-import { downloadInterviewIcs } from '../../utils/calendar'
+import AddToCalendar from '../ui/AddToCalendar'
 
 const DEFAULT_PAGE_SIZE = 10
 
@@ -67,7 +67,7 @@ function formatManualScore(value) {
 // from the AI score shown beside it: saving or clearing this never changes
 // the AI score. Shows the score (or "Set score"); clicking opens a small
 // inline editor.
-function ManualScoreCell({ applicant, onSaved }) {
+function ManualScoreCell({ applicant, onSaved, readOnly = false }) {
   const { showToast } = useToast()
   const [editing, setEditing] = useState(false)
   const [value, setValue] = useState('')
@@ -127,14 +127,16 @@ function ManualScoreCell({ applicant, onSaved }) {
             {formatManualScore(current)}%
           </span>
         )}
-        <button
-          type="button"
-          onClick={startEditing}
-          aria-label={`${current == null ? 'Set' : 'Edit'} manual score for ${name}`}
-          className="text-slate-500 underline hover:no-underline dark:text-slate-400"
-        >
-          {current == null ? 'Set score' : 'Edit'}
-        </button>
+        {readOnly ? (current == null && <span className="text-slate-400 dark:text-slate-500">—</span>) : (
+          <button
+            type="button"
+            onClick={startEditing}
+            aria-label={`${current == null ? 'Set' : 'Edit'} manual score for ${name}`}
+            className="text-slate-500 underline hover:no-underline dark:text-slate-400"
+          >
+            {current == null ? 'Set score' : 'Edit'}
+          </button>
+        )}
       </div>
     )
   }
@@ -197,6 +199,8 @@ export default function ApplicantsPanel({ job, active = true, fullPage = false, 
   const { user: currentUser } = useAuth()
   // Mirrors the server: admins open resumes in their sub company, recruiters only on jobs they posted.
   const canOpenResume = canWriteJob(currentUser, job)
+  // Recruiters have read access to every job but may only change the ones they posted.
+  const canWrite = canOpenResume
   const isShortlist = mode === 'shortlisted'
   const jobId = job?.id
   const [applicants, setApplicants] = useState([])
@@ -417,6 +421,10 @@ export default function ApplicantsPanel({ job, active = true, fullPage = false, 
   const [savingSchedule, setSavingSchedule] = useState(false)
 
   const handleStageChange = async (application, stage) => {
+    if (stage === 'interviewing') {
+      handleMoveToInterviewing(application)
+      return
+    }
     if (stage === 'interview_scheduled') {
       // An interview needs a date and time first; nothing changes until saved.
       setSchedulingId(application.id)
@@ -440,7 +448,7 @@ export default function ApplicantsPanel({ job, active = true, fullPage = false, 
   const handleMoveToInterviewing = async (application) => {
     try {
       await updateApplicationStatus(application.id, 'interviewing')
-      showToast('Moved to Interviewing.', 'success')
+      showToast('Moved to Interviewing. Schedule the interview from the Interviewing tab.', 'success')
       runFetch(false)
     } catch (err) {
       showToast(getErrorMessage(err, 'Could not move to interviewing.'), 'error')
@@ -485,9 +493,11 @@ export default function ApplicantsPanel({ job, active = true, fullPage = false, 
         </span>
         <span className="flex items-center gap-3">
           {total > 0 && <button type="button" onClick={handleExportCsv} disabled={exportingCsv} className="rounded-lg border border-slate-200 bg-white px-3 py-1.5 font-semibold text-slate-700 transition hover:border-indigo-200 hover:text-indigo-700 disabled:opacity-50 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300 dark:hover:text-indigo-300">{exportingCsv ? 'Exporting…' : 'Export CSV'}</button>}
-          {total > 0 && <button type="button" onClick={() => setRescoreConfirmOpen(true)} disabled={rescoring} className="font-semibold text-indigo-700 underline hover:no-underline disabled:opacity-50 dark:text-indigo-300">{rescoring ? 'Queuing…' : 'Re-score all'}</button>}
+          {total > 0 && canWrite && <button type="button" onClick={() => setRescoreConfirmOpen(true)} disabled={rescoring} className="font-semibold text-indigo-700 underline hover:no-underline disabled:opacity-50 dark:text-indigo-300">{rescoring ? 'Queuing…' : 'Re-score all'}</button>}
         </span>
       </dt>
+
+      {!canWrite && total > 0 && <p className="mb-3 rounded-lg bg-slate-100 px-3 py-2 text-xs text-slate-600 dark:bg-slate-800 dark:text-slate-300">Read-only view. You can change applicants only on jobs you posted{currentUser?.role === 'admin' ? ' or that belong to your sub company' : ''}.</p>}
 
       {(total > 0 || filtersActive) && (
         <ApplicantFilters value={filters} onChange={handleFiltersChange} jdSkills={job?.skills_result || []} mode={mode} />
@@ -511,7 +521,7 @@ export default function ApplicantsPanel({ job, active = true, fullPage = false, 
             <table className="w-full text-left text-xs">
               <thead className="bg-slate-50 text-slate-400 dark:bg-slate-800 dark:text-slate-500">
                 <tr>
-                  <th className="w-8 px-3 py-2 font-medium"><input type="checkbox" aria-label="Select all applicants on this page" checked={allPageSelected} onChange={(event) => togglePageSelection(event.target.checked)} disabled={isShortlist} /></th>
+                  <th className="w-8 px-3 py-2 font-medium"><input type="checkbox" aria-label="Select all applicants on this page" checked={allPageSelected} onChange={(event) => togglePageSelection(event.target.checked)} disabled={isShortlist || !canWrite} /></th>
                   <th className="w-8 px-3 py-2 font-medium">#</th>
                   <th className="px-3 py-2 font-medium">Applicant</th>
                   <th className="px-3 py-2 font-medium">AI score</th>
@@ -533,7 +543,7 @@ export default function ApplicantsPanel({ job, active = true, fullPage = false, 
                           : 'border-slate-100 hover:bg-slate-50 dark:border-slate-800 dark:hover:bg-slate-800/50'
                       }`}
                     >
-                      <td className="px-3 py-2"><input type="checkbox" aria-label={`Select ${a.applicant_name || a.applicant_email}`} checked={selectedIds.includes(a.id)} disabled={isShortlist} onChange={(event) => setSelectedIds((current) => event.target.checked ? [...new Set([...current, a.id])] : current.filter((id) => id !== a.id))} /></td>
+                      <td className="px-3 py-2"><input type="checkbox" aria-label={`Select ${a.applicant_name || a.applicant_email}`} checked={selectedIds.includes(a.id)} disabled={isShortlist || !canWrite} onChange={(event) => setSelectedIds((current) => event.target.checked ? [...new Set([...current, a.id])] : current.filter((id) => id !== a.id))} /></td>
                       <td className={`px-3 py-2 font-semibold tabular-nums ${offset + idx === 0 && a.match_score != null ? 'text-indigo-600 dark:text-indigo-400' : 'text-slate-400 dark:text-slate-500'}`}>
                         {offset + idx + 1}
                       </td>
@@ -550,7 +560,7 @@ export default function ApplicantsPanel({ job, active = true, fullPage = false, 
                       </td>
                       {isShortlist && (
                         <td className="px-3 py-2">
-                          <ManualScoreCell applicant={a} onSaved={handleManualScoreSaved} />
+                          <ManualScoreCell applicant={a} onSaved={handleManualScoreSaved} readOnly={!canWrite} />
                         </td>
                       )}
                       <td className="px-3 py-2 text-slate-500 dark:text-slate-400">
@@ -570,7 +580,9 @@ export default function ApplicantsPanel({ job, active = true, fullPage = false, 
                           <select
                             value={a.status}
                             onChange={(e) => handleStatusChange(a.id, e.target.value)}
-                            className="rounded border border-slate-200 bg-white px-2 py-1 text-xs dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100"
+                            disabled={!canWrite}
+                            title={canWrite ? undefined : 'You can only change applicants on jobs you posted'}
+                            className="disabled:cursor-not-allowed disabled:opacity-60 rounded border border-slate-200 bg-white px-2 py-1 text-xs dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100"
                           >
                             {statusOptionsFor(a.status).map((s) => (
                               <option key={s} value={s}>{statusLabel(s)}</option>
@@ -584,32 +596,25 @@ export default function ApplicantsPanel({ job, active = true, fullPage = false, 
                             value={a.shortlist_stage ?? 'shortlisted'}
                             onChange={(e) => handleStageChange(a, e.target.value)}
                             aria-label={`Shortlist stage for ${a.applicant_name || a.applicant_email}`}
-                            className="rounded border border-slate-200 bg-white px-2 py-1 text-xs dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100"
+                            disabled={!canWrite}
+                            title={canWrite ? undefined : 'You can only change applicants on jobs you posted'}
+                            className="disabled:cursor-not-allowed disabled:opacity-60 rounded border border-slate-200 bg-white px-2 py-1 text-xs dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100"
                           >
-                            {SHORTLIST_STAGE_OPTIONS.map((s) => (
+                            {(SHORTLIST_ROW_OPTIONS.includes(a.shortlist_stage) || !a.shortlist_stage ? SHORTLIST_ROW_OPTIONS : [...SHORTLIST_ROW_OPTIONS, a.shortlist_stage]).map((s) => (
                               <option key={s} value={s}>{stageLabel(s)}</option>
                             ))}
                           </select>
-                          <button type="button" onClick={() => handleMoveToInterviewing(a)} className="ml-2 rounded-md border border-indigo-200 bg-white px-2 py-1 font-medium text-indigo-700 hover:bg-indigo-50 dark:border-indigo-800 dark:bg-slate-900 dark:text-indigo-300">
-                            Move to interviewing
-                          </button>
                           {a.shortlist_stage === 'interview_scheduled' && a.interview_at && (
                             <div className="mt-1 text-slate-500 dark:text-slate-400">
                               {formatInterviewTime(a.interview_at)}
-                              <button
+                              {canWrite && <button
                                 type="button"
                                 onClick={() => handleStageChange(a, 'interview_scheduled')}
                                 className="ml-2 underline hover:no-underline"
                               >
                                 Change
-                              </button>
-                              <button
-                                type="button"
-                                onClick={() => downloadInterviewIcs({ title: `TalentMatch interview — ${job?.title ?? 'Job'}`, description: `Interview with ${a.applicant_name ?? a.applicant_email ?? 'candidate'} for ${job?.title ?? 'a job'}.`, start: a.interview_at, location: job?.location ?? '' })}
-                                className="ml-2 inline-flex rounded-md border border-indigo-200 bg-white px-2 py-1 font-medium text-indigo-700 hover:bg-indigo-50 dark:border-indigo-800 dark:bg-slate-900 dark:text-indigo-300 dark:hover:bg-indigo-950"
-                              >
-                                Add to calendar
-                              </button>
+                              </button>}
+                              <span className="ml-2 inline-block align-middle"><AddToCalendar event={{ title: `Interview — ${job?.title ?? 'Job'}`, description: `Interview with ${a.applicant_name ?? a.applicant_email ?? 'candidate'} for ${job?.title ?? 'a job'}.`, start: a.interview_at, location: job?.location ?? '' }} /></span>
                             </div>
                           )}
                         </td>
@@ -661,7 +666,7 @@ export default function ApplicantsPanel({ job, active = true, fullPage = false, 
           <Pagination page={page} totalPages={totalPages} onPageChange={setPage} disabled={loading} />
         </>
       )}
-      {!isShortlist && selectedIds.length > 0 && <div className="sticky bottom-3 z-20 mt-4 flex items-center justify-between gap-4 rounded-2xl border border-indigo-200 bg-white/95 px-5 py-3 shadow-xl backdrop-blur dark:border-indigo-900 dark:bg-slate-900/95"><div><p className="text-sm font-semibold text-slate-900 dark:text-slate-100">{selectedIds.length} selected</p><p className="text-xs text-slate-500 dark:text-slate-400">Apply one status to the selected applications.</p></div><div className="flex items-center gap-3"><select value={bulkStatus} onChange={(event) => setBulkStatus(event.target.value)} aria-label="Bulk application status" className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100"><option value="applied">Applied</option><option value="under_review">Reviewing</option><option value="shortlisted">Shortlisted</option><option value="rejected">Not proceeding</option><option value="hired">Hired</option></select><Button variant="secondary" size="sm" onClick={() => setSelectedIds([])} disabled={bulkUpdating}>Clear selection</Button><Button size="sm" onClick={handleBulkUpdate} disabled={bulkUpdating}>{bulkUpdating ? 'Updating…' : 'Update status'}</Button></div></div>}
+      {!isShortlist && canWrite && selectedIds.length > 0 && <div className="sticky bottom-3 z-20 mt-4 flex items-center justify-between gap-4 rounded-2xl border border-indigo-200 bg-white/95 px-5 py-3 shadow-xl backdrop-blur dark:border-indigo-900 dark:bg-slate-900/95"><div><p className="text-sm font-semibold text-slate-900 dark:text-slate-100">{selectedIds.length} selected</p><p className="text-xs text-slate-500 dark:text-slate-400">Apply one status to the selected applications.</p></div><div className="flex items-center gap-3"><select value={bulkStatus} onChange={(event) => setBulkStatus(event.target.value)} aria-label="Bulk application status" className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100"><option value="applied">Applied</option><option value="under_review">Reviewing</option><option value="shortlisted">Shortlisted</option><option value="rejected">Not proceeding</option><option value="hired">Hired</option></select><Button variant="secondary" size="sm" onClick={() => setSelectedIds([])} disabled={bulkUpdating}>Clear selection</Button><Button size="sm" onClick={handleBulkUpdate} disabled={bulkUpdating}>{bulkUpdating ? 'Updating…' : 'Update status'}</Button></div></div>}
       <ConfirmDialog open={rescoreConfirmOpen} onClose={() => setRescoreConfirmOpen(false)} onConfirm={handleRescore} title="Re-score all applicants?" message={`This will queue a rescore for all ${total} applicants associated with this job.`} confirmLabel="Re-score all" busy={rescoring} />
       {isShortlist && <ApplicantNotesModal applicant={notesFor} onClose={() => setNotesFor(null)} />}
     </div>

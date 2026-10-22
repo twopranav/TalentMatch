@@ -291,3 +291,55 @@ def test_an_admin_with_no_sub_company_sees_nothing_scoped(client, make_user, aut
     assert client.get("/api/audit", headers=h).json() == []
     ov = client.get("/api/v1/overview", headers=h).json()
     assert ov["pending_recruiter_requests"] == 0 and ov["recent_audit_activity"] == []
+
+
+# ------------------------------------------------------ moving a job between companies
+
+def _move(client, auth_headers, actor, job_id, company):
+    return client.patch(f"/api/jobs/{job_id}", json={"sub_company": company}, headers=auth_headers(actor))
+
+
+@pytest.mark.parametrize("actor_key", ["r_solar", "a_solar"])
+def test_recruiter_and_admin_cannot_move_a_job_even_in_their_own_company(client, auth_headers, world, actor_key):
+    resp = _move(client, auth_headers, world[actor_key], world["job_solar"], PV.value)
+    assert resp.status_code == 403
+    job = client.get(f"/api/jobs/{world['job_solar']}", headers=auth_headers(world["su"])).json()
+    assert job["sub_company"] == SOLAR.value
+
+
+@pytest.mark.parametrize("actor_key", ["r_solar", "a_solar"])
+def test_resending_the_current_company_is_still_refused_for_non_superusers(client, auth_headers, world, actor_key):
+    assert _move(client, auth_headers, world[actor_key], world["job_solar"], SOLAR.value).status_code == 403
+
+
+def test_recruiter_cannot_null_out_the_company(client, auth_headers, world):
+    assert _move(client, auth_headers, world["r_solar"], world["job_solar"], None).status_code == 403
+
+
+def test_superuser_moves_a_job_and_visibility_follows_it(client, auth_headers, world):
+    resp = _move(client, auth_headers, world["su"], world["job_solar"], PV.value)
+    assert resp.status_code == 200
+    assert resp.json()["sub_company"] == PV.value
+    assert world["job_solar"] not in _job_ids(client, auth_headers, world["r_solar"])
+    assert world["job_solar"] in _job_ids(client, auth_headers, world["a_pv"])
+    # the creator stays in their old company, so they can no longer edit it
+    assert client.patch(f"/api/jobs/{world['job_solar']}", json={"title": "x"}, headers=auth_headers(world["r_solar"])).status_code == 404
+
+
+def test_superuser_must_choose_a_different_company(client, auth_headers, world):
+    assert _move(client, auth_headers, world["su"], world["job_solar"], SOLAR.value).status_code == 400
+    assert _move(client, auth_headers, world["su"], world["job_solar"], None).status_code == 400
+    job = client.get(f"/api/jobs/{world['job_solar']}", headers=auth_headers(world["su"])).json()
+    assert job["sub_company"] == SOLAR.value
+
+
+def test_a_move_is_audited(client, db, auth_headers, world):
+    assert _move(client, auth_headers, world["su"], world["job_solar"], PV.value).status_code == 200
+    rows = db.query(AuditLog).filter(AuditLog.resource_type == "job", AuditLog.action == "update").all()
+    assert any(PV.value in str(r.after) for r in rows)
+
+
+def test_ordinary_job_edits_do_not_need_a_company(client, auth_headers, world):
+    resp = client.patch(f"/api/jobs/{world['job_solar']}", json={"title": "Renamed"}, headers=auth_headers(world["r_solar"]))
+    assert resp.status_code == 200
+    assert resp.json()["sub_company"] == SOLAR.value

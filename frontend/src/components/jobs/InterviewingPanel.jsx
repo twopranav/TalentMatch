@@ -8,6 +8,9 @@ import { formatInterviewTime, isoToLocalInput, localInputToIso } from '../../uti
 import { getErrorMessage } from '../../utils/format'
 import { canWriteJob } from '../../utils/permissions'
 import ApplicantNotesModal from './ApplicantNotesModal'
+import AddToCalendar from '../ui/AddToCalendar'
+import Button from '../ui/Button'
+import DateTimePopover from '../ui/DateTimePopover'
 
 const PAGE_SIZE = 10
 const OUTCOMES = [['scheduled', 'Scheduled'], ['rejected', 'Rejected'], ['hired', 'Hired']]
@@ -25,8 +28,7 @@ export default function InterviewingPanel({ job, active = true, refreshKey = 0, 
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(null)
   const [notesFor, setNotesFor] = useState(null)
-  const [editingId, setEditingId] = useState(null)
-  const [draft, setDraft] = useState('')
+  const [picker, setPicker] = useState(null) // { row, anchor } while the schedule popover is open
   const requestId = useRef(0)
 
   const load = useCallback(async () => {
@@ -56,18 +58,18 @@ export default function InterviewingPanel({ job, active = true, refreshKey = 0, 
     try {
       await updateInterview(row.id, stage, interviewAt)
       showToast('Interview updated.', 'success')
-      setEditingId(null)
+      setPicker(null)
       load()
     } catch (err) {
       showToast(getErrorMessage(err, 'Could not update the interview.'), 'error')
     }
   }
 
-  const startEdit = (row) => { setEditingId(row.id); setDraft(isoToLocalInput(row.interview_at)) }
-  const saveDate = (row) => {
-    const iso = localInputToIso(draft)
+  const togglePicker = (row, anchor) => setPicker((current) => (current?.row.id === row.id ? null : { row, anchor }))
+  const saveDate = async (row, localValue) => {
+    const iso = localInputToIso(localValue)
     if (!iso) { showToast('Select a valid interview date and time.', 'error'); return }
-    save(row, row.interview_stage ?? 'scheduled', iso)
+    await save(row, row.interview_stage ?? 'scheduled', iso)
   }
 
   if (error) return <p role="alert" className="text-sm text-red-600 dark:text-red-400">{error}</p>
@@ -77,7 +79,7 @@ export default function InterviewingPanel({ job, active = true, refreshKey = 0, 
     <div>
       {rows.length === 0 ? (
         <p className="py-8 text-center text-sm text-slate-500 dark:text-slate-400">
-          No one is interviewing yet. Use “Move to interviewing” on the Shortlist tab.
+          No one is interviewing yet. Set an applicant's status to Interviewing on the Shortlist tab, then schedule the interview here.
         </p>
       ) : (
         <div className="overflow-x-auto rounded-xl border border-slate-200 dark:border-slate-800">
@@ -100,20 +102,15 @@ export default function InterviewingPanel({ job, active = true, refreshKey = 0, 
                       <div className="font-medium text-slate-800 dark:text-slate-100">{a.applicant_name || a.applicant_email}</div>
                       {a.applicant_name && a.applicant_email && <div className="text-slate-400">{a.applicant_email}</div>}
                     </td>
-                    <td className="px-3 py-2">{a.match_score != null ? `${Math.round(a.match_score)}%` : '—'}</td>
+                    <td className="px-3 py-2 font-semibold tabular-nums text-slate-800 dark:text-slate-100">{a.match_score != null ? `${Math.round(a.match_score)}%` : '—'}</td>
                     <td className="px-3 py-2">
-                      {editingId === a.id ? (
-                        <div className="flex items-center gap-2">
-                          <input type="datetime-local" value={draft} onChange={(e) => setDraft(e.target.value)} className={FIELD} />
-                          <button type="button" onClick={() => saveDate(a)} className="font-medium text-indigo-700 underline dark:text-indigo-300">Save</button>
-                          <button type="button" onClick={() => setEditingId(null)} className="text-slate-500 underline">Cancel</button>
-                        </div>
-                      ) : (
-                        <span>
-                          {formatInterviewTime(a.interview_at) || 'Date not set'}
-                          {canWrite && <button type="button" onClick={() => startEdit(a)} className="ml-2 underline hover:no-underline">{a.interview_at ? 'Change' : 'Set date'}</button>}
-                        </span>
-                      )}
+                      <div className="flex flex-wrap items-center gap-2">
+                        {a.interview_at
+                          ? <span className="font-medium text-slate-700 dark:text-slate-200">{formatInterviewTime(a.interview_at)}</span>
+                          : <span className="text-amber-700 dark:text-amber-300">Not scheduled</span>}
+                        {canWrite && <Button size="sm" variant={a.interview_at ? 'subtle' : 'primary'} onClick={(e) => togglePicker(a, e.currentTarget)}>{a.interview_at ? 'Reschedule' : 'Schedule interview'}</Button>}
+                        {a.interview_at && <AddToCalendar event={{ title: `Interview — ${job?.title ?? 'Job'}`, description: `Interview with ${a.applicant_name ?? a.applicant_email ?? 'candidate'} for ${job?.title ?? 'a job'}.`, start: a.interview_at, location: job?.location ?? '' }} />}
+                      </div>
                     </td>
                     <td className="px-3 py-2">
                       <select value={stage} disabled={!canWrite} onChange={(e) => save(a, e.target.value)} aria-label={`Outcome for ${a.applicant_name || a.applicant_email}`} className={FIELD}>
@@ -132,6 +129,16 @@ export default function InterviewingPanel({ job, active = true, refreshKey = 0, 
       )}
       <Pagination page={page} totalPages={Math.max(1, Math.ceil(total / PAGE_SIZE))} onPageChange={setPage} disabled={loading} />
       <ApplicantNotesModal applicant={notesFor} onClose={() => setNotesFor(null)} />
+      {picker && (
+        <DateTimePopover
+          anchor={picker.anchor}
+          value={isoToLocalInput(picker.row.interview_at)}
+          title={picker.row.interview_at ? 'Reschedule interview' : 'Schedule interview'}
+          subtitle={picker.row.applicant_name || picker.row.applicant_email}
+          onSave={(localValue) => saveDate(picker.row, localValue)}
+          onClose={() => setPicker(null)}
+        />
+      )}
     </div>
   )
 }

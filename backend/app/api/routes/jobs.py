@@ -290,6 +290,19 @@ def update_job(
         exclude_unset=True
     )
 
+    if "sub_company" in updates:
+        if current_user.role != UserRole.SUPERUSER:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Only the superuser can move a job to another sub company.",
+            )
+        new_company = updates["sub_company"]
+        if new_company is None or new_company == job.sub_company:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Choose a different sub company to move this job.",
+            )
+
     new_status = updates.get("status")
 
     if (
