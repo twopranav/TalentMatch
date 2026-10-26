@@ -13,7 +13,34 @@ class Settings(BaseSettings):
 
     JWT_SECRET_KEY: str = "change-me-in-env"
     JWT_ALGORITHM: str = "HS256"
-    ACCESS_TOKEN_EXPIRE_MINUTES: int = 60
+    # Short on purpose: the browser silently renews it from the refresh
+    # cookie (POST /api/auth/refresh), so users never notice, but a stolen
+    # access token is only good for this long.
+    ACCESS_TOKEN_EXPIRE_MINUTES: int = 15
+
+    # --- Browser sessions (app/core/sessions.py, routes/auth.py) ---
+    # A login creates a row in user_sessions and sets three cookies:
+    #   tm_access   httpOnly access JWT, lives ACCESS_TOKEN_EXPIRE_MINUTES
+    #   tm_refresh  httpOnly opaque refresh token, only sent to /api/auth,
+    #               a session cookie (gone when the browser is closed)
+    #   tm_csrf     readable double-submit token the frontend echoes back in
+    #               the X-CSRF-Token header on every state-changing request
+    # The session ends when it has been idle for SESSION_IDLE_MINUTES (checked
+    # at refresh time, so effectively 30 min give or take one access-token
+    # lifetime), when SESSION_MAX_HOURS have passed since login, or when it is
+    # revoked (logout, logout-all, refresh-token reuse).
+    SESSION_IDLE_MINUTES: int = 30
+    SESSION_MAX_HOURS: int = 12
+    # Two tabs refreshing at the same moment both present the same old
+    # refresh token; the loser is allowed this long after the rotation
+    # instead of being treated as token theft.
+    SESSION_REFRESH_GRACE_SECONDS: int = 10
+    # None = "Secure" in production, off otherwise (plain http://localhost).
+    COOKIE_SECURE: bool | None = None
+    COOKIE_SAMESITE: str = "lax"  # access + csrf cookies; refresh is always strict
+    ACCESS_COOKIE_NAME: str = "tm_access"
+    REFRESH_COOKIE_NAME: str = "tm_refresh"
+    CSRF_COOKIE_NAME: str = "tm_csrf"
 
     STORAGE_BACKEND: str = "local"  # "local" or "azure"
     AZURE_STORAGE_SAS_URL: str | None = None
@@ -137,6 +164,10 @@ class Settings(BaseSettings):
     def IS_PRODUCTION(self) -> bool:
         return self.ENV.strip().lower() == "production"
 
+    @property
+    def COOKIES_SECURE(self) -> bool:
+        return self.IS_PRODUCTION if self.COOKIE_SECURE is None else self.COOKIE_SECURE
+
     @model_validator(mode="after")
     def _production_guardrails(self):
         """Refuse to boot a production instance with unsafe settings."""
@@ -149,6 +180,10 @@ class Settings(BaseSettings):
             problems.append("JWT_SECRET_KEY must be a random value of at least 32 characters")
         if "*" in self.CORS_ORIGINS:
             problems.append("CORS_ORIGINS must list explicit origins, not '*'")
+        if self.COOKIE_SECURE is False:
+            problems.append("COOKIE_SECURE must not be false (login cookies would travel over plain http)")
+        if self.COOKIE_SAMESITE.lower() not in ("lax", "strict"):
+            problems.append("COOKIE_SAMESITE must be 'lax' or 'strict'")
         if problems:
             raise ValueError("Unsafe production configuration: " + "; ".join(problems))
         return self

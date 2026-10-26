@@ -42,8 +42,11 @@ def metrics(request: Request) -> Response:
 admin_router = APIRouter()
 
 
-@admin_router.get("/api/v1/admin/health-metrics")
+@admin_router.get("/api/admin/health-metrics")
+@admin_router.get("/api/v1/admin/health-metrics", include_in_schema=False)  # deprecated alias
 def health_metrics(
+    request: Request,
+    response: Response,
     db: Session = Depends(get_db),
     current_user=Depends(require_admin_or_superuser),
 ):
@@ -51,6 +54,10 @@ def health_metrics(
     helpers that feed /metrics, so the two never disagree."""
     from app.core import metrics as m
     from app.models.llm_config import LLMConfig
+
+    if request.url.path.startswith("/api/v1/"):  # deprecated alias, see main.py
+        response.headers["Deprecation"] = "true"
+        response.headers["Link"] = '</api>; rel="successor-version"'
 
     try:
         stuck = dict(m._count_stuck_rows(use_cache=False))

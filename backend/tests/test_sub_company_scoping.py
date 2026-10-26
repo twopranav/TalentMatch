@@ -263,9 +263,9 @@ def test_overview_scopes_requests_and_audit_feed_but_not_system_health(client, m
     make_user(role=UserRole.USER, requested_role=UserRole.ADMIN, sub_company=PV)
     make_user(role=UserRole.USER, requested_role=UserRole.RECRUITER, sub_company=PV)
 
-    solar = client.get("/api/v1/overview", headers=auth_headers(world["a_solar"])).json()
-    pv = client.get("/api/v1/overview", headers=auth_headers(world["a_pv"])).json()
-    god = client.get("/api/v1/overview", headers=auth_headers(world["su"])).json()
+    solar = client.get("/api/overview", headers=auth_headers(world["a_solar"])).json()
+    pv = client.get("/api/overview", headers=auth_headers(world["a_pv"])).json()
+    god = client.get("/api/overview", headers=auth_headers(world["su"])).json()
 
     assert solar["pending_recruiter_requests"] == 1
     assert pv["pending_recruiter_requests"] == 2
@@ -289,7 +289,7 @@ def test_an_admin_with_no_sub_company_sees_nothing_scoped(client, make_user, aut
     h = auth_headers(lonely)
     assert _job_ids(client, auth_headers, lonely) == set()
     assert client.get("/api/audit", headers=h).json() == []
-    ov = client.get("/api/v1/overview", headers=h).json()
+    ov = client.get("/api/overview", headers=h).json()
     assert ov["pending_recruiter_requests"] == 0 and ov["recent_audit_activity"] == []
 
 

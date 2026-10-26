@@ -16,14 +16,17 @@ import LLMSettings from './pages/LLMSettings'
 import Overview from './pages/Overview'
 import Forbidden from './pages/Forbidden'
 import NotFound from './pages/NotFound'
+import FullPageSpinner from './components/ui/FullPageSpinner'
 
 function LoginRoute() {
-  const { isAuthenticated } = useAuth()
+  const { isAuthenticated, loading } = useAuth()
+  if (loading) return <FullPageSpinner />
   return isAuthenticated ? <Navigate to="/" replace /> : <Login />
 }
 
 function RegisterRoute() {
-  const { isAuthenticated } = useAuth()
+  const { isAuthenticated, loading } = useAuth()
+  if (loading) return <FullPageSpinner />
   return isAuthenticated ? <Navigate to="/" replace /> : <Register />
 }
 

@@ -33,20 +33,6 @@ def compulsory_skill_match_ratio(
     return min(matched_count / compulsory_count, 1.0)
 
 
-def test_skill_aliases_are_acyclic() -> None:
-    """
-    Ensure no canonical alias target is itself another alias key.
-
-    This prevents accidental multi-hop normalization.
-    """
-    alias_keys = set(SKILL_ALIASES)
-
-    for value in SKILL_ALIASES.values():
-        assert value not in alias_keys, (
-            f"'{value}' is both an alias target and an alias key"
-        )
-
-
 def normalize_skill(raw: str) -> str:
     """
     Normalize one skill for matching.

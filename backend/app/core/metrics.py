@@ -303,8 +303,8 @@ def register_collector() -> None:
 
 
 # ---------------------------------------------------------------------
-# Snapshot helpers shared by GET /api/v1/overview (admin) and
-# GET /api/v1/admin/health-metrics. Every one of them degrades to a
+# Snapshot helpers shared by GET /api/overview (admin) and
+# GET /api/admin/health-metrics. Every one of them degrades to a
 # harmless value instead of raising: a dashboard must not 500 because
 # Redis is down.
 # ---------------------------------------------------------------------

@@ -1,4 +1,4 @@
-"""Role-scoped aggregate dashboard endpoint (GET /api/v1/overview).
+"""Role-scoped aggregate dashboard endpoint (GET /api/overview).
 
 Every number comes from a GROUP BY / aggregate query, never from loading
 rows and counting them in Python. The per-role payload is selected by the

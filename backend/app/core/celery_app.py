@@ -46,6 +46,7 @@ celery_app = Celery(
         "app.core.jd_skills_extraction_tasks",
         "app.core.extraction_retry_sweep",
         "app.core.matching_tasks",
+        "app.core.auth_cleanup",
     ],
 )
 
@@ -87,6 +88,10 @@ celery_app.conf.update(
         "sweep-unscored-applications": {
             "task": "match.sweep",
             "schedule": 600.0,
+        },
+        "purge-expired-auth-rows": {
+            "task": "auth_cleanup.purge",
+            "schedule": 21600.0,  # every 6 hours
         },
     },
 )

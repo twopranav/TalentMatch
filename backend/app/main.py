@@ -1,4 +1,4 @@
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI, Response
 from fastapi.middleware.cors import CORSMiddleware
 
 from app import models  # noqa: F401
@@ -64,21 +64,39 @@ app.add_middleware(RequestLoggingMiddleware)
 
 app.include_router(health.router, prefix="/api")
 app.include_router(metrics.router)  # GET /metrics, see routes/metrics.py
-app.include_router(metrics.admin_router, tags=["admin"])  # GET /api/v1/admin/health-metrics
+app.include_router(metrics.admin_router, tags=["admin"])  # GET /api/admin/health-metrics
 app.include_router(auth.router, prefix="/api/auth", tags=["auth"])
 app.include_router(jobs.router, prefix="/api/jobs", tags=["jobs"])
 app.include_router(users.router, prefix="/api/users", tags=["users"])
-# Versioned compatibility aliases for the v1 API additions.
-app.include_router(overview.router, prefix="/api/v1", tags=["overview"])
-app.include_router(users.router, prefix="/api/v1/users", tags=["users-v1"])
-app.include_router(jobs.router, prefix="/api/v1/jobs", tags=["jobs-v1"])
-app.include_router(resumes.router, prefix="/api/v1/resumes", tags=["resumes-v1"])
+# /api/overview (deprecated /api/v1 aliases are mounted at the bottom of this file).
+app.include_router(overview.router, prefix="/api", tags=["overview"])  # GET /api/overview
 app.include_router(applications.router, prefix="/api/applications", tags=["applications"])
 # Notes + manual score share the /api/applications prefix; separate module.
 app.include_router(recruiter_actions.router, prefix="/api/applications", tags=["applications"])
 app.include_router(audit.router, prefix="/api/audit", tags=["audit"])
 app.include_router(resumes.router, prefix="/api/resumes", tags=["resumes"])
 app.include_router(llm_config.router, prefix="/api/admin/llm-config", tags=["admin"])
+
+
+# --- Deprecated /api/v1 aliases -------------------------------------------
+# The canonical prefix is /api. /api/v1/... used to be a second mount of the
+# same routers; it is kept only so a frontend deployed before this change
+# keeps working during a rolling release. Hidden from the OpenAPI docs and
+# stamped with a Deprecation header. Delete this block once no client uses it.
+def _deprecated_v1(response: Response) -> None:
+    response.headers["Deprecation"] = "true"
+    response.headers["Link"] = '</api>; rel="successor-version"'
+
+
+for _prefix, _router in (
+    ("/api/v1", overview.router),
+    ("/api/v1/users", users.router),
+    ("/api/v1/jobs", jobs.router),
+    ("/api/v1/resumes", resumes.router),
+):
+    app.include_router(
+        _router, prefix=_prefix, include_in_schema=False, dependencies=[Depends(_deprecated_v1)]
+    )
 
 
 @app.get("/")

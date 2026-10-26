@@ -5,4 +5,5 @@ from app.models.application_note import ApplicationNote
 from app.models.audit_log import AuditLog
 from app.models.resume import Resume, ResumeStatus
 from app.models.token_blacklist import TokenBlacklist
+from app.models.user_session import UserSession
 from app.models.llm_config import LLMConfig

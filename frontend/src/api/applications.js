@@ -15,7 +15,7 @@ export function fetchApplicationNotes(applicationId) { return apiClient.get(`/ap
 export function addApplicationNote(applicationId, body) { return apiClient.post(`/applications/${applicationId}/notes`, { body }).then((res) => res.data) }
 export function updateManualScore(applicationId, manualScore) { return apiClient.patch(`/applications/${applicationId}/manual-score`, { manual_score: manualScore }).then((res) => res.data) }
 export function bulkUpdateApplicationStatus(jobId, applicationIds, status) {
-  return apiClient.post(`/v1/jobs/${jobId}/applications/bulk-status`, { application_ids: applicationIds, status }).then((res) => res.data)
+  return apiClient.post(`/jobs/${jobId}/applications/bulk-status`, { application_ids: applicationIds, status }).then((res) => res.data)
 }
 export function updateInterview(applicationId, stage, interviewAt = null) { return apiClient.patch(`/applications/${applicationId}/interview`, { stage, interview_at: interviewAt }).then((res) => res.data) }
 export function fetchStageCounts() { return apiClient.get('/applications/stage-counts').then((res) => res.data) }
